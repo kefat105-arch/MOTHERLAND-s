@@ -1,0 +1,6 @@
+{
+  "name": "Motherland — Universal Video Super App & Messenger Hub",
+  "description": "Universal multi-platform video super app and messenger hub unifying YouTube, TikTok, Instagram, and Facebook in one premium mobile social experience.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,1274 @@
+MOTHERLAND — PERMANENT MASTER IMPLEMENTATION DIRECTIVE
+
+PREMIUM UNIVERSAL SOCIAL SUPER APP + NATIVE SOCIAL NETWORK + VIDEO PLATFORMS + MESSENGER HUB + BANGLADESH SERVICES + MULTI-SERVER ARCHITECTURE
+
+ONE APP • ONE IDENTITY • SOCIAL MEDIA • PHOTO SHARING • VIDEO • STORIES • MESSAGING • BANGLADESH DIGITAL SERVICES
+
+IMPORTANT: Work on my EXISTING MOTHERLAND project. This is an expansion and improvement, NOT a replacement or starter project.
+
+Preserve existing working features, assets, authentication, user accounts, database records, content, settings, and deployment configuration. Inspect the existing architecture before changing anything. Never replace working features with mockups or fake demonstrations.
+
+The MOTHERLAND application must have its own complete social networking platform in addition to providing access to supported external platforms.
+
+---
+
+1. EXISTING PRODUCTION SERVER
+
+Use this existing server as the initial backend candidate:
+
+SERVER NAME: MOTHERLAND Production Backend
+
+BASE URL: "https://dream-world-open.onrender.com"
+
+HEALTH CHECK: "https://dream-world-open.onrender.com/health"
+
+EXISTING WEBSOCKET: "wss://dream-world-open.onrender.com/ws/game"
+
+Central configuration:
+
+export const MOTHERLAND_SERVERS = {
+  primary: {
+    id: "motherland-primary",
+    name: "MOTHERLAND Production Backend",
+    baseUrl: "https://dream-world-open.onrender.com",
+    healthUrl: "https://dream-world-open.onrender.com/health",
+    websocketUrl: "wss://dream-world-open.onrender.com/ws/game"
+  }
+};
+
+Rules:
+
+- Inspect the existing server and its actual routes.
+- Verify compatibility before connecting any MOTHERLAND feature.
+- Do not assume "/ws/game" supports messaging, video, or social services.
+- Do not invent API endpoints.
+- Do not overwrite or break existing Dream World services.
+- Add new services only through verified and compatible endpoints.
+
+2. MULTI-SERVER MANAGEMENT
+
+Build a centralized server registry that can support many additional servers in the future.
+
+Allow an authorized owner/admin to:
+
+- Add servers individually.
+- Give each server a name.
+- Edit addresses.
+- Enable or disable servers.
+- Test connectivity.
+- See actual online/offline status.
+- Assign different services to different servers.
+- Select a primary server.
+- Review configuration history.
+- Roll back changes.
+
+Create an owner-only admin configuration chat box.
+
+Example commands:
+
+- Add this server: [server address]
+- Test this server.
+- Set this as the primary server.
+- Use this server for messaging.
+- Show all connected servers.
+
+Only authenticated authorized administrators may execute configuration actions. Validate URLs, require HTTPS for production, reject unsafe destinations, and require confirmation before replacing the primary server. Never execute arbitrary code from chat messages.
+
+Do not mark a server online or connected without a successful real health check.
+
+3. PREMIUM MAIN NAVIGATION
+
+Create a premium responsive navigation system.
+
+Top-left:
+
+1. MOTHERLAND Bangladesh-themed logo.
+2. YouTube icon.
+3. TikTok icon.
+4. Facebook icon.
+5. Instagram icon.
+
+Top-right:
+
+- Search.
+- Messenger icon.
+- Profile.
+- Notifications when supported.
+
+Add a clearly visible BANGLADESH SERVICES icon in the main navigation. Use a premium Bangladesh flag/map-inspired icon and the label "বাংলাদেশ".
+
+On narrow Android screens, use a carefully designed responsive navigation layout without overcrowding.
+
+IMPORTANT: Preserve this global navigation while creating the additional native MOTHERLAND social navigation described in Section 11A. The two navigation systems have different purposes and must not replace each other.
+
+4. MOTHERLAND HOME
+
+Clicking the MOTHERLAND logo must return to the MOTHERLAND home feed without unnecessarily reloading the whole application.
+
+Show the user's actual:
+
+- Posts.
+- Photos.
+- Videos.
+- Profile.
+- Social feed.
+- Community content.
+- Stories where supported.
+
+Preserve existing user content and authentication.
+
+The MOTHERLAND home feed must be the native social networking home experience described in Section 11A. It must not simply display external YouTube, TikTok, Facebook, or Instagram content.
+
+5. ALL VIDEOS — UNIVERSAL VIDEO FEED
+
+Create one combined video feed containing actual supported content from:
+
+- YouTube.
+- TikTok.
+- Facebook.
+- Instagram.
+- MOTHERLAND native videos.
+
+Requirements:
+
+- Continuous vertical browsing where appropriate.
+- Actual video thumbnails and metadata.
+- Original platform identification.
+- Search and platform filters.
+- Real pagination and automatic loading.
+- No fake videos, fake views, or fake recommendations.
+- Proper player cleanup.
+- No unnecessary blank margins.
+
+Keep ALL VIDEOS separate from the native MOTHERLAND home feed.
+
+6. YOUTUBE — FULL IN-APP EXPERIENCE
+
+When YouTube is selected, open a complete YouTube-inspired experience inside MOTHERLAND, not the external YouTube application.
+
+Use the provided YouTube Data API v3 key:
+
+"AIzaSyB--gyG9wfGMhFvaQg2HICAGuyZ5h2JNBE"
+
+Environment variable:
+
+"VITE_YOUTUBE_API_KEY"
+
+Use this key only for YouTube Data API v3.
+
+The key must be configured only in the appropriate project environment. Because Vite frontend environment variables can be exposed in browser bundles, apply appropriate API restrictions, including YouTube Data API v3 restrictions and website restrictions where applicable. Do not expose unrelated secrets.
+
+Implement:
+
+- Bengali and English search.
+- Channel search.
+- Video title search.
+- Actual creator and channel information.
+- Actual thumbnails.
+- Search pagination using "nextPageToken".
+- Automatic loading of additional result pages.
+- Duplicate-request prevention.
+- Proper loading, error, empty-result, and retry states.
+- Official YouTube IFrame Player API playback.
+- Direct YouTube URL opening as an additional option.
+- Original YouTube fallback for videos that cannot be embedded.
+
+Do not force users to paste URLs to find ordinary videos.
+
+Do not temporarily show stale "No videos" messages while a real request is still loading.
+
+Do not artificially limit the feed to 12 or 14 results. Respect actual API pagination and quota limits.
+
+YouTube design
+
+Use a full-width responsive layout with:
+
+- Large video viewing area.
+- Proper video aspect ratio.
+- Search bar.
+- Video discovery.
+- Channel details.
+- Titles and creator names.
+- Related videos where supported.
+- Responsive sidebar or bottom navigation.
+- MOTHERLAND home and Messenger access.
+
+On Android, use the full available screen width. Do not create a narrow Facebook-Reels-style video column with unexplained empty spaces.
+
+Use original MOTHERLAND branding rather than copying YouTube's protected identity.
+
+7. TIKTOK — IN-APP EXPERIENCE
+
+Create a TikTok-inspired vertical browsing experience inside MOTHERLAND.
+
+Use officially supported public video embeds and metadata.
+
+Provide:
+
+- Vertical video presentation.
+- Creator information where available.
+- Supported public video URL handling.
+- Loading and error states.
+- Original source identification.
+- Optional open-on-TikTok fallback.
+
+Do not scrape private endpoints or claim unrestricted access to TikTok's personalized For You feed.
+
+8. FACEBOOK — IN-APP EXPERIENCE
+
+Create a Facebook-inspired content and video experience inside MOTHERLAND.
+
+Support eligible public videos and Reels through official embedding methods.
+
+Use available metadata and source identification. Search only where official APIs permit.
+
+Do not claim access to private content without authorization.
+
+9. INSTAGRAM — IN-APP EXPERIENCE
+
+Create an Instagram-inspired Reels and video experience inside MOTHERLAND.
+
+Support eligible public Reels and video posts through officially permitted embedding methods.
+
+Do not claim unrestricted access to the personalized Instagram feed or private content.
+
+10. PLATFORM CONSISTENCY
+
+All platform sections must feel like parts of one premium MOTHERLAND application.
+
+Maintain:
+
+- Consistent navigation.
+- Premium typography.
+- High-quality icons.
+- Smooth transitions.
+- Responsive layouts.
+- Original MOTHERLAND branding.
+
+Each platform must have its own appropriate content presentation. YouTube should feel like a video discovery platform, TikTok like vertical short-video browsing, and Facebook and Instagram like their respective social content experiences.
+
+11. UNIVERSAL MESSENGER HUB
+
+Add one small premium Messenger icon near the top-right corner.
+
+Clicking it opens MOTHERLAND MESSENGER HUB inside MOTHERLAND.
+
+Supported connection targets:
+
+1. WhatsApp.
+2. Facebook Messenger.
+3. Instagram Direct.
+4. TikTok Messages, only if an officially supported API exists for this use case.
+
+Create:
+
+- ALL MESSAGES.
+- Platform filters.
+- Conversation search.
+- Conversation list.
+- Actual contact names and photos where available.
+- Actual last-message previews and timestamps.
+- Real unread indicators only when supplied.
+- Conversation header.
+- Message history.
+- Message input.
+- Send button.
+- Supported attachment controls.
+
+Always identify the original platform of each conversation.
+
+Official account authorization
+
+Use official authorization flows only.
+
+WhatsApp: Investigate the WhatsApp Business Platform / Cloud API. Do not promise access to ordinary personal WhatsApp conversations.
+
+Facebook Messenger: Use the official Meta Messenger Platform and required Page permissions.
+
+Instagram: Use the official Instagram Messaging API and eligible professional account permissions.
+
+TikTok: Use only an officially supported messaging API where available.
+
+Never request external account passwords directly. Store tokens securely on the backend. Provide disconnect and revoke-access controls.
+
+MOTHERLAND login does not automatically grant access to external private messages.
+
+Never invent contacts, messages, unread counts, delivery statuses, or connected-account states.
+
+11A. MOTHERLAND — COMPLETE NATIVE SOCIAL MEDIA POSTING AND PUBLISHING SYSTEM
+
+This is a mandatory core feature of MOTHERLAND.
+
+Do not make MOTHERLAND only a place for viewing content from Facebook, YouTube, TikTok, or Instagram.
+
+Users must be able to create, publish, view, share, and manage their own original content directly inside MOTHERLAND.
+
+Preserve all existing MOTHERLAND social features and expand them into a complete native social networking experience.
+
+11A.1 CREATE POST
+
+Add a clearly visible and easy-to-use Create Post option.
+
+Users must be able to:
+
+- Write text-only posts.
+- Publish text with photos.
+- Publish text with videos.
+- Upload multiple photos in one post.
+- Upload supported multiple videos where technically possible.
+- Add captions and descriptions.
+- Add hashtags.
+- Mention other MOTHERLAND users where supported.
+- Add location information with the user's permission.
+- Edit their own posts.
+- Delete their own posts.
+- Save posts as drafts where supported.
+- Share published posts.
+- Copy post links.
+- Control post visibility using available privacy settings.
+
+The post composer must be mobile-friendly and easy to use on Android.
+
+11A.2 PHOTO POSTING
+
+Implement a complete native photo-publishing experience.
+
+Users must be able to:
+
+- Select photos from their device gallery.
+- Preview selected photos before publishing.
+- Select multiple photos.
+- Remove or reorder selected photos before publishing.
+- Add captions and descriptions.
+- Publish photo albums or galleries where supported.
+- View photos in a responsive full-screen viewer.
+- Zoom or browse images where supported.
+- Edit captions after publishing.
+- Delete their own photo posts.
+
+Preserve original image quality as much as reasonably possible while optimizing image sizes for mobile performance.
+
+Show actual upload progress and real upload errors.
+
+11A.3 VIDEO POSTING
+
+Implement native MOTHERLAND video publishing.
+
+Users must be able to:
+
+- Select videos from their device.
+- Preview videos before uploading.
+- Add video titles and descriptions.
+- Add captions and hashtags.
+- Publish supported short videos and regular videos.
+- View upload progress.
+- Cancel an upload where supported.
+- Retry failed uploads.
+- Play published videos inside MOTHERLAND.
+- Edit their own video descriptions.
+- Delete their own videos.
+
+Use actual backend storage and a verified upload mechanism.
+
+Do not pretend a video is published before the backend confirms successful storage and publication.
+
+Do not silently impose arbitrary upload limits. If the existing server or storage provider has limits, show the actual supported file size, format, and duration limits.
+
+11A.4 COMPLETE SOCIAL INTERACTION SYSTEM
+
+Implement the following features using real authenticated users and persistent backend data:
+
+- Like and unlike posts.
+- Comment on posts.
+- Reply to comments.
+- Edit and delete one's own comments.
+- Share posts.
+- Save and unsave posts.
+- Follow and unfollow users.
+- View user profiles.
+- View followers and following where supported.
+- Report inappropriate content.
+- Block and unblock users.
+- Show actual post timestamps.
+- Show actual engagement counts only when supplied by the backend.
+
+Never generate fake likes, fake comments, fake followers, fake views, or fake activity.
+
+Apply proper authentication, ownership checks, authorization, and server-side validation.
+
+11A.5 MOTHERLAND PROFILE AND CONTENT MANAGEMENT
+
+Every authenticated MOTHERLAND user should have a profile containing, where supported:
+
+- Profile photo.
+- Cover photo.
+- Display name.
+- Username.
+- Bio.
+- Public posts.
+- Photo posts.
+- Video posts.
+- Followers.
+- Following.
+- Saved posts, visible only to the owner.
+- Profile editing controls.
+- Privacy settings.
+
+Users must be able to manage their own published content without affecting other users' accounts or data.
+
+11A.6 COMPLETE MOTHERLAND HOME FEED — FACEBOOK-INSPIRED LAYOUT
+
+IMPORTANT: The MOTHERLAND home feed must have a familiar, complete Facebook-inspired social networking layout while retaining original MOTHERLAND branding.
+
+Do not redesign the existing MOTHERLAND application or replace its global navigation.
+
+Inside the MOTHERLAND home section, implement this content arrangement:
+
+TOP AREA — STORIES ROW
+
+At the top of the home feed, show a horizontally scrollable Stories section.
+
+Include:
+
+- Create Story button for the current user.
+- Actual stories from followed users.
+- User profile photos.
+- Story indicators.
+- Story viewing interface.
+- Supported photo stories.
+- Supported short-video stories.
+- Story expiration based on the actual backend-supported duration.
+- Story privacy controls where supported.
+
+Do not display fabricated stories or fake online users.
+
+BELOW STORIES — CREATE POST COMPOSER
+
+Directly below the Stories row, show a compact publishing composer with:
+
+- Current user's profile photo.
+- "What's on your mind?" text input.
+- Photo button.
+- Video button.
+- Create Post button.
+
+Selecting any option must open the actual native MOTHERLAND publishing interface described in this section.
+
+BELOW THE COMPOSER — COMPLETE MIXED CONTENT FEED
+
+Show the user's actual MOTHERLAND feed, including:
+
+- Text posts.
+- Single-photo posts.
+- Multiple-photo posts.
+- Photo albums.
+- Regular videos.
+- Short videos.
+- Shared posts.
+- Supported community content.
+
+Use a clean, vertically scrolling social feed.
+
+Each post should have:
+
+- Actual author profile photo and name.
+- Timestamp.
+- Privacy indicator where available.
+- Text or caption.
+- Actual photo/video content.
+- Like button.
+- Comment button.
+- Share button.
+- More-options menu.
+- Actual engagement information where available.
+
+Support real pagination and efficient loading.
+
+Do not replace MOTHERLAND's own feed with the external ALL VIDEOS feed.
+
+MOTHERLAND HOME and ALL VIDEOS must remain separate experiences.
+
+11A.7 MOTHERLAND STORIES CREATION
+
+Allow users to create their own Stories using supported photos and videos.
+
+Include:
+
+- Gallery selection.
+- Preview before publishing.
+- Caption or text overlay where supported.
+- Publish Story.
+- View Story.
+- Delete own Story.
+- Story privacy controls.
+- Actual expiration handling.
+
+Do not show a Story as published until the backend confirms it.
+
+11A.8 HOME FEED NAVIGATION — DO NOT CHANGE THE GLOBAL NAVIGATION
+
+IMPORTANT: The existing MOTHERLAND global navigation specified in Section 3 must remain unchanged.
+
+Do not move, remove, replace, or redesign the existing global navigation icons.
+
+Inside the MOTHERLAND home experience, provide a separate, familiar social-feed shortcut/navigation row at the top of the content area, with:
+
+1. HOME
+2. FRIENDS
+3. VIDEOS
+4. MARKETPLACE, only if genuinely implemented
+5. NOTIFICATIONS
+6. MENU / MORE
+
+Use appropriate original MOTHERLAND icons.
+
+The HOME option must return to the MOTHERLAND Stories-and-Posts feed.
+
+The other options must open their respective actual implemented MOTHERLAND sections.
+
+Do not display non-functional buttons.
+
+Do not confuse this internal social navigation with the existing global navigation.
+
+11A.9 MOBILE AND ANDROID PRESENTATION
+
+The native MOTHERLAND social feed must be optimized for Android phones.
+
+Requirements:
+
+- Use the full available screen width.
+- Keep Stories horizontally scrollable.
+- Keep posts vertically scrollable.
+- Use touch-friendly buttons.
+- Make photo and video previews responsive.
+- Avoid unnecessary blank margins.
+- Avoid excessive card nesting.
+- Use efficient image loading.
+- Support multiple screen sizes.
+- Keep scrolling smooth.
+- Preserve the premium MOTHERLAND visual identity.
+
+The overall experience should feel familiar to users of modern social networking applications without copying protected branding or assets.
+
+11A.10 BACKEND AND DATA REQUIREMENTS
+
+Before implementing uploads, Stories, comments, reactions, followers, or feeds, inspect the existing backend and database.
+
+Use actual compatible APIs and storage services.
+
+If the existing backend does not support a required feature:
+
+- Identify the missing capability.
+- Design a compatible incremental backend extension.
+- Preserve existing routes and data.
+- Do not assume the Dream World game WebSocket supports social networking.
+- Do not invent successful upload or publication results.
+- Do not store large media files directly in a database unless the existing architecture explicitly supports that approach.
+- Use secure media storage and authenticated upload mechanisms where available.
+- Apply file validation, access control, rate limits, and safe content handling.
+
+Do not introduce paid storage or paid services without approval.
+
+If free storage limits apply, report them honestly.
+
+11A.11 REQUIRED SOCIAL FEATURE TESTS
+
+Test separately:
+
+1. Text-only post creation.
+2. Single-photo upload and publication.
+3. Multiple-photo publication.
+4. Video upload and playback.
+5. Upload progress and retry.
+6. Post editing and deletion.
+7. Story creation and viewing.
+8. Story expiration.
+9. Likes and unlikes.
+10. Comments and replies.
+11. Sharing.
+12. Following and unfollowing.
+13. Profile editing.
+14. Saved posts.
+15. Privacy controls.
+16. Report and block.
+17. Actual feed pagination.
+18. Android photo and video selection.
+19. Backend persistence after reload.
+20. Existing MOTHERLAND features and global navigation preservation.
+
+Report each feature as IMPLEMENTED, TESTED, VERIFIED IN PRODUCTION, BLOCKED, or NOT AVAILABLE.
+
+Never claim a social feature works merely because its button or interface is visible.
+
+12. BANGLADESH SERVICES — NATIONAL DIGITAL SERVICES HUB
+
+NEW CORE FEATURE
+
+Create a dedicated premium section named:
+
+BANGLADESH SERVICES — বাংলাদেশের ডিজিটাল সেবা
+
+This is a major part of MOTHERLAND.
+
+Its purpose is to make useful Bangladesh-related public services, education resources, utility services, financial-service information, and other legal digital services accessible from one organized location.
+
+The user should not need to install multiple unrelated apps just to access services that can legally and technically be used through an embedded website or secure in-app browser.
+
+12.1 Bangladesh Services home screen
+
+Design a beautiful premium Bangladesh-themed dashboard.
+
+Visual identity:
+
+- Bangladesh flag-inspired design.
+- Original MOTHERLAND branding.
+- Green and red accent colors.
+- Premium dark/light appearance consistent with MOTHERLAND.
+- Professional service icons.
+- Search bar.
+- Category cards.
+- Recently used services.
+- Favorites.
+- Clear service availability labels.
+
+Create a visually organized grid of service categories.
+
+12.2 GOVERNMENT AND CITIZEN SERVICES
+
+Research and list verified official Bangladesh government service websites where available.
+
+Categories may include:
+
+- National ID information and official NID services.
+- Birth registration.
+- Birth certificate verification.
+- Online passport and e-passport information.
+- Passport application and appointment information.
+- Police services and official police clearance information.
+- Government forms and applications.
+- Land records and land-related services.
+- Land tax information and authorized payment portals.
+- Driving licence information.
+- BRTA services.
+- Vehicle registration information.
+- Government notices.
+- Citizen service portals.
+- Official complaint and grievance portals.
+- Public service information.
+
+Only use verified official government websites and legitimate service providers.
+
+Do not create fake government portals or imply MOTHERLAND is a government authority.
+
+Do not collect or store NID numbers, passport numbers, birth-registration numbers, or other sensitive identity details unless a lawful, secure, explicitly authorized integration genuinely requires it.
+
+Prefer opening the official service within MOTHERLAND where permitted.
+
+12.3 EDUCATION AND STUDENT SERVICES
+
+Create a dedicated EDUCATION section.
+
+Include verified official resources for:
+
+- SSC results.
+- HSC results.
+- Equivalent examination results.
+- Education board information.
+- Official education notices.
+- Admission information.
+- University admission portals.
+- College information.
+- School information.
+- Scholarship notices.
+- Education-related government services.
+- Official examination schedules.
+- Student certificates and verification services where available.
+
+Allow users to open the original official result portal inside MOTHERLAND where technically supported.
+
+Do not fabricate results or claim to retrieve official results without a real authorized source.
+
+Do not store student roll numbers or registration details unnecessarily.
+
+12.4 ELECTRICITY, GAS, WATER AND UTILITY SERVICES
+
+Create a UTILITIES category.
+
+Research verified official provider portals for:
+
+- Electricity bill information.
+- Electricity bill payment.
+- Prepaid electricity meter services.
+- Postpaid electricity services.
+- Gas bill information.
+- Water bill information.
+- WASA-related services.
+- Utility complaint portals.
+- Authorized payment gateways.
+
+Show the provider's actual name and distinguish official portals from third-party payment services.
+
+Do not collect meter passwords, OTPs, PINs, or unnecessary account credentials.
+
+Payments must happen only through the provider's official or authorized secure payment process.
+
+12.5 MOBILE BANKING AND DIGITAL PAYMENTS
+
+Create a category named:
+
+PAYMENTS & MOBILE FINANCIAL SERVICES
+
+Show verified official services and information for:
+
+- bKash.
+- Nagad.
+- Rocket.
+- Upay.
+- Other legitimately licensed Bangladesh payment providers where verified.
+- Bank payment portals.
+- Authorized bill-payment services.
+- Merchant payment information.
+- Official transaction support and help pages.
+
+Important:
+
+- Do not pretend MOTHERLAND is bKash, Nagad, Rocket, or a bank.
+- Do not collect payment PINs.
+- Do not collect OTPs.
+- Do not ask for banking passwords.
+- Do not store card security codes.
+- Do not imitate payment screens.
+- Do not process money unless an authorized licensed payment gateway is properly integrated and approved.
+- Clearly show when a transaction takes place on the provider's official secure page.
+- Do not create fake payment success messages.
+- Never claim a payment is completed without actual provider confirmation.
+
+If an official website blocks embedding, open it through a safe in-app browser or provide an explicit official-site option.
+
+12.6 BANKING, SAVINGS AND FINANCIAL INFORMATION
+
+Create a BANKING & FINANCIAL INFORMATION category.
+
+Include verified official information from:
+
+- Bangladesh Bank.
+- Licensed commercial banks.
+- Approved financial institutions.
+- Official account and customer-service portals.
+- Published financial education resources.
+- Official banking notices.
+
+Allow users to find official bank websites and service information.
+
+Do not provide an unauthorized banking interface or access bank accounts without official authorization.
+
+12.7 LOAN AND FINANCING INFORMATION
+
+Create a category named:
+
+LOAN & FINANCING INFORMATION
+
+This category must be designed with special legal and financial safeguards.
+
+Show information only from verified, legally authorized sources such as:
+
+- Bangladesh Bank-regulated banks.
+- Properly licensed financial institutions.
+- Legally authorized microfinance institutions.
+- Officially approved financial-service providers.
+
+Where available, show:
+
+- Official institution name.
+- Official website.
+- Eligibility requirements published by the institution.
+- Published interest or profit-rate information.
+- Fees and charges.
+- Repayment conditions.
+- Official application information.
+- Customer-support details.
+- Warnings about scams and unauthorized lenders.
+
+Do not:
+
+- Create an unlicensed lending service.
+- Issue loans through MOTHERLAND without proper legal authorization.
+- Promise loan approval.
+- Fabricate interest rates or eligibility.
+- Encourage users to borrow irresponsibly.
+- Collect identity documents or bank credentials for an unapproved loan process.
+- Direct users to illegal loan applications.
+- Hide fees or repayment conditions.
+
+Do not enable loan applications or financial borrowing transactions for under-18 users. Provide general educational information only.
+
+For eligible adults, any future application integration must use the institution's official authorized process and applicable legal requirements.
+
+12.8 HEALTH AND EMERGENCY INFORMATION
+
+Create a HEALTH & EMERGENCY category with verified official resources for:
+
+- Government health services.
+- Hospital information.
+- Public health notices.
+- Emergency contact information.
+- Ambulance and emergency service information.
+- Official health portals.
+- Government medical service information.
+
+Clearly distinguish informational resources from emergency response services.
+
+Never claim MOTHERLAND itself provides emergency medical treatment.
+
+12.9 TRANSPORT AND TRAVEL SERVICES
+
+Create a TRANSPORT category.
+
+Where officially available, include:
+
+- Bangladesh Railway.
+- Official train ticketing.
+- Bus service information.
+- Launch and ferry information.
+- Air ticket information from legitimate providers.
+- BRTA.
+- Driving licence information.
+- Vehicle tax and registration information.
+- Official transport notices.
+
+Do not create fake tickets or bookings.
+
+Any booking or payment must be completed and confirmed by the actual authorized provider.
+
+12.10 JOBS AND PUBLIC NOTICES
+
+Create a JOBS & CAREERS category.
+
+Include verified:
+
+- Government job circulars.
+- Official recruitment portals.
+- Public service commission notices.
+- Official examination notices.
+- University and education institution recruitment notices.
+- Verified private job portals.
+- Skill-development resources.
+
+Identify the source and publication date where available.
+
+Do not fabricate job vacancies or guarantee employment.
+
+Warn users about fraudulent recruitment fees and impersonation.
+
+12.11 COMMUNICATION AND OTHER USEFUL SERVICES
+
+Where legal and officially supported, include:
+
+- Postal services.
+- Courier tracking.
+- Official telecom self-service portals.
+- Mobile operator account services.
+- Internet provider customer portals.
+- Weather information.
+- Public information portals.
+- Online complaint portals.
+- Legal information resources.
+- Public directories.
+
+Verify each provider and its actual website before listing it.
+
+13. OFFICIAL WEBSITE DIRECTORY AND IN-APP BROWSING
+
+Build a dynamic directory of verified Bangladesh service websites.
+
+Every listing must include:
+
+- Service name.
+- Category.
+- Provider/authority.
+- Verified official URL.
+- Description.
+- Availability status.
+- Last verification date.
+- Whether in-app embedding is supported.
+- Whether login is required.
+- Whether the service is free or has published fees, if verified.
+
+Do not assume every website is free.
+
+Clearly distinguish:
+
+- Free information.
+- Free online service.
+- Paid government fee.
+- Provider payment.
+- Third-party service charge.
+
+In-app browsing requirements
+
+Where technically and legally permitted:
+
+- Open service websites inside MOTHERLAND.
+- Use a secure embedded browser or WebView.
+- Preserve MOTHERLAND navigation.
+- Allow safe back navigation.
+- Show the actual destination domain.
+- Provide an external-browser fallback.
+
+Some websites block iframe or WebView embedding using security policies. Do not bypass those restrictions. In those cases, use a safe in-app browser or open the official website as an explicit fallback.
+
+Do not pretend that an external website is fully integrated just because its page is displayed.
+
+14. BANGLADESH SERVICES SEARCH
+
+Add a dedicated search bar inside Bangladesh Services.
+
+Allow searches in:
+
+- Bengali.
+- English.
+- Common Bengali transliterations.
+
+Examples:
+
+- NID
+- জন্ম নিবন্ধন
+- SSC Result
+- HSC Result
+- বিদ্যুৎ বিল
+- গ্যাস বিল
+- পানির বিল
+- বিকাশ
+- নগদ
+- ব্যাংক
+- পাসপোর্ট
+- চাকরি
+- ট্রেন টিকিট
+- লোন
+
+Search actual verified directory entries.
+
+Do not fabricate services or official links.
+
+15. BANGLADESH SERVICES FAVORITES
+
+Allow users to:
+
+- Save favorite services.
+- Access recently visited services.
+- Organize services.
+- Search by category.
+- Remove favorites.
+
+Store only necessary preference data.
+
+Do not store passwords, PINs, OTPs, banking credentials, or sensitive identity information in favorites or browsing history.
+
+16. LEGAL COMPLIANCE, USER SAFETY AND LIABILITY PROTECTION
+
+This is mandatory.
+
+MOTHERLAND must operate as a lawful information and access platform.
+
+It must not impersonate:
+
+- Bangladesh government.
+- Bangladesh Bank.
+- Any commercial bank.
+- bKash.
+- Nagad.
+- Rocket.
+- Any educational board.
+- Any government department.
+- Any external social platform.
+
+Use accurate service descriptions and clear provider identification.
+
+Before publishing a service:
+
+1. Verify its official source.
+2. Verify its domain.
+3. Check whether it is licensed or authorized where required.
+4. Check whether embedding is permitted.
+5. Check its published terms and privacy requirements.
+6. Identify any fees.
+7. Record its verification status.
+
+Provide a clear notice:
+
+"MOTHERLAND is an independent platform. External services are provided by their respective organizations. MOTHERLAND does not represent or impersonate those organizations."
+
+Do not collect unnecessary personal data.
+
+Do not process financial transactions without the required legal authorization and approved payment integration.
+
+Do not facilitate illegal financial services, identity fraud, forged certificates, fake results, unauthorized account access, or deceptive payments.
+
+For sensitive or regulated services, provide official information and safe navigation rather than pretending MOTHERLAND itself is the provider.
+
+Protect users from phishing, fake loan offers, fraudulent websites, and fake payment pages.
+
+17. AGE-APPROPRIATE ACCESS
+
+Apply age and eligibility requirements imposed by the actual provider and Bangladesh law.
+
+Do not allow under-18 users to apply for loans or access age-restricted financial products through MOTHERLAND.
+
+Do not collect financial or identity details from minors for these purposes.
+
+General public information and educational resources may remain accessible where appropriate.
+
+18. NO EXTERNAL APP DEPENDENCY
+
+My goal is to make MOTHERLAND a single useful application.
+
+Where permitted, users should be able to:
+
+- Browse supported videos.
+- View supported social content.
+- Create and publish native MOTHERLAND posts.
+- Upload photos and videos.
+- Create and view Stories.
+- Use the Messenger Hub.
+- Access Bangladesh digital services.
+- View education resources.
+- Open official payment and utility portals.
+- Find legitimate financial information.
+- Access supported transport, jobs, and public services.
+
+Do not force users to install other applications just to access a website that can legally and technically be used inside MOTHERLAND.
+
+When a provider requires its official app or blocks embedding, explain the limitation honestly and offer the official alternative.
+
+19. ANDROID PERFORMANCE AND RESPONSIVENESS
+
+Optimize for Android phones and mobile browsers.
+
+Requirements:
+
+- Full available screen usage.
+- No unnecessary blank margins.
+- Responsive layouts.
+- Touch-friendly controls.
+- Lazy loading.
+- Efficient image loading.
+- Proper player cleanup.
+- Low memory usage.
+- Smooth scrolling.
+- Network recovery.
+- No unnecessary background requests.
+
+Keep the design premium without sacrificing performance.
+
+20. FREE-FIRST POLICY
+
+Prefer free and officially available integrations.
+
+Before introducing any paid service:
+
+- Identify the service.
+- Explain why it is needed.
+- Explain its free-tier limitations.
+- Explain potential costs.
+- Wait for approval.
+
+Do not silently activate billing or paid subscriptions.
+
+Do not promise that all government, payment, or private services are free.
+
+21. PRESERVE EXISTING PROJECT
+
+Do not:
+
+- Replace the project with a starter template.
+- Delete working features.
+- Remove user data.
+- Reset existing authentication.
+- Break existing server configuration.
+- Remove working video or social features.
+- Introduce fake integrations.
+
+Make incremental changes and preserve existing architecture wherever possible.
+
+Before editing:
+
+1. Inspect the complete project structure.
+2. Identify the current frontend framework and backend architecture.
+3. Identify existing authentication and database systems.
+4. Identify existing media storage and upload mechanisms.
+5. Identify existing routes and APIs.
+6. Identify existing deployment configuration.
+7. Create or confirm a recoverable backup or version-control checkpoint where available.
+8. Prepare an incremental implementation plan.
+
+Do not perform destructive migrations without explaining their impact and preserving existing data.
+
+Do not rewrite the application from scratch.
+
+22. REQUIRED TESTING
+
+Test each category separately.
+
+Application
+
+1. Existing MOTHERLAND application loads.
+2. Existing login works.
+3. Existing user content remains intact.
+4. Main navigation works.
+5. MOTHERLAND home/reset works.
+
+Video
+
+6. ALL VIDEOS mixed feed.
+7. YouTube Bengali search.
+8. YouTube English search.
+9. YouTube channel search.
+10. YouTube video search.
+11. Automatic pagination.
+12. Actual YouTube playback.
+13. TikTok supported embeds.
+14. Facebook supported embeds.
+15. Instagram supported embeds.
+
+Messenger
+
+16. Messenger Hub interface.
+17. Official account authorization.
+18. Actual authorized incoming messages.
+19. Actual authorized outgoing messages.
+20. Token expiration and permission errors.
+
+Native MOTHERLAND Social Network
+
+21. Text-only post creation.
+22. Single-photo upload and publication.
+23. Multiple-photo publication.
+24. Video upload and playback.
+25. Short-video publishing.
+26. Upload progress and retry.
+27. Post editing and deletion.
+28. Story creation and viewing.
+29. Story expiration.
+30. Likes and unlikes.
+31. Comments and replies.
+32. Sharing.
+33. Following and unfollowing.
+34. Profile editing.
+35. Saved posts.
+36. Privacy controls.
+37. Report and block.
+38. Actual feed pagination.
+39. Android photo and video selection.
+40. Backend persistence after reload.
+41. Stories row appears at the top of MOTHERLAND home.
+42. Create Post composer appears directly below Stories.
+43. Mixed photo, video, short-video, and text feed appears below the composer.
+44. Internal social navigation works without changing global navigation.
+
+Bangladesh Services
+
+45. Bangladesh Services dashboard.
+46. Government-service directory.
+47. NID and birth-registration official links.
+48. SSC and HSC result links.
+49. Education and admission links.
+50. Electricity, gas, and water portals.
+51. bKash and other payment-provider information.
+52. Official bank directory.
+53. Verified loan and financing information.
+54. Health and emergency resources.
+55. Transport and railway resources.
+56. Jobs and public notices.
+57. Bengali and English service search.
+58. In-app browsing and blocked-embedding fallback.
+59. Official domain verification.
+60. Age and financial safety restrictions.
+
+Infrastructure
+
+61. Existing server health.
+62. Multi-server management.
+63. Admin authorization.
+64. Android responsiveness.
+65. Production build.
+
+23. FINAL IMPLEMENTATION REPORT
+
+Provide a truthful status for each major feature.
+
+Use:
+
+- IMPLEMENTED
+- TESTED
+- VERIFIED IN PRODUCTION
+- BLOCKED
+- NOT AVAILABLE
+
+For Bangladesh Services, report:
+
+- Number of verified official listings.
+- Their actual official domains.
+- Which services open inside MOTHERLAND.
+- Which require an external official page.
+- Which require login.
+- Which have fees.
+- Which are unavailable.
+- Date of last verification.
+
+For native MOTHERLAND social features, report:
+
+- Which post types actually work.
+- Whether photo uploads persist.
+- Whether video uploads persist.
+- Whether Stories work.
+- Whether likes, comments, sharing, and follows persist.
+- Whether user profiles work.
+- Whether the feed retrieves actual backend data.
+- Which features are blocked by missing backend or storage support.
+
+For video and messaging, report actual test evidence.
+
+Do not call an interface fully integrated just because it displays a website or a button.
+
+Do not claim a payment succeeded without provider confirmation.
+
+Do not claim a loan was approved without confirmation from the authorized institution.
+
+Do not claim an upload, post, message, or Story was published without actual backend confirmation.
+
+Clearly separate:
+
+- Implemented in code.
+- Tested locally.
+- Tested against the real backend.
+- Verified in production.
+- Blocked by external provider restrictions.
+- Not available because required authorization or infrastructure is missing.
+
+FINAL COMMAND
+
+Inspect the complete existing MOTHERLAND project first.
+
+Preserve all working functionality.
+
+Implement the premium social/video experience, complete native MOTHERLAND social networking and publishing system, officially supported in-app Messenger Hub, Bangladesh Services digital portal, and future multi-server management system.
+
+Use the provided YouTube API key.
+
+Use the existing production server only for verified compatible services.
+
+Create the Bangladesh Services section as a first-class part of MOTHERLAND, with official and verified Bangladesh resources organized into useful categories.
+
+Create a complete native MOTHERLAND social experience where users can publish text, photos, multiple photos, regular videos, and short videos; create Stories; view Stories at the top of the home feed; and browse a mixed social feed directly below the Stories and Create Post areas.
+
+The MOTHERLAND home feed must have the familiar layout described in Section 11A: Stories at the top, Create Post immediately below, and actual mixed social posts underneath.
+
+Keep the existing global navigation unchanged. The additional internal social navigation must not replace or modify it.
+
+Make the application feel like one polished, premium, mobile-first super app.
+
+Do not create fake integrations, fake services, fake transactions, fake messages, fake users, fake Stories, fake posts, fake engagement counts, or fake results.
+
+Prioritize actual functionality, official authorization, legal compliance, privacy, security, Android usability, and careful testing.
+
+THE GOAL: ONE MOTHERLAND APPLICATION FOR ITS OWN COMPLETE SOCIAL NETWORK, PHOTO AND VIDEO PUBLISHING, STORIES, EXTERNAL SOCIAL MEDIA, VIDEO, MESSAGING, AND LAWFUL BANGLADESH DIGITAL SERVICES — WITH NO UNNECESSARY DEPENDENCE ON OTHER APPS.
