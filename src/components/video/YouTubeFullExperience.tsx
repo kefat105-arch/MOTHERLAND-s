@@ -88,6 +88,7 @@ import {
 import { YouTubeShortsFeed } from './YouTubeShortsFeed';
 import { YouTubeCreateModal } from './YouTubeCreateModal';
 import { YouTubeAccountModal } from './YouTubeAccountModal';
+import { InstallAppButton } from '../common/InstallAppButton';
 
 export type YouTubeNavSection =
   | 'home'
@@ -545,8 +546,11 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
           </form>
         </div>
 
-        {/* Right: Desktop Create Action, Notifications, Account */}
+        {/* Right: Desktop Create Action, Install, Notifications, Account */}
         <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+          {/* Small Optional Install App Button */}
+          <InstallAppButton />
+
           {/* Desktop Create Action */}
           <button
             onClick={() => setCreateModalOpen(true)}

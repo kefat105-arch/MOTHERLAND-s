@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { MotherlandLogo } from './MotherlandLogo';
 import { YouTubeApiDiagnostic } from '../../services/youtubeService';
+import { InstallAppButton } from '../common/InstallAppButton';
 
 export type ActiveGlobalView =
   | 'motherland_home'
@@ -88,18 +89,18 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden md:inline">YouTube</span>
           </button>
 
-          {/* 3. TikTok Icon */}
+          {/* 3. Shorts Vertical Swipe Feed (Section 2 Requirement) */}
           <button
             onClick={() => onSelectView('tiktok')}
-            className={`p-2 rounded-xl transition-all flex items-center gap-1 text-xs font-semibold flex-shrink-0 ${
+            className={`p-2 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold flex-shrink-0 ${
               activeView === 'tiktok'
                 ? 'bg-cyan-500/30 text-cyan-300 border border-cyan-500/50 shadow-md shadow-cyan-950/40'
                 : 'text-slate-400 hover:text-cyan-400 hover:bg-white/5'
             }`}
-            title="Open TikTok Experience"
+            title="Open MOTHERLAND Shorts — 9:16 Vertical Swipe Feed"
           >
             <VideoIcon className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-cyan-400" />
-            <span className="hidden md:inline">TikTok</span>
+            <span className="hidden sm:inline font-bold">Shorts</span>
           </button>
 
           {/* 4. Facebook Icon */}
@@ -146,8 +147,11 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
 
-        {/* Top-Right Controls: Search, Messenger, Profile, Server, Specs, Device frame */}
+        {/* Top-Right Controls: Install, Search, Messenger, Profile, Server, Specs, Device frame */}
         <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
+          {/* Small Top-Right Install App Button (Section 1 requirement) */}
+          <InstallAppButton />
+
           {/* Search Toggle */}
           <button
             onClick={onToggleSearch}

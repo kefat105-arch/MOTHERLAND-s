@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { dbManager } from './src/server/database';
@@ -12,7 +13,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-app.use(express.json());
+const UPLOADS_DIR = path.resolve(__dirname, 'data/uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 function decodeEntities(str: string = ''): string {
   return str
@@ -491,6 +499,56 @@ app.post('/api/users/:id/follow', (req: Request, res: Response) => {
   if (!followerId) return res.status(400).json({ error: 'Missing followerId' });
   const result = dbManager.toggleFollow(followerId, targetUserId);
   return res.json({ success: true, ...result });
+});
+
+// 15. Real Media Upload (Image & Video persistence to local disk)
+app.post('/api/upload', (req: Request, res: Response) => {
+  try {
+    const { data, filename, type } = req.body;
+    if (!data) {
+      return res.status(400).json({ error: 'No data provided' });
+    }
+
+    if (typeof data === 'string' && data.startsWith('http')) {
+      return res.json({ url: data });
+    }
+
+    const matches = data.match(/^data:([A-Za-z0-9-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+      return res.status(400).json({ error: 'Invalid base64 data format' });
+    }
+
+    const mime = matches[1];
+    const base64Data = matches[2];
+    const ext = mime.split('/')[1]?.split('+')[0] || (type === 'video' ? 'mp4' : 'jpg');
+    const safeName = `media_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+    const filePath = path.join(UPLOADS_DIR, safeName);
+
+    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+    const fileUrl = `/uploads/${safeName}`;
+
+    return res.status(201).json({ url: fileUrl, filename: safeName, mime });
+  } catch (err: any) {
+    console.error('[Upload] Error saving media:', err);
+    return res.status(500).json({ error: 'Failed saving upload: ' + (err?.message || err) });
+  }
+});
+
+// 16. Record Genuine View Count
+app.post('/api/posts/:id/view', (req: Request, res: Response) => {
+  const postId = req.params.id;
+  const result = dbManager.recordView(postId);
+  return res.json({ success: true, ...result });
+});
+
+// 17. Ensure Video Record in Database
+app.post('/api/videos/ensure', (req: Request, res: Response) => {
+  const videoData = req.body;
+  if (!videoData || !videoData.id) {
+    return res.status(400).json({ error: 'Missing video data' });
+  }
+  const post = dbManager.ensurePostForVideo(videoData);
+  return res.json({ success: true, post });
 });
 
 // Health check endpoint

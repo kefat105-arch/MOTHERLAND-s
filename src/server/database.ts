@@ -102,6 +102,7 @@ export interface ServerPost {
   reactions: Record<string, string[]>; // reactionType -> array of userIds
   sharesCount: number; // Actual tracked shares
   commentsCount: number; // Actual count of saved comments + replies
+  viewsCount?: number; // Actual tracked view count
 }
 
 interface DatabaseSchema {
@@ -405,19 +406,82 @@ class DatabaseManager {
     return this.db.posts.find((p) => p.id === postId) || null;
   }
 
-  public createPost(data: Omit<ServerPost, 'id' | 'likes' | 'reactions' | 'sharesCount' | 'commentsCount'>): ServerPost {
+  public createPost(data: Omit<ServerPost, 'id' | 'likes' | 'reactions' | 'sharesCount' | 'commentsCount'> & { id?: string }): ServerPost {
     const newPost: ServerPost = {
       ...data,
-      id: `post_${Date.now()}`,
+      id: data.id || `post_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       likes: [],
       reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] },
       sharesCount: 0,
       commentsCount: 0,
+      viewsCount: 0,
     };
 
+    // Remove any existing post with same ID to avoid duplicates
+    this.db.posts = this.db.posts.filter((p) => p.id !== newPost.id);
     this.db.posts.unshift(newPost);
     this.persist();
     return newPost;
+  }
+
+  public recordView(postId: string): { viewsCount: number } {
+    const post = this.db.posts.find((p) => p.id === postId);
+    if (post) {
+      post.viewsCount = (post.viewsCount || 0) + 1;
+      this.persist();
+      return { viewsCount: post.viewsCount };
+    }
+    return { viewsCount: 1 };
+  }
+
+  public ensurePostForVideo(video: {
+    id: string;
+    title: string;
+    creatorName?: string;
+    thumbnailUrl?: string;
+    originalVideoUrl?: string;
+    platform?: string;
+    duration?: string;
+  }): ServerPost {
+    let post = this.db.posts.find((p) => p.id === video.id || (video.originalVideoUrl && p.originalVideoUrl === video.originalVideoUrl));
+    if (!post) {
+      post = {
+        id: video.id,
+        authorId: 'usr_creator_' + (video.creatorName || 'creator').replace(/\s+/g, '_').toLowerCase(),
+        author: {
+          id: 'usr_creator_' + (video.creatorName || 'creator').replace(/\s+/g, '_').toLowerCase(),
+          name: video.creatorName || 'Creator',
+          handle: '@' + (video.creatorName || 'creator').replace(/\s+/g, '').toLowerCase(),
+          avatar: video.thumbnailUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80',
+          isVerified: true,
+          platform: (video.platform as any) || 'youtube',
+        },
+        content: video.title,
+        media: [
+          {
+            id: 'med_' + video.id,
+            type: 'video',
+            url: video.originalVideoUrl || '',
+            thumbnailUrl: video.thumbnailUrl,
+            aspectRatio: '16:9',
+            duration: video.duration,
+          },
+        ],
+        createdAt: 'Recently',
+        privacy: 'public',
+        platform: (video.platform as any) || 'youtube',
+        youtubeVideoId: video.id.startsWith('yt_') ? video.id.replace('yt_', '') : video.id,
+        originalVideoUrl: video.originalVideoUrl,
+        likes: [],
+        reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] },
+        sharesCount: 0,
+        commentsCount: 0,
+        viewsCount: 1,
+      };
+      this.db.posts.push(post);
+      this.persist();
+    }
+    return post;
   }
 
   public deletePost(postId: string, userId: string): boolean {
