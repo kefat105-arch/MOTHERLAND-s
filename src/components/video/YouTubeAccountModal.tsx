@@ -38,7 +38,7 @@ import {
   GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_SCOPES,
 } from '../../services/youtubeAuthService';
-import { getStoredCurrentUser, saveCurrentUser } from '../../services/socialService';
+import { api } from '../../api';
 
 interface YouTubeAccountModalProps {
   isOpen: boolean;
@@ -104,14 +104,13 @@ export const YouTubeAccountModal: React.FC<YouTubeAccountModalProps> = ({
               saveStoredGoogleAuth(authUser);
 
               // Update MOTHERLAND user profile with Google identity if logged in
-              const currentProfile = getStoredCurrentUser();
-              if (currentProfile) {
-                saveCurrentUser({
-                  ...currentProfile,
-                  name: userInfo.name || currentProfile.name,
-                  avatar: authUser.avatarUrl || currentProfile.avatar,
-                  handle: `@${(userInfo.email.split('@')[0] || userInfo.name).toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
-                });
+              if (api.getToken()) {
+                api
+                  .updateProfile({
+                    displayName: userInfo.name,
+                    avatar: authUser.avatarUrl,
+                  })
+                  .catch(() => {});
               }
 
               // Synchronize with backend database
@@ -173,14 +172,13 @@ export const YouTubeAccountModal: React.FC<YouTubeAccountModalProps> = ({
 
       saveStoredGoogleAuth(authUser);
 
-      const currentProfile = getStoredCurrentUser();
-      if (currentProfile) {
-        saveCurrentUser({
-          ...currentProfile,
-          name: userInfo.name || currentProfile.name,
-          avatar: authUser.avatarUrl || currentProfile.avatar,
-          handle: `@${(userInfo.email.split('@')[0] || userInfo.name).toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
-        });
+      if (api.getToken()) {
+        api
+          .updateProfile({
+            displayName: userInfo.name,
+            avatar: authUser.avatarUrl,
+          })
+          .catch(() => {});
       }
 
       await syncGoogleUserWithBackend(token, authUser);
@@ -196,9 +194,15 @@ export const YouTubeAccountModal: React.FC<YouTubeAccountModalProps> = ({
 
   const handleDisconnectYouTubeOnly = async () => {
     if (!currentAuth) return;
-    const currentProfile = getStoredCurrentUser();
-    if (currentProfile) {
-      await disconnectYouTubeChannel(currentProfile.id);
+    if (api.getToken()) {
+      try {
+        const res = await api.getCurrentUser();
+        if (res.user?.id) {
+          await disconnectYouTubeChannel(res.user.id);
+        }
+      } catch {
+        // ignore if unavailable
+      }
     }
 
     const updated: GoogleAuthUser = {
@@ -224,7 +228,7 @@ export const YouTubeAccountModal: React.FC<YouTubeAccountModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
       <div className="w-full max-w-md bg-[#0c1220] border border-white/10 rounded-3xl p-5 sm:p-6 space-y-5 shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-white/10">

@@ -1,4 +1,4 @@
-import { PostReactionType } from '../types/social';
+import type { ReactionType as PostReactionType } from '../types';
 
 export type FireEmojiCategory =
   | 'Expressions'

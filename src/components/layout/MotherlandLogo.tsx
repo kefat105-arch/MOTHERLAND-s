@@ -118,15 +118,15 @@ export const MotherlandLogo: React.FC<MotherlandLogoProps> = ({
       {showText && (
         <div className="flex flex-col text-left leading-none">
           <div className="flex items-center gap-1.5">
-            <span className="font-extrabold text-sm sm:text-base tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-100 to-slate-300">
+            <span className="font-extrabold text-base sm:text-lg tracking-wider text-[var(--text-primary)]">
               MOTHERLAND
             </span>
-            <span className="hidden md:inline-flex text-[9px] font-mono uppercase px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
-              SUPER APP
+            <span className="hidden md:inline-flex text-[9px] font-mono uppercase px-1.5 py-0.5 rounded-full bg-[var(--accent-primary-soft)] text-[var(--accent-primary)] font-bold border border-[var(--accent-primary-border)]">
+              BD
             </span>
           </div>
           {subtitle && (
-            <span className="text-[10px] text-emerald-400 font-semibold mt-0.5">
+            <span className="text-[10px] text-[var(--accent-primary)] font-semibold mt-0.5">
               {subtitle}
             </span>
           )}

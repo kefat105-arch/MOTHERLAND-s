@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#050811"/>
+      <stop offset="50%" stop-color="#0a1020"/>
+      <stop offset="100%" stop-color="#04060c"/>
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="50%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#06b6d4" stop-opacity="0.2"/>
+    </linearGradient>
+    <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  
+  <!-- Outer Tech Hexagon / Halo -->
+  <circle cx="256" cy="256" r="210" fill="none" stroke="#10b981" stroke-opacity="0.15" stroke-width="2" stroke-dasharray="12 8"/>
+  <circle cx="256" cy="256" r="175" fill="none" stroke="#06b6d4" stroke-opacity="0.2" stroke-width="1.5"/>
+
+  <!-- Glowing Shield Base -->
+  <g filter="url(#neonGlow)">
+    <!-- Outer Shield Border -->
+    <path d="M256 70 L395 120 C395 265 335 375 256 430 C177 375 117 265 117 120 Z" 
+          fill="#0c1322" 
+          stroke="url(#shieldGrad)" 
+          stroke-width="14" 
+          stroke-linejoin="round"/>
+    
+    <!-- Inner Cyber Core Shield -->
+    <path d="M256 105 L365 145 C365 260 315 350 256 395 C197 350 147 260 147 145 Z" 
+          fill="url(#bgGrad)" 
+          stroke="#10b981" 
+          stroke-opacity="0.5" 
+          stroke-width="4" 
+          stroke-linejoin="round"/>
+
+    <!-- Central Tech Emblem: The "M" Sovereign Crest -->
+    <path d="M200 280 L200 180 L256 240 L312 180 L312 280" 
+          fill="none" 
+          stroke="url(#shieldGrad)" 
+          stroke-width="16" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+
+    <!-- Central Energy Star / Core Pulse -->
+    <circle cx="256" cy="295" r="14" fill="#34d399" filter="url(#neonGlow)"/>
+    <circle cx="256" cy="295" r="7" fill="#ffffff"/>
+
+    <!-- Base Tech Chevron Accent -->
+    <path d="M225 335 L256 360 L287 335" 
+          fill="none" 
+          stroke="#06b6d4" 
+          stroke-width="6" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+  </g>
+</svg>

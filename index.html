@@ -1,30 +1,36 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Motherland — Universal Video Super App & Messenger Hub</title>
-    <meta name="description" content="Universal multi-platform video super app and messenger hub unifying YouTube, TikTok, Instagram, and Facebook in one premium mobile social experience." />
-    <meta property="og:title" content="Motherland — Universal Video Super App & Messenger Hub" />
-    <meta property="og:description" content="Universal multi-platform video super app and messenger hub unifying YouTube, TikTok, Instagram, and Facebook in one premium mobile social experience." />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MOTHERLAND — Social Media Super App</title>
+    <meta name="description" content="MOTHERLAND — Premium Next-Generation Social Media Super App featuring unified feeds, vertical shorts, 16:9 cinema video, stories, direct messaging, and YouTube Data API v3 integration." />
+    <meta property="og:title" content="MOTHERLAND — Social Media Super App" />
+    <meta property="og:description" content="MOTHERLAND — Premium Next-Generation Social Media Super App featuring unified feeds, vertical shorts, 16:9 cinema video, stories, direct messaging, and YouTube Data API v3 integration." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <!-- PWA & Mobile Web App Meta -->
-    <meta name="theme-color" content="#006a4e" />
+    <meta name="theme-color" content="#13161C" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="MOTHERLAND" />
-    <link rel="manifest" href="/manifest.json" />
-    <link rel="icon" type="image/svg+xml" href="/assets/icon-192.svg" />
-    <link rel="apple-touch-icon" href="/assets/icon-192.svg" />
-
-    <!-- Official Google Identity Services SDK for Real Google & YouTube OAuth -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+      // Gracefully handle Vite HMR WebSocket connection closed warning in iframe dev previews
+      window.addEventListener('unhandledrejection', function(e) {
+        if (e.reason && (typeof e.reason.message === 'string' && e.reason.message.includes('WebSocket closed') || String(e.reason).includes('WebSocket closed'))) {
+          e.preventDefault();
+        }
+      });
+    </script>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
   </head>
-  <body class="bg-[#080B11] text-slate-100 antialiased selection:bg-emerald-500/30 selection:text-emerald-200">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

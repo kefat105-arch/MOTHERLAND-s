@@ -1,94 +1,203 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ============================================================================
+ * MOTHERLAND GLASSMORPHISM DESIGN SYSTEM (LIGHT & DARK THEMES)
+ * Soft Translucent Surfaces · Specular Highlights · Deep Atmospheric Contrast
+ * ============================================================================ */
+:root {
+  --bg-canvas: #F2F4F8;
+  --bg-surface: rgba(255, 255, 255, 0.74);
+  --bg-surface-solid: #FFFFFF;
+  --bg-surface-alt: rgba(235, 240, 248, 0.72);
+  --bg-elevated: rgba(255, 255, 255, 0.90);
+  --bg-glass: rgba(255, 255, 255, 0.72);
+
+  --text-primary: #111827;
+  --text-secondary: #4B5565;
+  --text-muted: #6B7280;
+
+  --border-subtle: rgba(15, 23, 42, 0.09);
+  --border-strong: rgba(15, 23, 42, 0.17);
+  --glass-highlight: rgba(255, 255, 255, 0.85);
+  --glass-shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
+
+  --accent-primary: #1F6E6C;
+  --accent-primary-hover: #175755;
+  --accent-primary-soft: rgba(31, 110, 108, 0.12);
+  --accent-primary-border: rgba(31, 110, 108, 0.28);
+  --accent-primary-contrast: #F9FAFB;
+
+  --accent-gold: #A7823F;
+  --accent-gold-soft: rgba(167, 130, 63, 0.12);
+  --accent-gold-border: rgba(167, 130, 63, 0.30);
+
+  --accent-royal: #1B3358;
+  --danger: #C53B3B;
+  --danger-soft: rgba(197, 59, 59, 0.11);
+
+  --wash-teal: rgba(31, 110, 108, 0.09);
+  --wash-gold: rgba(167, 130, 63, 0.075);
+  --wash-royal: rgba(30, 64, 120, 0.065);
+
+  --ml-bg: var(--bg-canvas);
+  --ml-surface: var(--bg-surface-solid);
+  --ml-surface-soft: rgba(235, 240, 248, 0.85);
+  --ml-text-primary: var(--text-primary);
+  --ml-text-secondary: var(--text-secondary);
+  --ml-text-muted: var(--text-muted);
+  --ml-border: var(--border-subtle);
+  --ml-accent-teal: var(--accent-primary);
+  --ml-accent-gold: var(--accent-gold);
+}
+
+html.dark {
+  --bg-canvas: #13161C;
+  --bg-surface: rgba(26, 30, 40, 0.74);
+  --bg-surface-solid: #1B202B;
+  --bg-surface-alt: rgba(36, 42, 56, 0.70);
+  --bg-elevated: rgba(32, 37, 49, 0.90);
+  --bg-glass: rgba(22, 26, 35, 0.76);
+
+  --text-primary: #F3F5F8;
+  --text-secondary: #A4B0C2;
+  --text-muted: #768399;
+
+  --border-subtle: rgba(255, 255, 255, 0.11);
+  --border-strong: rgba(255, 255, 255, 0.20);
+  --glass-highlight: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+
+  --accent-primary: #2B8A86;
+  --accent-primary-hover: #359E9A;
+  --accent-primary-soft: rgba(43, 138, 134, 0.18);
+  --accent-primary-border: rgba(43, 138, 134, 0.38);
+  --accent-primary-contrast: #F8FAFC;
+
+  --accent-gold: #D0AF72;
+  --accent-gold-soft: rgba(208, 175, 114, 0.15);
+  --accent-gold-border: rgba(208, 175, 114, 0.34);
+
+  --accent-royal: #213C66;
+  --danger: #E05858;
+  --danger-soft: rgba(224, 88, 88, 0.15);
+
+  --wash-teal: rgba(43, 138, 134, 0.11);
+  --wash-gold: rgba(208, 175, 114, 0.07);
+  --wash-royal: rgba(45, 76, 128, 0.16);
+
+  --ml-bg: var(--bg-canvas);
+  --ml-surface: var(--bg-surface-solid);
+  --ml-surface-soft: rgba(36, 42, 56, 0.85);
+  --ml-text-primary: var(--text-primary);
+  --ml-text-secondary: var(--text-secondary);
+  --ml-text-muted: var(--text-muted);
+  --ml-border: var(--border-subtle);
+  --ml-accent-teal: var(--accent-primary);
+  --ml-accent-gold: var(--accent-gold);
+}
 
 @layer base {
-  :root {
-    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
+  html {
+    overscroll-behavior-y: contain;
+    -webkit-tap-highlight-color: transparent;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
   }
 
   body {
-    font-family: var(--font-sans);
-    background-color: #07090e;
-    color: #e2e8f0;
-    overflow-x: hidden;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
   }
 }
 
-/* Custom scrollbar */
+/* Soft Atmospheric Canvas Background */
+.ml-canvas-bg {
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(ellipse 85% 55% at 10% 0%, var(--wash-teal), transparent 68%),
+    radial-gradient(ellipse 75% 50% at 92% 8%, var(--wash-gold), transparent 64%),
+    radial-gradient(ellipse 90% 60% at 50% 100%, var(--wash-royal), transparent 72%);
+  background-attachment: fixed;
+}
+
+/* Reusable Frosted Glass Panels */
+.ml-glass {
+  background: var(--bg-surface);
+  backdrop-filter: blur(18px) saturate(145%);
+  -webkit-backdrop-filter: blur(18px) saturate(145%);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 0 var(--glass-highlight);
+}
+
+.ml-glass-elevated {
+  background: var(--bg-elevated);
+  backdrop-filter: blur(22px) saturate(155%);
+  -webkit-backdrop-filter: blur(22px) saturate(155%);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 0 var(--glass-highlight);
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .touch-pan-x {
+    touch-action: pan-x;
+  }
+  .touch-pan-y {
+    touch-action: pan-y;
+  }
+}
+
+/* Theme-aware Scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #0b0f19;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: var(--border-strong);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: var(--accent-primary);
 }
 
-/* Hide scrollbar for clean mobile feeds */
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-/* Glassmorphism surfaces */
-.glass-panel {
-  background: rgba(14, 18, 27, 0.78);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.glass-pill {
-  background: rgba(22, 29, 44, 0.65);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-/* Platform brand glow effects */
-.glow-youtube {
-  box-shadow: 0 0 25px -5px rgba(239, 68, 68, 0.35);
-}
-.glow-tiktok {
-  box-shadow: 0 0 25px -5px rgba(34, 211, 238, 0.35);
-}
-.glow-instagram {
-  box-shadow: 0 0 25px -5px rgba(236, 72, 153, 0.35);
-}
-.glow-facebook {
-  box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.35);
-}
-.glow-motherland {
-  box-shadow: 0 0 30px -5px rgba(16, 185, 129, 0.35);
-}
-
+/* Fire Emoji Micro-Animations */
 @keyframes fire-pop {
-  0%, 100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-2px) scale(1.06); }
+  0%, 100% {
+    transform: translateY(0) scale(1);
+  }
+  45% {
+    transform: translateY(-2px) scale(1.08);
+  }
 }
 
 @keyframes fire-wiggle {
-  0%, 100% { transform: rotate(0deg) scale(1); }
-  25% { transform: rotate(-5deg) scale(1.05); }
-  75% { transform: rotate(5deg) scale(1.05); }
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-6deg);
+  }
+  75% {
+    transform: rotate(6deg);
+  }
 }
 
 .animate-fire-pop {
-  animation: fire-pop 2.2s ease-in-out infinite;
+  animation: fire-pop 1.8s ease-in-out infinite;
 }
 
 .animate-fire-wiggle {
-  animation: fire-wiggle 1.8s ease-in-out infinite;
+  animation: fire-wiggle 1.4s ease-in-out infinite;
 }
 

@@ -1,0 +1,779 @@
+{
+  "users": [
+    {
+      "id": "usr_kefat_01",
+      "username": "kefatahmed",
+      "email": "kefat@motherland.social",
+      "passwordHash": "889ad439681f66b7472646e94b9b5b63049dd0ad013290788a219048724c2a2d21466e9725634de5eacb0f4b0e0c1e008e7d1fec4df244896c2eb4c124f58c9b",
+      "passwordSalt": "792fc52a980a63a589bf1527ac57ef7b",
+      "displayName": "Kefat Ahmed",
+      "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+      "coverImage": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Founder & Systems Architect @ MOTHERLAND. Architecting next-generation sovereign social infrastructure.",
+      "website": "https://motherland.social",
+      "location": "Dhaka, Bangladesh",
+      "work": "Founder & Lead Systems Architect @ MOTHERLAND",
+      "education": "Computer Science & Distributed Systems",
+      "phoneNumber": "+8801700000001",
+      "dateOfBirth": "1998-05-12",
+      "gender": "Male",
+      "address": "Gulshan-2, Dhaka, Bangladesh",
+      "joinedDate": "November 2026",
+      "isVerified": true,
+      "role": "owner",
+      "isEmailVerified": true,
+      "isPhoneVerified": true,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "socialLinks": {
+        "youtube": "https://youtube.com/@motherland-social",
+        "facebook": "https://facebook.com/motherland",
+        "instagram": "https://instagram.com/motherland"
+      },
+      "createdAt": "2026-10-13T06:08:54.689Z",
+      "updatedAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "id": "usr_nadia_02",
+      "username": "nadia_creative",
+      "email": "nadia@motherland.social",
+      "passwordHash": "14cb4cc6d6b78475a482208432a8f285d955f52a00dfc8f79adb65a44dcfcbdbcf17d236d68d6b2bfed0938001c94fcedb598aca05c5f400073f3b1b5444b1ea",
+      "passwordSalt": "69c420d7147d5cff3be0505a484d7e8d",
+      "displayName": "Nadia Hossain",
+      "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
+      "coverImage": "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Visual story director & cinema colorist. Capturing the untold beauty of South Asia 🎨📽️",
+      "website": "https://nadiahossain.studio",
+      "location": "Chittagong, Bangladesh",
+      "work": "Independent Film Director",
+      "education": "Dhaka University Fine Arts",
+      "phoneNumber": "+8801700000002",
+      "dateOfBirth": "2000-08-20",
+      "gender": "Female",
+      "joinedDate": "October 2026",
+      "isVerified": true,
+      "role": "user",
+      "isEmailVerified": true,
+      "isPhoneVerified": true,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": false
+      },
+      "createdAt": "2026-10-18T06:08:54.689Z",
+      "updatedAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "id": "usr_tariq_03",
+      "username": "tariq_nature",
+      "email": "tariq@motherland.social",
+      "passwordHash": "36495d895a5adf07b232dbde255d0a1f7c84bce5f6312e5cd4ee7fec54dd6f27f946b286f6b52c6c06b24547894feb73e98a32476b40be0f1a44d1a315793516",
+      "passwordSalt": "2c20246ed37ebd307f2527670ba80bbb",
+      "displayName": "Tariqul Islam",
+      "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
+      "coverImage": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Wildlife & drone cinematographer. Highlighting Sundarbans & Cox’s Bazar marine life 🌿🐅",
+      "location": "Khulna, Bangladesh",
+      "work": "National Geo Explorer Contributor",
+      "phoneNumber": "+8801700000003",
+      "dateOfBirth": "1996-03-15",
+      "gender": "Male",
+      "joinedDate": "September 2026",
+      "isVerified": true,
+      "role": "user",
+      "isEmailVerified": true,
+      "isPhoneVerified": true,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "createdAt": "2026-10-23T06:08:54.689Z",
+      "updatedAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "id": "usr_ayesha_04",
+      "username": "ayesha_tech",
+      "email": "ayesha@motherland.social",
+      "passwordHash": "8b7e8734b2c9d85829fa5a0e72f039adafe3b7ee10bb535aef4e4f3f721f278c453fcc36cc77a27be3b9b232d234cb391803b74d43f63a3bf06448aeda987775",
+      "passwordSalt": "fa1c01e4a07cd577e24bbebf6889e618",
+      "displayName": "Ayesha Rahman",
+      "avatar": "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80",
+      "coverImage": "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1600&auto=format&fit=crop&q=80",
+      "bio": "AI Engineer & Web3 builder. Writing tutorials on real-time streaming and decentralized social graphs 💻⚡",
+      "location": "Sylhet, Bangladesh",
+      "work": "Senior Distributed Engineer",
+      "phoneNumber": "+8801700000004",
+      "dateOfBirth": "1999-11-04",
+      "gender": "Female",
+      "joinedDate": "August 2026",
+      "isVerified": true,
+      "role": "user",
+      "isEmailVerified": true,
+      "isPhoneVerified": true,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "createdAt": "2026-10-28T06:08:54.689Z",
+      "updatedAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "id": "usr_1794463858734_ca1d",
+      "username": "alphatest99",
+      "email": "alpha99@motherland.app",
+      "passwordHash": "b3b949cb0b226286fa867718d48fb5dcf4d07ae56e5eb618a445d6310526504df1a8ae7d9524f1879fdff6d8194e1b62e4c60741ccb2f1ef922fa3c021465907",
+      "passwordSalt": "e982b29e819fea393189d8f1172fbb47",
+      "displayName": "Alpha Tester",
+      "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=alphatest99",
+      "coverImage": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Proud citizen of MOTHERLAND.",
+      "dateOfBirth": "1995-04-12",
+      "joinedDate": "November 2026",
+      "isVerified": false,
+      "role": "user",
+      "isEmailVerified": true,
+      "isPhoneVerified": false,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "createdAt": "2026-11-12T06:10:58.734Z",
+      "updatedAt": "2026-11-12T06:10:58.734Z"
+    },
+    {
+      "id": "usr_1794463874663_x562",
+      "username": "alpha21363",
+      "email": "alpha21363@motherland.app",
+      "passwordHash": "df8f8ffbebbb2af264544867a2b4ad4f552fe13ecfb8be9178ba0687125f1450f70e7c1d3529131d27f7eebd8d8c2658af9622d01da14c85382d8007c363805d",
+      "passwordSalt": "bc795873d53027e5633707e010ee217d",
+      "displayName": "Alpha User 21363",
+      "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=alpha21363",
+      "coverImage": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Proud citizen of MOTHERLAND.",
+      "dateOfBirth": "1995-04-12",
+      "joinedDate": "November 2026",
+      "isVerified": false,
+      "role": "user",
+      "isEmailVerified": true,
+      "isPhoneVerified": false,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "createdAt": "2026-11-12T06:11:14.663Z",
+      "updatedAt": "2026-11-12T06:11:14.663Z"
+    },
+    {
+      "id": "usr_1794463874674_7hff",
+      "username": "beta21363",
+      "email": "beta21363@motherland.app",
+      "passwordHash": "e5a5f574eb3fa06d76e28a6c287a132ef086675d40792fa18b1bf4e592e513958757c9b7497f24eb0a15f9cc6eaa689199397b11ffcb8bee2bc7dd0b77a07272",
+      "passwordSalt": "db72daaff7b785f794bb4ebb7d72c09b",
+      "displayName": "Beta User 21363",
+      "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=beta21363",
+      "coverImage": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Proud citizen of MOTHERLAND.",
+      "dateOfBirth": "1998-09-20",
+      "joinedDate": "November 2026",
+      "isVerified": false,
+      "role": "user",
+      "isEmailVerified": true,
+      "isPhoneVerified": false,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "createdAt": "2026-11-12T06:11:14.674Z",
+      "updatedAt": "2026-11-12T06:11:14.674Z"
+    },
+    {
+      "id": "usr_1794463929027_7q47",
+      "username": "alpha29302",
+      "email": "alpha29302@motherland.app",
+      "passwordHash": "81a0a729d4a868eb694c161b520b440d5ca99dab3ed1033e293913a735226fa45cc9895105f75c32ac43f179a923198a30fe0fe3f61e417de6b355f12913efa0",
+      "passwordSalt": "55e03f88bf96f889664dae21bad1818d",
+      "displayName": "Alpha User 29302",
+      "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=alpha29302",
+      "coverImage": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Proud citizen of MOTHERLAND.",
+      "dateOfBirth": "1995-04-12",
+      "joinedDate": "November 2026",
+      "isVerified": true,
+      "role": "owner",
+      "isEmailVerified": true,
+      "isPhoneVerified": false,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "createdAt": "2026-11-12T06:12:09.027Z",
+      "updatedAt": "2026-11-12T06:12:09.089Z"
+    },
+    {
+      "id": "usr_1794463929044_f6s7",
+      "username": "beta29302",
+      "email": "beta29302@motherland.app",
+      "passwordHash": "076a4d8ef9c11879d1160d711a5179307bb2f240ce831f88a88396b90dc85103fdcba453d20b71d6bd4f8cfa61dbbdff7834742000afe04f0d2bbf185ab62e04",
+      "passwordSalt": "b8ded30369258d7b505beebc77dec50c",
+      "displayName": "Beta User 29302",
+      "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=beta29302",
+      "coverImage": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80",
+      "bio": "Proud citizen of MOTHERLAND.",
+      "dateOfBirth": "1998-09-20",
+      "joinedDate": "November 2026",
+      "isVerified": false,
+      "role": "user",
+      "isEmailVerified": true,
+      "isPhoneVerified": false,
+      "twoFactorEnabled": false,
+      "isPrivate": false,
+      "privacy": {
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "allowDirectMessages": "everyone",
+        "showContactInfo": true
+      },
+      "createdAt": "2026-11-12T06:12:09.044Z",
+      "updatedAt": "2026-11-12T06:12:09.044Z"
+    }
+  ],
+  "sessions": [
+    {
+      "token": "ml_4a14acfea3fe20fa97b23f57058c797554bba2895d58e52d56ef2aa16bd392e1",
+      "userId": "usr_1794463858734_ca1d",
+      "createdAt": "2026-11-12T06:10:58.735Z",
+      "expiresAt": "2026-12-12T06:10:58.735Z"
+    },
+    {
+      "token": "ml_82900808d92421cb1c8ecab2b5a65a2bb51ba54b68838927235ece402716693d",
+      "userId": "usr_1794463874663_x562",
+      "createdAt": "2026-11-12T06:11:14.664Z",
+      "expiresAt": "2026-12-12T06:11:14.664Z"
+    },
+    {
+      "token": "ml_4270863fbc7a2987715780f9456df5b8d4d1fbacff1b8f7db9dd39a7648eb09d",
+      "userId": "usr_1794463874674_7hff",
+      "createdAt": "2026-11-12T06:11:14.675Z",
+      "expiresAt": "2026-12-12T06:11:14.675Z"
+    },
+    {
+      "token": "ml_20ae7620095f9051d49017c2cc7be4a893049ad1f09019ec9924e8243e66a1df",
+      "userId": "usr_1794463929027_7q47",
+      "createdAt": "2026-11-12T06:12:09.028Z",
+      "expiresAt": "2026-12-12T06:12:09.028Z"
+    },
+    {
+      "token": "ml_04b999a9436c62d1458cb51f285718afe3ad78bc5ff8da0ffcdaca5c00c2e4cb",
+      "userId": "usr_1794463929044_f6s7",
+      "createdAt": "2026-11-12T06:12:09.044Z",
+      "expiresAt": "2026-12-12T06:12:09.044Z"
+    },
+    {
+      "token": "ml_6841ec9cc4bc23b9e4efc81bd8905d61d737ff13f5edee642517586c5752ee32",
+      "userId": "usr_1794463929027_7q47",
+      "createdAt": "2026-11-12T06:12:09.089Z",
+      "expiresAt": "2026-12-12T06:12:09.089Z"
+    }
+  ],
+  "posts": [
+    {
+      "id": "post_1794463929054_wexo",
+      "source": "motherland",
+      "author": {
+        "id": "usr_1794463929027_7q47",
+        "username": "alpha29302",
+        "displayName": "Alpha User 29302",
+        "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=alpha29302",
+        "isVerified": false
+      },
+      "content": "Testing reaction isolation on post 29302",
+      "mediaType": "none",
+      "mediaAspectRatio": "16:9",
+      "hashtags": [],
+      "audience": "public",
+      "createdAt": "2026-11-12T06:12:09.054Z",
+      "stats": {
+        "likes": 0,
+        "comments": 0,
+        "shares": 0,
+        "views": 1
+      }
+    },
+    {
+      "id": "post_1794463874678_ocra",
+      "source": "motherland",
+      "author": {
+        "id": "usr_1794463874663_x562",
+        "username": "alpha21363",
+        "displayName": "Alpha User 21363",
+        "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=alpha21363",
+        "isVerified": false
+      },
+      "content": "Testing reaction isolation on post 21363",
+      "mediaType": "none",
+      "mediaAspectRatio": "16:9",
+      "hashtags": [],
+      "audience": "public",
+      "createdAt": "2026-11-12T06:11:14.678Z",
+      "stats": {
+        "likes": 0,
+        "comments": 0,
+        "shares": 0,
+        "views": 1
+      }
+    },
+    {
+      "id": "post_01",
+      "source": "motherland",
+      "author": {
+        "id": "usr_kefat_01",
+        "username": "kefatahmed",
+        "displayName": "Kefat Ahmed",
+        "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+        "isVerified": true
+      },
+      "content": "Welcome to MOTHERLAND! 🇧🇩✨ We are officially initializing the next-generation social ecosystem: unified feed, vertical 9:16 Shorts, 16:9 Cinema Long Video, real-time messaging, and seamless YouTube Data API v3 integration. Built for creators, communities, and uncompromised digital sovereignty.",
+      "mediaType": "image",
+      "mediaUrl": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1200&auto=format&fit=crop&q=80",
+      "mediaAspectRatio": "16:9",
+      "hashtags": [
+        "Motherland",
+        "NextGenSocial",
+        "Bangladesh",
+        "Innovation"
+      ],
+      "audience": "public",
+      "createdAt": "2026-11-12T05:33:54.689Z",
+      "stats": {
+        "likes": 3,
+        "comments": 1,
+        "shares": 26,
+        "views": 1890
+      }
+    },
+    {
+      "id": "post_02",
+      "source": "motherland",
+      "author": {
+        "id": "usr_nadia_02",
+        "username": "nadia_creative",
+        "displayName": "Nadia Hossain",
+        "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
+        "isVerified": true
+      },
+      "content": "Early morning cinematic frames captured around Jaflong stone beds and tea gardens. Golden hour light hitting the river rocks creates this breathtaking natural emerald grading. What should be our next location? 🌿🎥",
+      "mediaType": "image",
+      "mediaUrl": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=1200&auto=format&fit=crop&q=80",
+      "mediaAspectRatio": "16:9",
+      "hashtags": [
+        "Jaflong",
+        "Sylhet",
+        "Cinematography",
+        "Nature"
+      ],
+      "audience": "public",
+      "createdAt": "2026-11-12T03:08:54.689Z",
+      "stats": {
+        "likes": 2,
+        "comments": 0,
+        "shares": 12,
+        "views": 940
+      }
+    },
+    {
+      "id": "post_03",
+      "source": "motherland",
+      "author": {
+        "id": "usr_tariq_03",
+        "username": "tariq_nature",
+        "displayName": "Tariqul Islam",
+        "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
+        "isVerified": true
+      },
+      "content": "Sundarbans mangrove waterways at dawn. Spotted a herd of spotted deer by the canal bank. Respecting wildlife habitats with ultra-quiet long-lens optics. 🦌🌊",
+      "mediaType": "image",
+      "mediaUrl": "https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=1200&auto=format&fit=crop&q=80",
+      "mediaAspectRatio": "16:9",
+      "hashtags": [
+        "Sundarbans",
+        "Wildlife",
+        "Ecology",
+        "Biodiversity"
+      ],
+      "audience": "public",
+      "createdAt": "2026-11-11T23:08:54.689Z",
+      "stats": {
+        "likes": 1,
+        "comments": 0,
+        "shares": 8,
+        "views": 710
+      }
+    }
+  ],
+  "reactions": [
+    {
+      "postId": "post_01",
+      "userId": "usr_kefat_01",
+      "type": "love",
+      "createdAt": "2026-11-12T06:10:52.511Z"
+    },
+    {
+      "postId": "post_01",
+      "userId": "usr_nadia_02",
+      "type": "love",
+      "createdAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "postId": "post_01",
+      "userId": "usr_tariq_03",
+      "type": "like",
+      "createdAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "postId": "post_02",
+      "userId": "usr_kefat_01",
+      "type": "love",
+      "createdAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "postId": "post_02",
+      "userId": "usr_ayesha_04",
+      "type": "fire",
+      "createdAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "postId": "post_03",
+      "userId": "usr_nadia_02",
+      "type": "like",
+      "createdAt": "2026-11-12T06:08:54.689Z"
+    },
+    {
+      "postId": "post_1794463874678_ocra",
+      "userId": "usr_1794463874663_x562",
+      "type": "haha",
+      "createdAt": "2026-11-12T06:11:14.682Z"
+    },
+    {
+      "postId": "post_1794463874678_ocra",
+      "userId": "usr_1794463874674_7hff",
+      "type": "love",
+      "createdAt": "2026-11-12T06:11:14.686Z"
+    },
+    {
+      "postId": "post_1794463929054_wexo",
+      "userId": "usr_1794463929027_7q47",
+      "type": "haha",
+      "createdAt": "2026-11-12T06:12:09.072Z"
+    },
+    {
+      "postId": "post_1794463929054_wexo",
+      "userId": "usr_1794463929044_f6s7",
+      "type": "love",
+      "createdAt": "2026-11-12T06:12:09.076Z"
+    }
+  ],
+  "savedPosts": [],
+  "postComments": {
+    "post_01": [
+      {
+        "id": "cmt_seed_1",
+        "postId": "post_01",
+        "userId": "usr_nadia_02",
+        "userDisplayName": "Nadia Hossain",
+        "userUsername": "nadia_creative",
+        "userAvatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
+        "text": "Proud to see MOTHERLAND leading sovereign digital media in South Asia! 🇧🇩❤️",
+        "createdAt": "2026-11-12T05:48:54.690Z",
+        "likesCount": 2,
+        "isLiked": false
+      }
+    ]
+  },
+  "stories": [
+    {
+      "id": "story_01",
+      "userId": "usr_kefat_01",
+      "userDisplayName": "Kefat Ahmed",
+      "userUsername": "kefatahmed",
+      "userAvatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+      "isUserVerified": true,
+      "source": "motherland",
+      "mediaUrl": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80",
+      "mediaType": "image",
+      "caption": "Testing 24h ephemeral story nodes 🇧🇩⚡",
+      "createdAt": "2026-11-12T04:08:54.689Z",
+      "expiresAt": "2026-11-13T04:08:54.689Z",
+      "viewersCount": 420
+    },
+    {
+      "id": "story_02",
+      "userId": "usr_nadia_02",
+      "userDisplayName": "Nadia Hossain",
+      "userUsername": "nadia_creative",
+      "userAvatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
+      "isUserVerified": true,
+      "source": "motherland",
+      "mediaUrl": "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=800&auto=format&fit=crop&q=80",
+      "mediaType": "image",
+      "caption": "Grading fresh 4K footage for documentary 🎬✨",
+      "createdAt": "2026-11-12T04:08:54.689Z",
+      "expiresAt": "2026-11-13T03:08:54.690Z",
+      "viewersCount": 310
+    },
+    {
+      "id": "story_03",
+      "userId": "usr_tariq_03",
+      "userDisplayName": "Tariqul Islam",
+      "userUsername": "tariq_nature",
+      "userAvatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
+      "isUserVerified": true,
+      "source": "motherland",
+      "mediaUrl": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80",
+      "mediaType": "image",
+      "caption": "Sunset over Kaptai Lake waterways 🚤🌅",
+      "createdAt": "2026-11-12T02:08:54.690Z",
+      "expiresAt": "2026-11-13T01:08:54.690Z",
+      "viewersCount": 680
+    }
+  ],
+  "shortVideos": [
+    {
+      "id": "short_01",
+      "source": "motherland",
+      "videoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+      "thumbnailUrl": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=600&auto=format&fit=crop&q=80",
+      "title": "Breathtaking Sajek Clouds Floating",
+      "caption": "Early morning above the clouds in Sajek Valley. No filter needed for this natural wonder! ☁️✨",
+      "hashtags": [
+        "Sajek",
+        "MotherlandShorts",
+        "Nature",
+        "Travel"
+      ],
+      "creator": {
+        "id": "usr_nadia_02",
+        "name": "Nadia Hossain",
+        "username": "nadia_creative",
+        "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
+        "isVerified": true,
+        "isFollowing": true
+      },
+      "stats": {
+        "likes": 12400,
+        "comments": 630,
+        "shares": 1100,
+        "views": 89000
+      },
+      "createdAt": "2026-11-12T01:08:54.690Z"
+    },
+    {
+      "id": "short_02",
+      "source": "motherland",
+      "videoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+      "thumbnailUrl": "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=600&auto=format&fit=crop&q=80",
+      "title": "Golden Sunset at Inani Beach",
+      "caption": "Corals and golden waters along Inani Beach, Cox’s Bazar. Pure tranquility. 🌊🌅",
+      "hashtags": [
+        "InaniBeach",
+        "SunsetVibes",
+        "CoxsBazar",
+        "Shorts"
+      ],
+      "creator": {
+        "id": "usr_tariq_03",
+        "name": "Tariqul Islam",
+        "username": "tariq_nature",
+        "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
+        "isVerified": true,
+        "isFollowing": false
+      },
+      "stats": {
+        "likes": 8750,
+        "comments": 420,
+        "shares": 530,
+        "views": 64200
+      },
+      "createdAt": "2026-11-11T18:08:54.690Z"
+    }
+  ],
+  "longVideos": [
+    {
+      "id": "long_01",
+      "source": "motherland",
+      "videoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+      "thumbnailUrl": "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=1280&auto=format&fit=crop&q=80",
+      "title": "MOTHERLAND Systems Architecture — The Sovereign Digital Super App",
+      "description": "An in-depth presentation detailing MOTHERLAND’s multi-tenant architecture, persistent distributed ledger, seamless YouTube Data API integration, and high-performance video engine.",
+      "duration": "09:56",
+      "channel": {
+        "id": "usr_kefat_01",
+        "title": "Kefat Ahmed",
+        "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+        "subscriberCount": "18.4K",
+        "isVerified": true
+      },
+      "stats": {
+        "views": 45200,
+        "likes": 3820,
+        "comments": 290
+      },
+      "publishedAt": "2 days ago",
+      "tags": [
+        "Motherland",
+        "Architecture",
+        "WebEngineering",
+        "Keynote"
+      ]
+    }
+  ],
+  "friendships": [
+    {
+      "user1Id": "usr_kefat_01",
+      "user2Id": "usr_nadia_02",
+      "createdAt": "2026-11-12T06:08:54.690Z"
+    },
+    {
+      "user1Id": "usr_kefat_01",
+      "user2Id": "usr_tariq_03",
+      "createdAt": "2026-11-12T06:08:54.690Z"
+    }
+  ],
+  "friendRequests": [],
+  "follows": [
+    {
+      "followerId": "usr_kefat_01",
+      "followingId": "usr_nadia_02",
+      "createdAt": "2026-11-12T06:08:54.690Z"
+    },
+    {
+      "followerId": "usr_kefat_01",
+      "followingId": "usr_tariq_03",
+      "createdAt": "2026-11-12T06:08:54.690Z"
+    },
+    {
+      "followerId": "usr_nadia_02",
+      "followingId": "usr_kefat_01",
+      "createdAt": "2026-11-12T06:08:54.690Z"
+    },
+    {
+      "followerId": "usr_tariq_03",
+      "followingId": "usr_kefat_01",
+      "createdAt": "2026-11-12T06:08:54.690Z"
+    },
+    {
+      "followerId": "usr_ayesha_04",
+      "followingId": "usr_kefat_01",
+      "createdAt": "2026-11-12T06:08:54.690Z"
+    }
+  ],
+  "blocks": [],
+  "notifications": [
+    {
+      "id": "notif_1794463929076_hd5q",
+      "recipientId": "usr_1794463929027_7q47",
+      "category": "motherland",
+      "type": "like",
+      "sender": {
+        "id": "usr_1794463929044_f6s7",
+        "displayName": "Beta User 29302",
+        "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=beta29302",
+        "username": "beta29302"
+      },
+      "title": "New Reaction",
+      "body": "Beta User 29302 reacted with love to your post.",
+      "targetId": "post_1794463929054_wexo",
+      "targetType": "post",
+      "isRead": false,
+      "createdAt": "2026-11-12T06:12:09.076Z"
+    },
+    {
+      "id": "notif_1794463874686_219l",
+      "recipientId": "usr_1794463874663_x562",
+      "category": "motherland",
+      "type": "like",
+      "sender": {
+        "id": "usr_1794463874674_7hff",
+        "displayName": "Beta User 21363",
+        "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=beta21363",
+        "username": "beta21363"
+      },
+      "title": "New Reaction",
+      "body": "Beta User 21363 reacted with love to your post.",
+      "targetId": "post_1794463874678_ocra",
+      "targetType": "post",
+      "isRead": false,
+      "createdAt": "2026-11-12T06:11:14.686Z"
+    },
+    {
+      "id": "notif_01",
+      "recipientId": "usr_kefat_01",
+      "category": "motherland",
+      "type": "like",
+      "sender": {
+        "id": "usr_nadia_02",
+        "displayName": "Nadia Hossain",
+        "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
+        "username": "nadia_creative"
+      },
+      "title": "New Reaction",
+      "body": "Nadia Hossain loved your post about MOTHERLAND ecosystem.",
+      "targetId": "post_01",
+      "targetType": "post",
+      "isRead": false,
+      "createdAt": "2026-11-12T05:56:54.690Z"
+    },
+    {
+      "id": "notif_02",
+      "recipientId": "usr_kefat_01",
+      "category": "youtube",
+      "type": "platform_alert",
+      "sender": {
+        "id": "sys_yt",
+        "displayName": "YouTube Partner Engine",
+        "avatar": "https://api.dicebear.com/7.x/identicon/svg?seed=youtube",
+        "username": "youtube_live"
+      },
+      "title": "YouTube Sync Online",
+      "body": "YouTube Data API v3 integration active with infinite video stream search enabled.",
+      "isRead": true,
+      "createdAt": "2026-11-12T05:23:54.690Z"
+    }
+  ],
+  "conversations": [],
+  "conversationMessages": {},
+  "otpCodes": [],
+  "youtubeOAuth": {}
+}
