@@ -31,6 +31,10 @@ import {
 } from 'lucide-react';
 import { UnifiedVideo } from '../../types/video';
 import { searchYouTube } from '../../services/youtubeService';
+import { FireLikeIcon, TalkIcon, BoostIcon } from '../fire/MotherlandIcons';
+import { FireEmojiPicker } from '../fire/FireEmojiPicker';
+import { FireRichText } from '../fire/FireRichText';
+import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 
 interface YouTubeShortsFeedProps {
   onBackToHome?: () => void;
@@ -56,6 +60,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     { id: 'c2', user: 'Sadia Rahman', text: 'Watching on Motherland Super App, great quality! 🇧🇩', time: '5h ago' },
   ]);
   const [newComment, setNewComment] = useState('');
+  const [firePickerOpen, setFirePickerOpen] = useState(false);
 
   // Pagination
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
@@ -369,21 +374,22 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
         </div>
       </div>
 
-      {/* Right Interaction Sidebar (Thumbnails, Likes, Dislikes, Comments, Share) */}
+      {/* Right Interaction Sidebar (Thumbnails, Fire Like, Dislikes, Talk, Boost) */}
       <div className="relative z-20 self-end pr-2.5 sm:pr-4 flex flex-col items-center gap-4 mb-20 sm:mb-24">
-        {/* Like Button */}
+        {/* Fire Like Button */}
         <button
           onClick={() => toggleLike(activeShort.videoId)}
           className="flex flex-col items-center gap-1 group"
+          title="Fire Like"
         >
           <div
             className={`w-11 h-11 rounded-full flex items-center justify-center backdrop-blur-md transition-all shadow-lg active:scale-90 ${
               likedMap[activeShort.videoId]
-                ? 'bg-red-600 text-white shadow-red-900/60'
+                ? 'bg-orange-500/35 border border-orange-400 shadow-orange-900/60'
                 : 'bg-black/50 hover:bg-black/70 text-white border border-white/20'
             }`}
           >
-            <ThumbsUp className={`w-5 h-5 ${likedMap[activeShort.videoId] ? 'fill-white' : ''}`} />
+            <FireLikeIcon className="w-6 h-6" active={Boolean(likedMap[activeShort.videoId])} />
           </div>
           <span className="text-[11px] font-bold text-white drop-shadow-md">
             {likeCountMap[activeShort.videoId] || 1200}
@@ -407,23 +413,24 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
           <span className="text-[10px] font-semibold text-slate-300 drop-shadow-md">Dislike</span>
         </button>
 
-        {/* Comments Button */}
+        {/* Talk (Comments) Button */}
         <button
           onClick={() => setCommentsOpen(true)}
           className="flex flex-col items-center gap-1 group"
+          title="Talk"
         >
           <div className="w-11 h-11 rounded-full bg-black/50 hover:bg-black/70 text-white border border-white/20 flex items-center justify-center backdrop-blur-md transition-all shadow-lg active:scale-90">
-            <MessageCircle className="w-5 h-5" />
+            <TalkIcon className="w-6 h-6" />
           </div>
           <span className="text-[11px] font-bold text-white drop-shadow-md">{commentList.length}</span>
         </button>
 
-        {/* Share Button */}
-        <button onClick={handleShare} className="flex flex-col items-center gap-1 group">
+        {/* Boost (Share) Button */}
+        <button onClick={handleShare} className="flex flex-col items-center gap-1 group" title="Boost">
           <div className="w-11 h-11 rounded-full bg-black/50 hover:bg-black/70 text-white border border-white/20 flex items-center justify-center backdrop-blur-md transition-all shadow-lg active:scale-90">
-            <Share2 className="w-5 h-5" />
+            <BoostIcon className="w-6 h-6" />
           </div>
-          <span className="text-[10px] font-semibold text-white drop-shadow-md">Share</span>
+          <span className="text-[10px] font-semibold text-white drop-shadow-md">Boost</span>
         </button>
 
         {/* Spinning Vinyl Disc / Music Track */}
@@ -434,7 +441,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
 
       {/* Bottom Overlay: Creator info, Title, Audio tag, Up/Down helper controls */}
       <div className="relative z-20 p-3 sm:p-5 bg-gradient-to-t from-black/90 via-black/50 to-transparent space-y-2">
-        {/* Creator Channel Strip & Subscribe Button */}
+        {/* Creator Channel Strip & Support Button */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-red-600 to-amber-500 flex items-center justify-center text-white font-bold text-xs flex-shrink-0 shadow-md">
@@ -451,11 +458,11 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
             onClick={() => toggleSubscribe(activeShort.creatorName)}
             className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition-all shadow-md active:scale-95 flex-shrink-0 ${
               subscribedMap[activeShort.creatorName]
-                ? 'bg-white/20 text-slate-200 border border-white/20'
+                ? 'bg-white/20 text-emerald-300 border border-emerald-400/30'
                 : 'bg-white text-black hover:bg-slate-200'
             }`}
           >
-            {subscribedMap[activeShort.creatorName] ? 'Subscribed' : 'Subscribe'}
+            {subscribedMap[activeShort.creatorName] ? 'Supporting' : 'Support'}
           </button>
         </div>
 
@@ -505,12 +512,15 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
         </div>
       )}
 
-      {/* Comments Drawer / Bottom Sheet */}
+      {/* Talk Drawer / Bottom Sheet */}
       {commentsOpen && (
         <div className="absolute inset-0 z-40 bg-black/80 backdrop-blur-md flex flex-col justify-end animate-in slide-in-from-bottom duration-200">
           <div className="w-full bg-[#111728] rounded-t-3xl border-t border-white/15 p-4 max-h-[70%] flex flex-col justify-between shadow-2xl">
             <div className="flex items-center justify-between pb-3 border-b border-white/10">
-              <span className="font-bold text-sm text-white">Comments ({commentList.length})</span>
+              <span className="font-bold text-sm text-white flex items-center gap-2">
+                <TalkIcon className="w-4 h-4" active />
+                <span>Talk ({commentList.length})</span>
+              </span>
               <button
                 onClick={() => setCommentsOpen(false)}
                 className="p-1 rounded-full hover:bg-white/10 text-slate-400 hover:text-white"
@@ -527,31 +537,50 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
                     <span className="font-bold text-white">{c.user}</span>
                     <span>{c.time}</span>
                   </div>
-                  <p className="text-slate-200">{c.text}</p>
+                  <p className="text-slate-200">
+                    <FireRichText text={c.text} emojiSize="sm" />
+                  </p>
                 </div>
               ))}
             </div>
 
             {/* Comment Composer */}
-            <form onSubmit={handleAddComment} className="pt-2 border-t border-white/10 flex items-center gap-2">
-              <input
-                type="text"
-                value={newComment}
-                onChange={(e) => setNewComment(e.target.value)}
-                placeholder="Add a comment on this Short..."
-                className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-red-500"
-              />
-              <button
-                type="submit"
-                disabled={!newComment.trim()}
-                className="p-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white"
-              >
-                <Send className="w-3.5 h-3.5" />
-              </button>
+            <form onSubmit={handleAddComment} className="pt-2 border-t border-white/10 space-y-1.5">
+              <FireDraftPreview value={newComment} />
+              <div className="flex items-center gap-2">
+                <FirePickerTrigger
+                  size="sm"
+                  onClick={() => setFirePickerOpen(true)}
+                  active={firePickerOpen}
+                  title="Insert Fire Emoji"
+                />
+                <input
+                  type="text"
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  placeholder="Add a talk on this Short..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-red-500"
+                />
+                <button
+                  type="submit"
+                  disabled={!newComment.trim()}
+                  className="p-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
+
+      <FireEmojiPicker
+        isOpen={firePickerOpen}
+        onClose={() => setFirePickerOpen(false)}
+        onSelect={(emoji) => {
+          setNewComment((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.token} `);
+        }}
+      />
     </div>
   );
 };

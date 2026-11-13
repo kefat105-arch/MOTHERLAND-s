@@ -13,6 +13,7 @@ import {
   Maximize2,
 } from 'lucide-react';
 import { UnifiedVideo } from '../../types/video';
+import { BoostIcon } from '../fire/MotherlandIcons';
 
 interface VideoCardProps {
   video: UnifiedVideo;
@@ -110,13 +111,13 @@ export const VideoCard: React.FC<VideoCardProps> = ({
             <Info className="w-4 h-4" />
           </button>
 
-          {/* Copy Share URL */}
+          {/* Boost / Copy Video URL */}
           <button
             onClick={handleShare}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-white/5 transition-all"
-            title="Share video URL"
+            title="Boost video URL"
           >
-            {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Share2 className="w-4 h-4" />}
+            {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <BoostIcon className="w-4 h-4" />}
           </button>
 
           {/* Direct Platform Fallback Launcher */}

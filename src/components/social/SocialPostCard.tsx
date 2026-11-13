@@ -33,6 +33,8 @@ import {
   Sparkles,
   Youtube,
   ThumbsUp,
+  RotateCcw,
+  AlertCircle,
 } from 'lucide-react';
 import {
   SocialComment,
@@ -53,23 +55,23 @@ import {
   togglePostSave,
   trackPostShare,
   getStoredCurrentUser,
+  recordVideoWatched,
+  savePostComments,
 } from '../../services/socialService';
+import { FIRE_REACTIONS } from '../../data/fireEmojiCatalog';
+import { FireEmojiPicker } from '../fire/FireEmojiPicker';
+import { FireRichText } from '../fire/FireRichText';
+import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
+import { BoostIcon, FireLikeIcon, TalkIcon, VaultIcon } from '../fire/MotherlandIcons';
+
+const DEFAULT_AVATAR =
+  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80';
 
 interface SocialPostCardProps {
   post: SocialPost;
   onOpenImageLightbox: (url: string, alt?: string) => void;
   onDeletePost?: (postId: string) => void;
 }
-
-const REACTIONS_CONFIG: Array<{ type: PostReactionType; emoji: string; label: string; color: string }> = [
-  { type: 'like', emoji: '👍', label: 'Like', color: 'text-blue-400' },
-  { type: 'love', emoji: '❤️', label: 'Love', color: 'text-red-500' },
-  { type: 'care', emoji: '🥰', label: 'Care', color: 'text-amber-400' },
-  { type: 'haha', emoji: '😆', label: 'Haha', color: 'text-yellow-400' },
-  { type: 'wow', emoji: '😮', label: 'Wow', color: 'text-amber-300' },
-  { type: 'sad', emoji: '😢', label: 'Sad', color: 'text-sky-400' },
-  { type: 'angry', emoji: '😡', label: 'Angry', color: 'text-rose-600' },
-];
 
 export const SocialPostCard: React.FC<SocialPostCardProps> = ({
   post,
@@ -79,7 +81,9 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
   const [currentUser] = useState(getStoredCurrentUser());
   const [userReaction, setUserReaction] = useState<PostReactionType | null>(post.userReaction || (post.isLiked ? 'like' : null));
   const [likesCount, setLikesCount] = useState(post.likesCount);
-  const [reactions, setReactions] = useState(post.reactions || { like: post.likesCount, love: 0, care: 0, haha: 0, wow: 0, sad: 0, angry: 0 });
+  const [reactions, setReactions] = useState(
+    post.reactions || { like: post.likesCount, love: 0, care: 0, haha: 0, wow: 0, sad: 0, angry: 0, cool: 0 }
+  );
   const [isSaved, setIsSaved] = useState(post.isSaved);
 
   // Reaction Picker Overlay State
@@ -95,10 +99,14 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingReplyId, setEditingReplyId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [firePickerTarget, setFirePickerTarget] = useState<'comment' | 'reply' | 'edit' | null>(null);
 
   // Video Player State
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [videoError, setVideoError] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const videoContainerRef = useRef<HTMLDivElement | null>(null);
   const [isVideoFullscreen, setIsVideoFullscreen] = useState(false);
@@ -115,6 +123,10 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
       setUserReaction(updated.userReaction || null);
       setLikesCount(updated.likesCount);
       if (updated.reactions) setReactions(updated.reactions);
+    } else {
+      const nextType = userReaction === type ? null : type;
+      setUserReaction(nextType);
+      setLikesCount((c) => (userReaction ? (nextType ? c : Math.max(0, c - 1)) : c + 1));
     }
   };
 
@@ -128,6 +140,10 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
       setUserReaction(updated.userReaction || null);
       setLikesCount(updated.likesCount);
       if (updated.reactions) setReactions(updated.reactions);
+    } else {
+      const next = userReaction ? null : 'like';
+      setUserReaction(next);
+      setLikesCount((c) => (userReaction ? Math.max(0, c - 1) : c + 1));
     }
   };
 
@@ -148,6 +164,8 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
     const updated = togglePostSave(post.id);
     if (updated) {
       setIsSaved(updated.isSaved);
+    } else {
+      setIsSaved((prev) => !prev);
     }
   };
 
@@ -156,33 +174,49 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
       const existing = getPostComments(post.id);
       setComments(existing);
       fetchCommentsFromBackend(post.id).then((fresh) => {
-        if (fresh && Array.isArray(fresh)) {
+        if (fresh && Array.isArray(fresh) && fresh.length > 0) {
           setComments(fresh);
+          savePostComments(post.id, fresh);
         }
       });
     }
     setShowComments(!showComments);
   };
 
-  const handleAddComment = (e: React.FormEvent) => {
+  const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCommentText.trim()) return;
-
-    const added = addPostComment(post.id, newCommentText.trim());
-    setComments((prev) => [...prev, added]);
-    setNewCommentText('');
+    setCommentError(null);
+    try {
+      const added = await addPostComment(post.id, newCommentText.trim());
+      setComments((prev) => {
+        const next = [...prev, added];
+        savePostComments(post.id, next);
+        return next;
+      });
+      setNewCommentText('');
+    } catch (err: any) {
+      setCommentError(err?.message || 'Please sign in to post a comment.');
+    }
   };
 
-  const handleAddReply = (commentId: string) => {
+  const handleAddReply = async (commentId: string) => {
     if (!replyText.trim()) return;
-    const addedReply = addCommentReply(post.id, commentId, replyText.trim());
-
-    setComments((prev) =>
-      prev.map((c) => (c.id === commentId ? { ...c, replies: [...(c.replies || []), addedReply] } : c))
-    );
-
-    setReplyText('');
-    setReplyingToCommentId(null);
+    setCommentError(null);
+    try {
+      const addedReply = await addCommentReply(post.id, commentId, replyText.trim());
+      setComments((prev) => {
+        const next = prev.map((c) =>
+          c.id === commentId ? { ...c, replies: [...(c.replies || []), addedReply] } : c
+        );
+        savePostComments(post.id, next);
+        return next;
+      });
+      setReplyText('');
+      setReplyingToCommentId(null);
+    } catch (err: any) {
+      setCommentError(err?.message || 'Please sign in to reply.');
+    }
   };
 
   const handleToggleCommentLike = (commentId: string, replyId?: string) => {
@@ -274,61 +308,144 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
     // 2. MOTHERLAND Native Video Post (16:9 Landscape or 9:16 Vertical Short)
     if (media.length === 1 && media[0].type === 'video') {
       const isShort = media[0].aspectRatio === '9:16';
+      const fallbackPoster =
+        media[0].thumbnailUrl ||
+        'https://images.unsplash.com/photo-1518495973542-4542c06a5843?w=800&auto=format&fit=crop&q=80';
+
+      const handleRetry = () => {
+        setVideoError(false);
+        setRetryKey((prev) => prev + 1);
+        if (videoRef.current) {
+          videoRef.current.load();
+        }
+      };
+
+      const handlePlayTap = () => {
+        if (!videoRef.current) return;
+        if (isPlaying) {
+          videoRef.current.pause();
+        } else {
+          setVideoError(false);
+          videoRef.current.play().catch((err) => {
+            console.warn('Video play error:', err);
+            setVideoError(true);
+          });
+        }
+      };
+
       return (
         <div
           ref={videoContainerRef}
-          className={`relative w-full mt-3 rounded-2xl overflow-hidden bg-black border border-white/10 shadow-xl group ${
+          className={`relative w-full mt-3 rounded-2xl overflow-hidden bg-[#0a0e17] border border-white/10 shadow-xl group ${
             isShort ? 'aspect-[9/16] w-full max-h-[82vh]' : 'aspect-video w-full'
           }`}
         >
+          {/* Fallback & Poster Container (Eliminates empty black void) */}
+          {!isPlaying && !videoError && (
+            <div
+              onClick={handlePlayTap}
+              className="absolute inset-0 z-10 flex flex-col items-center justify-center cursor-pointer group/poster overflow-hidden"
+            >
+              <img
+                src={fallbackPoster}
+                alt="Video Preview"
+                className="w-full h-full object-cover group-hover/poster:scale-105 transition-transform duration-500 opacity-80"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-black/40" />
+
+              {/* Centered Glowing Play Button */}
+              <div className="relative z-10 w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white flex items-center justify-center shadow-2xl shadow-emerald-950/80 group-hover/poster:scale-110 active:scale-95 transition-all border-2 border-white/30">
+                <Play className="w-6 h-6 fill-white ml-1" />
+              </div>
+
+              {/* Bottom Title & Badge Overlay */}
+              <div className="absolute bottom-3 left-3 right-3 z-10 flex items-center justify-between text-white text-xs">
+                <span className="px-2.5 py-0.5 rounded-full bg-emerald-600/90 font-bold text-[10px] backdrop-blur-xs">
+                  {isShort ? 'MOTHERLAND Short' : 'HD Native Video'}
+                </span>
+                <span className="text-[11px] text-slate-300 font-medium bg-black/50 px-2 py-0.5 rounded-md">
+                  Tap to Play
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Video Element */}
           <video
+            key={retryKey}
             ref={videoRef}
             src={media[0].url}
-            poster={media[0].thumbnailUrl}
+            poster={fallbackPoster}
             playsInline
+            preload="metadata"
             muted={isMuted}
             loop
-            onPlay={() => setIsPlaying(true)}
+            onPlay={() => {
+              setIsPlaying(true);
+              recordVideoWatched(post.id);
+            }}
             onPause={() => setIsPlaying(false)}
+            onError={() => {
+              setVideoError(true);
+              setIsPlaying(false);
+            }}
             className="w-full h-full object-cover"
           />
 
-          {/* Floating Controls Overlay */}
-          <div className="absolute inset-0 z-10 flex flex-col justify-between p-3 bg-gradient-to-t from-black/60 via-transparent to-black/40 opacity-0 group-hover:opacity-100 transition-opacity">
-            <div className="flex items-center justify-between text-white text-xs">
-              <span className="px-2 py-0.5 rounded-full bg-emerald-600/80 font-bold text-[10px]">
-                {isShort ? 'MOTHERLAND Short' : 'HD Native Video'}
-              </span>
+          {/* Error & Retry Affordance */}
+          {videoError && (
+            <div className="absolute inset-0 z-20 bg-black/95 flex flex-col items-center justify-center p-4 text-center">
+              <AlertCircle className="w-8 h-8 text-rose-500 mb-2" />
+              <p className="text-xs text-slate-200 font-semibold mb-3">
+                Unable to play video preview. Connection interrupted.
+              </p>
               <button
-                onClick={toggleVideoFullscreen}
-                className="p-1.5 rounded-full bg-black/60 hover:bg-black text-white"
-                title="Toggle Fullscreen"
+                onClick={handleRetry}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all active:scale-95 shadow-lg"
               >
-                {isVideoFullscreen ? <Minimize className="w-3.5 h-3.5 text-amber-400" /> : <Maximize className="w-3.5 h-3.5" />}
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Retry Playback</span>
               </button>
             </div>
+          )}
 
-            <div className="flex items-center justify-between">
-              <button
-                onClick={() => {
-                  if (videoRef.current) {
-                    if (isPlaying) videoRef.current.pause();
-                    else videoRef.current.play();
-                  }
-                }}
-                className="w-10 h-10 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white flex items-center justify-center shadow-lg transition-transform active:scale-90"
-              >
-                {isPlaying ? <Pause className="w-5 h-5 fill-white" /> : <Play className="w-5 h-5 fill-white ml-0.5" />}
-              </button>
+          {/* Floating Controls Overlay (Visible when playing) */}
+          {isPlaying && (
+            <div className="absolute inset-0 z-10 flex flex-col justify-between p-3 bg-gradient-to-t from-black/70 via-transparent to-black/40 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="flex items-center justify-between text-white text-xs">
+                <span className="px-2 py-0.5 rounded-full bg-emerald-600/80 font-bold text-[10px]">
+                  {isShort ? 'MOTHERLAND Short' : 'HD Native Video'}
+                </span>
+                <button
+                  onClick={toggleVideoFullscreen}
+                  className="p-1.5 rounded-full bg-black/60 hover:bg-black text-white"
+                  title="Toggle Fullscreen"
+                >
+                  {isVideoFullscreen ? <Minimize className="w-3.5 h-3.5 text-amber-400" /> : <Maximize className="w-3.5 h-3.5" />}
+                </button>
+              </div>
 
-              <button
-                onClick={() => setIsMuted(!isMuted)}
-                className="p-2 rounded-full bg-black/60 hover:bg-black text-white"
-              >
-                {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
-              </button>
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => {
+                    if (videoRef.current) {
+                      videoRef.current.pause();
+                    }
+                  }}
+                  className="w-10 h-10 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white flex items-center justify-center shadow-lg transition-transform active:scale-90"
+                >
+                  <Pause className="w-5 h-5 fill-white" />
+                </button>
+
+                <button
+                  onClick={() => setIsMuted(!isMuted)}
+                  className="p-2 rounded-full bg-black/60 hover:bg-black text-white"
+                >
+                  {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       );
     }
@@ -402,7 +519,7 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
     );
   };
 
-  const currentReactionConfig = REACTIONS_CONFIG.find((r) => r.type === userReaction);
+  const currentReactionConfig = FIRE_REACTIONS.find((r) => r.type === userReaction);
 
   return (
     <article className="w-full rounded-2xl sm:rounded-3xl bg-[#0f1422] border border-white/10 p-3 sm:p-5 shadow-xl shadow-black/30 transition-all hover:border-white/15">
@@ -469,8 +586,8 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
                 }}
                 className="w-full px-3.5 py-2 text-left hover:bg-white/5 flex items-center gap-2"
               >
-                <Bookmark className="w-3.5 h-3.5 text-emerald-400" />
-                <span>{isSaved ? 'Unsave Post' : 'Save Post'}</span>
+                <VaultIcon className="w-4 h-4 text-amber-400" active={isSaved} />
+                <span>{isSaved ? 'Remove from Vault' : 'Save to Vault'}</span>
               </button>
 
               <button
@@ -480,8 +597,8 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
                 }}
                 className="w-full px-3.5 py-2 text-left hover:bg-white/5 flex items-center gap-2"
               >
-                <Share2 className="w-3.5 h-3.5 text-blue-400" />
-                <span>Share Post</span>
+                <BoostIcon className="w-4 h-4 text-orange-400" />
+                <span>Boost Post</span>
               </button>
 
               {post.isOwnPost && onDeletePost && (
@@ -502,8 +619,8 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
       </div>
 
       {/* Post Text Content */}
-      <div className="mt-3 text-xs sm:text-sm text-slate-200 leading-relaxed whitespace-pre-line font-normal">
-        {post.content}
+      <div className="mt-3 text-xs sm:text-sm text-slate-200 leading-relaxed font-normal">
+        <FireRichText text={post.content} emojiSize="sm" />
       </div>
 
       {/* Media: Photos, Native Video, or YouTube Embed */}
@@ -513,8 +630,12 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
       <div className="mt-4 pt-3 border-t border-white/5 flex items-center justify-between text-xs text-slate-400">
         <div className="flex items-center gap-1.5">
           {likesCount > 0 && (
-            <span className="flex items-center gap-1 font-mono">
-              <span className="text-sm">{currentReactionConfig?.emoji || '❤️'}</span>
+            <span className="flex items-center gap-1.5 font-mono">
+              <img
+                src={currentReactionConfig?.assetUrl || FIRE_REACTIONS[0].assetUrl}
+                alt={currentReactionConfig?.label || 'Fire Like'}
+                className="w-4 h-4 object-contain"
+              />
               <span className="font-bold text-white">{likesCount}</span>
             </span>
           )}
@@ -523,36 +644,45 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
         <div className="flex items-center gap-3 font-mono text-[11px]">
           {post.commentsCount > 0 && (
             <span onClick={handleToggleComments} className="hover:underline cursor-pointer">
-              {post.commentsCount} comments
+              {post.commentsCount} talks
             </span>
           )}
-          {post.sharesCount > 0 && <span>{post.sharesCount} shares</span>}
+          {post.sharesCount > 0 && <span>{post.sharesCount} boosts</span>}
         </div>
       </div>
 
-      {/* ACTION BAR WITH FACEBOOK-STYLE REACTION PICKER */}
+      {/* ACTION BAR WITH COMPACT 8-REACTION FIRE PICKER & CUSTOM MOTHERLAND ICONS */}
       <div className="relative mt-2 pt-2 border-t border-white/5 grid grid-cols-4 gap-1 text-xs font-semibold text-slate-300">
-        {/* Floating Facebook Reaction Selector on Long Press */}
+        {/* Compact 8-Reaction Fire Picker on Long Press / Context Menu */}
         {showReactionPicker && (
           <div
             onMouseLeave={() => setShowReactionPicker(false)}
-            className="absolute -top-12 left-0 z-40 bg-[#162138] border border-white/15 rounded-full px-3 py-1.5 shadow-2xl flex items-center gap-2 animate-in zoom-in-75 duration-150"
+            className="absolute -top-14 left-0 z-40 bg-[#121a2d] border border-orange-500/35 rounded-full px-2.5 py-1.5 shadow-2xl shadow-orange-950/60 flex items-center gap-1 sm:gap-1.5 animate-in zoom-in-75 duration-150"
           >
-            {REACTIONS_CONFIG.map((r) => (
+            {FIRE_REACTIONS.map((r) => (
               <button
                 key={r.type}
+                type="button"
                 onClick={() => handleSelectReaction(r.type)}
-                className="text-xl sm:text-2xl hover:scale-130 transition-transform active:scale-95 p-1 cursor-pointer"
+                className="group relative p-1 rounded-full hover:bg-white/10 hover:scale-125 transition-transform active:scale-95 cursor-pointer"
                 title={r.label}
               >
-                {r.emoji}
+                <img
+                  src={r.assetUrl}
+                  alt={r.label}
+                  className="w-7 h-7 sm:w-8 sm:h-8 object-contain drop-shadow-[0_2px_6px_rgba(255,110,0,0.45)]"
+                />
+                <span className="pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity absolute -top-6 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded bg-black/90 text-[9px] text-amber-300 font-bold whitespace-nowrap">
+                  {r.label}
+                </span>
               </button>
             ))}
           </div>
         )}
 
-        {/* 1. Like / Reaction Button */}
+        {/* 1. Fire Like / Reaction Button */}
         <button
+          type="button"
           onClick={handleLikeButtonTap}
           onTouchStart={handleLikeTouchStart}
           onTouchEnd={handleLikeTouchEnd}
@@ -560,79 +690,105 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
             e.preventDefault();
             setShowReactionPicker(true);
           }}
+          title="Tap to Fire Like • Press & hold or right-click for 8 Fire Reactions"
           className={`py-2 rounded-xl flex items-center justify-center gap-1.5 transition-all select-none ${
-            userReaction ? 'bg-white/10 font-bold' : 'hover:bg-white/5 text-slate-300'
+            currentReactionConfig
+              ? `${currentReactionConfig.ringColor} border font-bold`
+              : 'hover:bg-white/5 text-slate-300'
           }`}
         >
           {currentReactionConfig ? (
-            <span className="flex items-center gap-1">
-              <span className="text-base">{currentReactionConfig.emoji}</span>
+            <span className="flex items-center gap-1.5">
+              <img
+                src={currentReactionConfig.assetUrl}
+                alt={currentReactionConfig.label}
+                className="w-5 h-5 object-contain"
+              />
               <span className={currentReactionConfig.color}>{currentReactionConfig.label}</span>
             </span>
           ) : (
             <>
-              <Heart className="w-4 h-4 text-slate-300" />
-              <span>Like</span>
+              <FireLikeIcon className="w-5 h-5" />
+              <span>Fire Like</span>
             </>
           )}
         </button>
 
-        {/* 2. Comment Button */}
+        {/* 2. Talk Button (Replaces Comment) */}
         <button
+          type="button"
           onClick={handleToggleComments}
           className={`py-2 rounded-xl flex items-center justify-center gap-1.5 transition-colors ${
-            showComments ? 'text-emerald-400 bg-emerald-500/10' : 'hover:bg-white/5 text-slate-300'
+            showComments ? 'text-amber-400 bg-orange-500/15' : 'hover:bg-white/5 text-slate-300'
           }`}
         >
-          <MessageCircle className="w-4 h-4" />
-          <span>Comment</span>
+          <TalkIcon className="w-5 h-5" active={showComments} />
+          <span>Talk</span>
         </button>
 
-        {/* 3. Share Button */}
+        {/* 3. Boost Button (Replaces Share) */}
         <button
+          type="button"
           onClick={handleShare}
-          className="py-2 rounded-xl hover:bg-white/5 flex items-center justify-center gap-1.5 transition-colors text-slate-300"
+          className={`py-2 rounded-xl flex items-center justify-center gap-1.5 transition-colors ${
+            copied ? 'text-emerald-400 bg-emerald-500/10' : 'hover:bg-white/5 text-slate-300'
+          }`}
         >
-          {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Share2 className="w-4 h-4" />}
-          <span>{copied ? 'Copied' : 'Share'}</span>
+          {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <BoostIcon className="w-5 h-5" />}
+          <span>{copied ? 'Boosted' : 'Boost'}</span>
         </button>
 
-        {/* 4. Save Button */}
+        {/* 4. Vault Button (Replaces Save) */}
         <button
+          type="button"
           onClick={handleSave}
           className={`py-2 rounded-xl flex items-center justify-center gap-1.5 transition-colors ${
-            isSaved ? 'text-amber-400 bg-amber-500/10' : 'hover:bg-white/5 text-slate-300'
+            isSaved ? 'text-amber-400 bg-amber-500/15' : 'hover:bg-white/5 text-slate-300'
           }`}
         >
-          <Bookmark className={`w-4 h-4 ${isSaved ? 'fill-current' : ''}`} />
-          <span>Save</span>
+          <VaultIcon className="w-5 h-5" active={isSaved} />
+          <span>Vault</span>
         </button>
       </div>
 
-      {/* THREADED NESTED COMMENTS & REPLIES SECTION */}
+      {/* THREADED NESTED TALKS & REPLIES SECTION */}
       {showComments && (
         <div className="mt-3 pt-3 border-t border-white/5 space-y-3">
-          {/* Main Comment Input */}
-          <form onSubmit={handleAddComment} className="flex items-center gap-2">
-            <img
-              src={currentUser.avatar}
-              alt={currentUser.name}
-              className="w-7 h-7 rounded-full object-cover"
-            />
-            <input
-              type="text"
-              value={newCommentText}
-              onChange={(e) => setNewCommentText(e.target.value)}
-              placeholder="Write a comment..."
-              className="flex-1 px-3.5 py-2 rounded-xl bg-[#090d16] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500/50"
-            />
-            <button
-              type="submit"
-              disabled={!newCommentText.trim()}
-              className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-all shadow-md"
-            >
-              <Send className="w-3.5 h-3.5" />
-            </button>
+          {commentError && (
+            <div className="px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[11px]">
+              {commentError}
+            </div>
+          )}
+          {/* Main Comment Input + Fire Emoji Picker */}
+          <form onSubmit={handleAddComment} className="space-y-1.5">
+            <FireDraftPreview value={newCommentText} />
+            <div className="flex items-center gap-2">
+              <img
+                src={currentUser?.avatar || DEFAULT_AVATAR}
+                alt={currentUser?.name || 'Guest'}
+                className="w-7 h-7 rounded-full object-cover"
+              />
+              <FirePickerTrigger
+                size="sm"
+                onClick={() => setFirePickerTarget('comment')}
+                active={firePickerTarget === 'comment'}
+                title="Add Fire Emoji to Talk"
+              />
+              <input
+                type="text"
+                value={newCommentText}
+                onChange={(e) => setNewCommentText(e.target.value)}
+                placeholder="Write a talk..."
+                className="flex-1 px-3.5 py-2 rounded-xl bg-[#090d16] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500/50"
+              />
+              <button
+                type="submit"
+                disabled={!newCommentText.trim()}
+                className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition-all shadow-md"
+              >
+                <Send className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </form>
 
           {/* Comments & Nested Replies List */}
@@ -654,22 +810,32 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
                       </div>
 
                       {editingCommentId === c.id ? (
-                        <div className="flex items-center gap-2 pt-1">
-                          <input
-                            type="text"
-                            value={editText}
-                            onChange={(e) => setEditText(e.target.value)}
-                            className="flex-1 px-2 py-1 rounded-lg bg-black text-xs text-white border border-white/10"
-                          />
-                          <button
-                            onClick={() => handleSaveEdit(c.id)}
-                            className="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold"
-                          >
-                            Save
-                          </button>
+                        <div className="space-y-1.5 pt-1">
+                          <FireDraftPreview value={editText} />
+                          <div className="flex items-center gap-2">
+                            <FirePickerTrigger
+                              size="sm"
+                              onClick={() => setFirePickerTarget('edit')}
+                              active={firePickerTarget === 'edit'}
+                            />
+                            <input
+                              type="text"
+                              value={editText}
+                              onChange={(e) => setEditText(e.target.value)}
+                              className="flex-1 px-2 py-1 rounded-lg bg-black text-xs text-white border border-white/10"
+                            />
+                            <button
+                              onClick={() => handleSaveEdit(c.id)}
+                              className="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold"
+                            >
+                              Save
+                            </button>
+                          </div>
                         </div>
                       ) : (
-                        <p className="text-slate-300 text-xs leading-relaxed">{c.text}</p>
+                        <p className="text-slate-300 text-xs leading-relaxed">
+                          <FireRichText text={c.text} emojiSize="sm" />
+                        </p>
                       )}
                     </div>
 
@@ -692,7 +858,7 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
                         Reply
                       </button>
 
-                      {c.author.id === currentUser.id && (
+                      {currentUser?.id && c.author.id === currentUser.id && (
                         <>
                           <button
                             onClick={() => {
@@ -729,7 +895,9 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
                                   <span className="font-bold text-white text-[11px]">{rep.author.name}</span>
                                   <span className="text-[10px] text-slate-500 font-mono">{rep.createdAt}</span>
                                 </div>
-                                <p className="text-slate-200 text-xs leading-relaxed">{rep.text}</p>
+                                <p className="text-slate-200 text-xs leading-relaxed">
+                                  <FireRichText text={rep.text} emojiSize="sm" />
+                                </p>
                               </div>
 
                               <div className="flex items-center gap-3 text-[10px] text-slate-400 mt-0.5 pl-2">
@@ -737,9 +905,9 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
                                   onClick={() => handleToggleCommentLike(c.id, rep.id)}
                                   className={`hover:underline ${rep.isLiked ? 'text-red-400 font-bold' : ''}`}
                                 >
-                                  Like {rep.likesCount > 0 ? `(${rep.likesCount})` : ''}
+                                  Fire Like {rep.likesCount > 0 ? `(${rep.likesCount})` : ''}
                                 </button>
-                                {rep.author.id === currentUser.id && (
+                                {currentUser?.id && rep.author.id === currentUser.id && (
                                   <button
                                     onClick={() => handleDeleteComment(c.id, rep.id)}
                                     className="hover:underline text-red-400"
@@ -756,22 +924,30 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
 
                     {/* Inline Reply Composer */}
                     {replyingToCommentId === c.id && (
-                      <div className="mt-2 pl-4 flex items-center gap-2">
-                        <CornerDownRight className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                        <input
-                          type="text"
-                          value={replyText}
-                          onChange={(e) => setReplyText(e.target.value)}
-                          placeholder={`Reply to ${c.author.name}...`}
-                          className="flex-1 px-3 py-1.5 rounded-xl bg-black border border-white/10 text-xs text-white focus:outline-none focus:border-emerald-500"
-                        />
-                        <button
-                          onClick={() => handleAddReply(c.id)}
-                          disabled={!replyText.trim()}
-                          className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs"
-                        >
-                          Reply
-                        </button>
+                      <div className="mt-2 pl-4 space-y-1.5">
+                        <FireDraftPreview value={replyText} />
+                        <div className="flex items-center gap-2">
+                          <CornerDownRight className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                          <FirePickerTrigger
+                            size="sm"
+                            onClick={() => setFirePickerTarget('reply')}
+                            active={firePickerTarget === 'reply'}
+                          />
+                          <input
+                            type="text"
+                            value={replyText}
+                            onChange={(e) => setReplyText(e.target.value)}
+                            placeholder={`Reply to ${c.author.name}...`}
+                            className="flex-1 px-3 py-1.5 rounded-xl bg-black border border-white/10 text-xs text-white focus:outline-none focus:border-emerald-500"
+                          />
+                          <button
+                            onClick={() => handleAddReply(c.id)}
+                            disabled={!replyText.trim()}
+                            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs"
+                          >
+                            Reply
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -781,12 +957,24 @@ export const SocialPostCard: React.FC<SocialPostCardProps> = ({
 
             {comments.length === 0 && (
               <p className="text-[11px] text-slate-500 italic py-1 text-center">
-                Be the first to comment on this MOTHERLAND post!
+                Be the first to start a Talk on this MOTHERLAND post!
               </p>
             )}
           </div>
         </div>
       )}
+
+      <FireEmojiPicker
+        isOpen={firePickerTarget !== null}
+        onClose={() => setFirePickerTarget(null)}
+        onSelect={(emoji) => {
+          const appendToken = (prev: string) =>
+            `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.token} `;
+          if (firePickerTarget === 'comment') setNewCommentText(appendToken);
+          else if (firePickerTarget === 'reply') setReplyText(appendToken);
+          else if (firePickerTarget === 'edit') setEditText(appendToken);
+        }}
+      />
     </article>
   );
 };

@@ -26,6 +26,7 @@ import {
 import { UnifiedVideo } from '../../types/video';
 import { searchYouTube } from '../../services/youtubeService';
 import { VERIFIED_TIKTOK_VIDEOS } from '../../services/tiktokService';
+import { FireLikeIcon, TalkIcon, BoostIcon } from '../fire/MotherlandIcons';
 
 interface VerticalSwipeFeedProps {
   initialVideos?: UnifiedVideo[];
@@ -432,7 +433,7 @@ export const VerticalSwipeFeed: React.FC<VerticalSwipeFeedProps> = ({
         <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/60 to-transparent pointer-events-none z-10" />
       </div>
 
-      {/* Right Action Sidebar (TikTok-style: Like, Comment, Share, External Launch) */}
+      {/* Right Action Sidebar (MOTHERLAND Fire Like, Talk, Boost, External Launch) */}
       <div className="absolute right-3 bottom-20 z-20 flex flex-col items-center gap-4">
         {/* Creator Avatar */}
         <div className="relative">
@@ -448,51 +449,52 @@ export const VerticalSwipeFeed: React.FC<VerticalSwipeFeedProps> = ({
           </span>
         </div>
 
-        {/* Like Button */}
+        {/* Fire Like Button */}
         <button
           onClick={() => toggleLike(currentVideo.id)}
           className="flex flex-col items-center gap-1 group transition-transform active:scale-75"
+          title="Fire Like"
         >
           <div
             className={`w-11 h-11 rounded-full flex items-center justify-center backdrop-blur-md border transition-all ${
               isLiked
-                ? 'bg-red-500/30 border-red-500 text-red-500 shadow-lg shadow-red-500/30'
+                ? 'bg-orange-500/30 border-orange-400 shadow-lg shadow-orange-500/30'
                 : 'bg-black/50 border-white/15 text-white hover:bg-black/70'
             }`}
           >
-            <Heart className={`w-6 h-6 ${isLiked ? 'fill-red-500 text-red-500' : 'text-white'}`} />
+            <FireLikeIcon className="w-6 h-6" active={isLiked} />
           </div>
           <span className="text-[11px] font-bold text-white drop-shadow-md">
             {likeCount}
           </span>
         </button>
 
-        {/* Comment / Chat launcher */}
+        {/* Talk / Chat launcher */}
         <button
           onClick={() => {
             if (onOpenMessenger) onOpenMessenger();
           }}
           className="flex flex-col items-center gap-1 group transition-transform active:scale-75"
-          title="Open Motherland Messenger Hub"
+          title="Open Motherland Talk / Messenger"
         >
           <div className="w-11 h-11 rounded-full bg-black/50 border border-white/15 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/70 transition-all shadow-lg">
-            <MessageCircle className="w-6 h-6 text-white" />
+            <TalkIcon className="w-6 h-6" />
           </div>
           <span className="text-[11px] font-bold text-white drop-shadow-md">
-            0
+            Talk
           </span>
         </button>
 
-        {/* Share Button */}
+        {/* Boost Button */}
         <button
           onClick={() => handleShare(currentVideo)}
           className="flex flex-col items-center gap-1 group transition-transform active:scale-75"
-          title="Share Video"
+          title="Boost Video"
         >
           <div className="w-11 h-11 rounded-full bg-black/50 border border-white/15 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/70 transition-all shadow-lg">
-            <Share2 className="w-5 h-5 text-white" />
+            <BoostIcon className="w-6 h-6" />
           </div>
-          <span className="text-[11px] font-bold text-white drop-shadow-md">Share</span>
+          <span className="text-[11px] font-bold text-white drop-shadow-md">Boost</span>
         </button>
 
         {/* Open in Native Platform (Official URL) */}

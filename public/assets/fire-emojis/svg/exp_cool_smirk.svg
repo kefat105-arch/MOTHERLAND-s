@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><defs>
+  <linearGradient id="fg" x1="50%" y1="100%" x2="50%" y2="0%">
+    <stop offset="0%" stop-color="#ff4800"/>
+    <stop offset="48%" stop-color="#ff8c00"/>
+    <stop offset="100%" stop-color="#ffe14d"/>
+  </linearGradient>
+  <linearGradient id="fc" x1="50%" y1="100%" x2="50%" y2="0%">
+    <stop offset="0%" stop-color="#ff7700"/>
+    <stop offset="100%" stop-color="#fff4a8"/>
+  </linearGradient>
+  <radialGradient id="gl" cx="50%" cy="55%" r="48%">
+    <stop offset="0%" stop-color="#ff9900" stop-opacity="0.34"/>
+    <stop offset="100%" stop-color="#ff4500" stop-opacity="0"/>
+  </radialGradient>
+</defs><circle cx="64" cy="68" r="56" fill="url(#gl)"/><path d="M64 12 C42 36 24 54 24 78 C24 102 42 118 64 118 C86 118 104 102 104 78 C104 54 86 34 64 12 Z" fill="url(#fg)" stroke="#8c1d00" stroke-width="4"/><rect x="35" y="61" width="24" height="14" rx="5" fill="#0f172a" stroke="#fff" stroke-width="2"/><rect x="69" y="61" width="24" height="14" rx="5" fill="#0f172a" stroke="#fff" stroke-width="2"/><line x1="59" y1="67" x2="69" y2="67" stroke="#0f172a" stroke-width="4"/><path d="M54 90 Q66 94 76 84" fill="none" stroke="#2b0900" stroke-width="3.5" stroke-linecap="round"/></svg>

@@ -271,9 +271,134 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
   }
 });
 
-// --- MOTHERLAND REST API & Real Database Endpoints ---
+// --- MOTHERLAND REST API & Real Multi-User Authentication ---
 
-// 1. Google OAuth Verification & Channel Link
+// Helper to authenticate request from token or header
+function getRequestUserId(req: Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7);
+    const session = dbManager.getSession(token);
+    if (session) return session.userId;
+  }
+  const queryToken = (req.query.token as string) || (req.body?.token as string);
+  if (queryToken) {
+    const session = dbManager.getSession(queryToken);
+    if (session) return session.userId;
+  }
+  const queryUserId = (req.query.userId as string) || (req.body?.userId as string);
+  if (queryUserId && dbManager.getUser(queryUserId)) {
+    return queryUserId;
+  }
+  return null;
+}
+
+// 1. MOTHERLAND Account Registration
+app.post('/api/auth/register', (req: Request, res: Response) => {
+  try {
+    const { name, username, email, password, phone, dob, gender, bio, location, website, avatar, coverPhoto } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Full name is required.' });
+    }
+    if (!username || !username.trim()) {
+      return res.status(400).json({ error: 'Unique username is required.' });
+    }
+    if (!email || !email.trim()) {
+      return res.status(400).json({ error: 'Email address is required.' });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+    if (!dob) {
+      return res.status(400).json({ error: 'Date of birth is required.' });
+    }
+
+    const { user, session } = dbManager.registerUser({
+      name: name.trim(),
+      username: username.trim(),
+      email: email.trim(),
+      password,
+      phone,
+      dob,
+      gender,
+      bio,
+      location,
+      website,
+      avatar,
+      coverPhoto,
+      role: 'user',
+      platform: 'motherland',
+    });
+
+    return res.status(201).json({ success: true, user, token: session.token });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message || 'Registration failed.' });
+  }
+});
+
+// 2. MOTHERLAND Account Login
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  try {
+    const { identifier, password } = req.body;
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'Please enter your email/username and password.' });
+    }
+
+    const { user, session } = dbManager.authenticate(identifier, password);
+    return res.json({ success: true, user, token: session.token });
+  } catch (err: any) {
+    return res.status(401).json({ error: err.message || 'Login failed.' });
+  }
+});
+
+// 3. MOTHERLAND Account Logout
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    dbManager.deleteSession(authHeader.substring(7));
+  }
+  const token = req.body.token || (req.query.token as string);
+  if (token) {
+    dbManager.deleteSession(token);
+  }
+  return res.json({ success: true, message: 'Logged out successfully.' });
+});
+
+// 4. Get Current Authenticated Profile
+app.get('/api/auth/me', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  if (!userId) {
+    return res.json({ user: null });
+  }
+  const user = dbManager.getUser(userId);
+  return res.json({ user });
+});
+
+// 5. Official Owner Role Assignment (Protected Administrative Control)
+app.post('/api/auth/claim-owner', (req: Request, res: Response) => {
+  const { adminSecret, userId } = req.body;
+  const targetId = userId || getRequestUserId(req);
+
+  if (!targetId) {
+    return res.status(401).json({ error: 'Authentication required to assign owner role.' });
+  }
+
+  // Verify administrative key (defaults to 'motherland_creator_2026' or process.env.OWNER_SECRET)
+  const masterKey = process.env.OWNER_SECRET || 'motherland_creator_2026';
+  if (adminSecret !== masterKey) {
+    return res.status(403).json({ error: 'Invalid administrative security key.' });
+  }
+
+  try {
+    const owner = dbManager.setOwnerRole(targetId);
+    return res.json({ success: true, user: owner, message: 'Official Owner role successfully assigned!' });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+// 6. Google OAuth Verification & Channel Link
 app.post('/api/auth/google', async (req: Request, res: Response) => {
   const { accessToken, clientUserData } = req.body;
 
@@ -285,10 +410,9 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
     let googleId = clientUserData?.googleId || `goog_${Date.now()}`;
     let email = clientUserData?.email || 'user@gmail.com';
     let name = clientUserData?.name || 'Google User';
-    let avatar = clientUserData?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80';
+    let avatar = clientUserData?.avatar || '';
     let channelData = clientUserData?.connectedYouTubeChannel || null;
 
-    // Verify token with Google's official userinfo endpoint if token provided
     if (accessToken) {
       try {
         const uRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -302,7 +426,6 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
           avatar = uInfo.picture || avatar;
         }
 
-        // Query authentic YouTube channel details
         const chRes = await fetch(
           'https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&mine=true',
           {
@@ -334,7 +457,7 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
       }
     }
 
-    const user = dbManager.upsertGoogleUser({
+    const { user, session } = dbManager.upsertGoogleUser({
       googleId,
       email,
       name,
@@ -342,26 +465,19 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
       connectedYouTubeChannel: channelData,
     });
 
-    return res.json({ success: true, user });
+    return res.json({ success: true, user, token: session.token });
   } catch (err: any) {
     console.error('[AUTH] Google auth failed:', err);
     return res.status(500).json({ error: err.message || 'Authentication error' });
   }
 });
 
-// 2. Disconnect YouTube without deleting user account
+// 7. Disconnect YouTube without deleting user account
 app.post('/api/auth/disconnect-youtube', (req: Request, res: Response) => {
-  const { userId } = req.body;
+  const userId = req.body.userId || getRequestUserId(req);
   if (!userId) return res.status(400).json({ error: 'Missing userId' });
   const updated = dbManager.disconnectYouTube(userId);
   return res.json({ success: true, user: updated });
-});
-
-// 3. Get Current User Profile
-app.get('/api/auth/me', (req: Request, res: Response) => {
-  const userId = (req.query.userId as string) || 'usr_motherland_citizen';
-  const user = dbManager.getUser(userId);
-  return res.json({ user });
 });
 
 // 4. Get Posts (with real reaction counts, ZERO fake numbers)
@@ -374,22 +490,33 @@ app.get('/api/posts', (req: Request, res: Response) => {
   return res.json(result);
 });
 
-// 5. Create New Post
+// 5. Create New Post (Requires Authenticated Identity)
 app.post('/api/posts', (req: Request, res: Response) => {
-  const { authorId, author, content, media, privacy, platform, location, tags, youtubeVideoId, originalVideoUrl } = req.body;
+  const authUserId = getRequestUserId(req);
+  const { content, media, privacy, platform, location, tags, youtubeVideoId, originalVideoUrl, isShort } = req.body;
+
+  if (!authUserId) {
+    return res.status(401).json({ error: 'Please sign in to publish posts on MOTHERLAND.' });
+  }
+
+  const user = dbManager.getUser(authUserId);
+  if (!user) {
+    return res.status(401).json({ error: 'User account not found. Please log in again.' });
+  }
 
   if (!content && (!media || media.length === 0)) {
     return res.status(400).json({ error: 'Post must contain text content or media' });
   }
 
   const newPost = dbManager.createPost({
-    authorId: authorId || author?.id || 'usr_motherland_citizen',
-    author: author || {
-      id: authorId || 'usr_motherland_citizen',
-      name: 'Kefat Hossain',
-      handle: '@kefat',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
-      isVerified: true,
+    authorId: user.id,
+    author: {
+      id: user.id,
+      name: user.name,
+      handle: user.handle,
+      avatar: user.avatar,
+      isVerified: user.isVerified,
+      role: user.role,
       platform: 'motherland',
     },
     content: content || '',
@@ -401,9 +528,10 @@ app.post('/api/posts', (req: Request, res: Response) => {
     platform: platform || 'motherland',
     youtubeVideoId,
     originalVideoUrl,
+    isShort,
   });
 
-  return res.json({ success: true, post: newPost });
+  return res.status(201).json({ success: true, post: newPost });
 });
 
 // 6. Delete Post
@@ -549,6 +677,226 @@ app.post('/api/videos/ensure', (req: Request, res: Response) => {
   }
   const post = dbManager.ensurePostForVideo(videoData);
   return res.json({ success: true, post });
+});
+
+// 18. Individual User Profiles (Section 4)
+app.get('/api/users/:id', (req: Request, res: Response) => {
+  const user = dbManager.getUser(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const reqUserId = getRequestUserId(req);
+  const isSelf = reqUserId === user.id;
+  const isFriend = reqUserId ? user.friends?.includes(reqUserId) : false;
+  const requestSent = reqUserId ? user.friendRequestsReceived?.includes(reqUserId) : false;
+  const requestReceived = reqUserId ? user.friendRequestsSent?.includes(reqUserId) : false;
+  const isFollowing = reqUserId ? user.followers?.includes(reqUserId) : false;
+
+  const userPosts = dbManager.getPosts({ authorId: user.id });
+
+  return res.json({
+    user,
+    postsCount: userPosts.total,
+    relationship: { isSelf, isFriend, requestSent, requestReceived, isFollowing },
+  });
+});
+
+app.put('/api/users/:id', (req: Request, res: Response) => {
+  const reqUserId = getRequestUserId(req);
+  if (!reqUserId || reqUserId !== req.params.id) {
+    return res.status(403).json({ error: 'You are not authorized to update this profile.' });
+  }
+  try {
+    const updated = dbManager.updateUser(req.params.id, req.body);
+    return res.json({ success: true, user: updated });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+// 19. Dynamic Friend Suggestions (Section 5)
+app.get('/api/users/suggestions', (req: Request, res: Response) => {
+  const reqUserId = getRequestUserId(req) || '';
+  const suggestions = dbManager.getFriendSuggestions(reqUserId);
+  return res.json({ suggestions });
+});
+
+// 20. Friend Requests Management (Section 5)
+app.post('/api/friends/request', (req: Request, res: Response) => {
+  const fromUserId = getRequestUserId(req);
+  const { toUserId } = req.body;
+  if (!fromUserId) return res.status(401).json({ error: 'Authentication required' });
+  if (!toUserId) return res.status(400).json({ error: 'Missing toUserId' });
+
+  try {
+    const result = dbManager.sendFriendRequest(fromUserId, toUserId);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/friends/accept', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  const { fromUserId } = req.body;
+  if (!userId) return res.status(401).json({ error: 'Authentication required' });
+  if (!fromUserId) return res.status(400).json({ error: 'Missing fromUserId' });
+
+  try {
+    const result = dbManager.acceptFriendRequest(userId, fromUserId);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/friends/reject', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  const { fromUserId } = req.body;
+  if (!userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const result = dbManager.rejectFriendRequest(userId, fromUserId);
+  return res.json(result);
+});
+
+app.post('/api/friends/cancel', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  const { toUserId } = req.body;
+  if (!userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const result = dbManager.cancelFriendRequest(userId, toUserId);
+  return res.json(result);
+});
+
+app.post('/api/friends/remove', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  const { friendId } = req.body;
+  if (!userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const result = dbManager.removeFriend(userId, friendId);
+  return res.json(result);
+});
+
+// 21. Real Notifications System (Section 8 & 10)
+app.get('/api/notifications', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  if (!userId) return res.json({ notifications: [], unreadCount: 0 });
+
+  const category = req.query.category as string | undefined;
+  const data = dbManager.getNotifications(userId, category);
+  return res.json(data);
+});
+
+app.post('/api/notifications/:id/read', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const success = dbManager.markNotificationRead(req.params.id, userId);
+  return res.json({ success });
+});
+
+app.post('/api/notifications/read-all', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const success = dbManager.markAllNotificationsRead(userId);
+  return res.json({ success });
+});
+
+app.delete('/api/notifications/:id', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const success = dbManager.deleteNotification(req.params.id, userId);
+  return res.json({ success });
+});
+
+// 22. Strict 24-Hour Stories (Section 14)
+app.get('/api/stories', (_req: Request, res: Response) => {
+  const stories = dbManager.getActiveStories();
+  return res.json({ stories });
+});
+
+app.post('/api/stories', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Authentication required to post story.' });
+
+  const user = dbManager.getUser(userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const { mediaUrl, mediaType, caption } = req.body;
+  if (!mediaUrl) return res.status(400).json({ error: 'Media URL is required' });
+
+  const story = dbManager.addStory({
+    authorId: user.id,
+    author: {
+      id: user.id,
+      name: user.name,
+      handle: user.handle,
+      avatar: user.avatar,
+      isVerified: user.isVerified,
+      role: user.role,
+    },
+    mediaUrl,
+    mediaType: mediaType || 'photo',
+    caption,
+  });
+
+  return res.status(201).json({ success: true, story });
+});
+
+app.post('/api/stories/:id/view', (req: Request, res: Response) => {
+  const userId = getRequestUserId(req);
+  if (!userId) return res.json({ success: false });
+  const success = dbManager.viewStory(req.params.id, userId);
+  return res.json({ success });
+});
+
+// 23. Universal Search Aggregator & Live Autocomplete Suggestions (Section 11)
+app.get('/api/search/suggestions', (req: Request, res: Response) => {
+  const q = (req.query.q as string) || '';
+  const suggestions = dbManager.getSearchSuggestions(q);
+  return res.json({ suggestions });
+});
+
+app.get('/api/search', async (req: Request, res: Response) => {
+  const q = ((req.query.q as string) || '').trim();
+  if (!q) {
+    return res.json({ users: [], posts: [], shorts: [], motherlandVideos: [], youtubeVideos: [] });
+  }
+
+  // 1. Search MOTHERLAND database
+  const motherlandResults = dbManager.searchMotherland(q);
+
+  // 2. Search YouTube via internal scraper / YouTube API
+  let ytVideos: any[] = [];
+  try {
+    const targetUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+    const ytRes = await fetch(targetUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'bn-BD,bn;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
+    });
+    if (ytRes.ok) {
+      const html = await ytRes.text();
+      const match = html.match(/ytInitialData\s*=\s*({.+?});<\/script>/);
+      if (match) {
+        const data = JSON.parse(match[1]);
+        ytVideos = extractVideoRenderers(data).slice(0, 15);
+      }
+    }
+  } catch (err) {
+    console.warn('[SEARCH] YouTube aggregator fallback warning:', err);
+  }
+
+  return res.json({
+    query: q,
+    users: motherlandResults.users,
+    posts: motherlandResults.posts,
+    shorts: motherlandResults.shorts,
+    motherlandVideos: motherlandResults.videos,
+    youtubeVideos: ytVideos,
+  });
 });
 
 // Health check endpoint

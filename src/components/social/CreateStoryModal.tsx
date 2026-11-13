@@ -2,6 +2,8 @@ import React, { useState, useRef } from 'react';
 import { X, Image, Video, Sparkles, Loader2, AlertCircle } from 'lucide-react';
 import { createNewStory } from '../../services/socialService';
 import { SocialStory } from '../../types/social';
+import { FireEmojiPicker } from '../fire/FireEmojiPicker';
+import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 
 interface CreateStoryModalProps {
   isOpen: boolean;
@@ -19,6 +21,7 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({
   const [caption, setCaption] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [firePickerOpen, setFirePickerOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -44,7 +47,7 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!mediaUrl) {
       setError('Please select a photo or video for your story.');
@@ -53,7 +56,11 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      const story = createNewStory(mediaUrl, mediaType, caption.trim() || undefined);
+      const story = await createNewStory({
+        mediaUrl,
+        type: mediaType,
+        caption: caption.trim() || undefined,
+      });
       onStoryCreated(story);
       onClose();
       setMediaUrl('');
@@ -163,18 +170,34 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({
           )}
 
           {/* Caption input */}
-          <div>
+          <div className="space-y-2">
             <label className="block text-xs font-semibold text-slate-300 mb-1">
               Story Text Caption / Description
             </label>
-            <input
-              type="text"
-              value={caption}
-              onChange={(e) => setCaption(e.target.value)}
-              placeholder="Add a caption to your story..."
-              className="w-full px-3.5 py-2.5 rounded-xl bg-[#090d16] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500/50"
-            />
+            <div className="flex items-center gap-2">
+              <FirePickerTrigger
+                onClick={() => setFirePickerOpen(true)}
+                active={firePickerOpen}
+                title="Insert MOTHERLAND Fire Emoji"
+              />
+              <input
+                type="text"
+                value={caption}
+                onChange={(e) => setCaption(e.target.value)}
+                placeholder="Add a caption to your story..."
+                className="flex-1 px-3.5 py-2.5 rounded-xl bg-[#090d16] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-emerald-500/50"
+              />
+            </div>
+            <FireDraftPreview value={caption} />
           </div>
+
+          <FireEmojiPicker
+            isOpen={firePickerOpen}
+            onClose={() => setFirePickerOpen(false)}
+            onSelect={(emoji) => {
+              setCaption((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.token} `);
+            }}
+          />
 
           {error && (
             <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs flex items-center gap-2">

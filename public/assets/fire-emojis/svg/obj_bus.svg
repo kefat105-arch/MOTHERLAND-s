@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><defs>
+  <linearGradient id="fg" x1="50%" y1="100%" x2="50%" y2="0%">
+    <stop offset="0%" stop-color="#ff4800"/>
+    <stop offset="48%" stop-color="#ff8c00"/>
+    <stop offset="100%" stop-color="#ffe14d"/>
+  </linearGradient>
+  <linearGradient id="fc" x1="50%" y1="100%" x2="50%" y2="0%">
+    <stop offset="0%" stop-color="#ff7700"/>
+    <stop offset="100%" stop-color="#fff4a8"/>
+  </linearGradient>
+  <radialGradient id="gl" cx="50%" cy="55%" r="48%">
+    <stop offset="0%" stop-color="#ff9900" stop-opacity="0.34"/>
+    <stop offset="100%" stop-color="#ff4500" stop-opacity="0"/>
+  </radialGradient>
+</defs><circle cx="64" cy="68" r="56" fill="url(#gl)"/><rect x="22" y="34" width="84" height="54" rx="12" fill="url(#fg)" stroke="#8c1d00" stroke-width="3.5"/><rect x="30" y="44" width="28" height="18" rx="3" fill="#fef08a"/><rect x="64" y="44" width="32" height="18" rx="3" fill="#fef08a"/><circle cx="42" cy="92" r="9" fill="#1e293b" stroke="#fff" stroke-width="2.5"/><circle cx="86" cy="92" r="9" fill="#1e293b" stroke="#fff" stroke-width="2.5"/></svg>

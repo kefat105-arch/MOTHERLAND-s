@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -9,19 +10,35 @@ const DB_FILE = path.resolve(DATA_DIR, 'motherland_database.json');
 
 export interface ServerUser {
   id: string;
-  googleId?: string;
-  email?: string;
+  email: string;
+  phone?: string;
+  passwordHash?: string;
+  passwordSalt?: string;
   name: string;
   handle: string;
   avatar: string;
   coverPhoto?: string;
   bio: string;
   location: string;
+  website?: string;
+  gender?: string;
+  dob?: string;
   joinDate: string;
+  role: 'user' | 'owner' | 'admin';
   isVerified: boolean;
+  isEmailVerified: boolean;
+  isPhoneVerified: boolean;
   platform: 'motherland' | 'google' | 'youtube';
+  friends: string[]; // User IDs who are mutual friends
+  friendRequestsSent: string[]; // User IDs this user has requested
+  friendRequestsReceived: string[]; // User IDs requesting this user
   followers: string[]; // User IDs who follow this user
   following: string[]; // User IDs this user follows
+  blockedUsers: string[];
+  settings?: {
+    isPrivate?: boolean;
+    notificationPreferences?: Record<string, boolean>;
+  };
   connectedYouTubeChannel?: {
     channelId: string;
     channelTitle: string;
@@ -32,6 +49,14 @@ export interface ServerUser {
     viewCount: string;
     description?: string;
   } | null;
+  googleId?: string;
+}
+
+export interface ServerSession {
+  token: string;
+  userId: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface ServerPostMedia {
@@ -53,6 +78,7 @@ export interface ServerCommentReply {
     handle: string;
     avatar: string;
     isVerified?: boolean;
+    role?: string;
     platform?: string;
   };
   text: string;
@@ -69,6 +95,7 @@ export interface ServerComment {
     handle: string;
     avatar: string;
     isVerified?: boolean;
+    role?: string;
     platform?: string;
   };
   text: string;
@@ -86,6 +113,7 @@ export interface ServerPost {
     handle: string;
     avatar: string;
     isVerified?: boolean;
+    role?: string;
     platform?: string;
   };
   content: string;
@@ -97,6 +125,7 @@ export interface ServerPost {
   platform: 'motherland' | 'youtube' | 'tiktok' | 'facebook' | 'instagram';
   youtubeVideoId?: string;
   originalVideoUrl?: string;
+  isShort?: boolean;
   // True interaction tracking - ZERO FAKE DATA
   likes: string[]; // User IDs who liked
   reactions: Record<string, string[]>; // reactionType -> array of userIds
@@ -105,10 +134,84 @@ export interface ServerPost {
   viewsCount?: number; // Actual tracked view count
 }
 
+export interface ServerStory {
+  id: string;
+  authorId: string;
+  author: {
+    id: string;
+    name: string;
+    handle: string;
+    avatar: string;
+    isVerified?: boolean;
+    role?: string;
+  };
+  mediaUrl: string;
+  mediaType: 'photo' | 'video';
+  caption?: string;
+  createdAt: number;
+  expiresAt: number; // Exactly 24 hours from creation
+  views: string[]; // user IDs who viewed
+  reactions: Record<string, string[]>;
+}
+
+export interface ServerNotification {
+  id: string;
+  userId: string; // Target recipient
+  actorId: string; // Who triggered it
+  actor: {
+    id: string;
+    name: string;
+    handle: string;
+    avatar: string;
+  };
+  type:
+    | 'friend_request'
+    | 'friend_accept'
+    | 'follow'
+    | 'like'
+    | 'reaction'
+    | 'comment'
+    | 'reply'
+    | 'mention'
+    | 'share'
+    | 'post'
+    | 'video'
+    | 'story'
+    | 'system'
+    | 'youtube'
+    | 'google';
+  category: 'motherland' | 'youtube' | 'google' | 'facebook' | 'instagram';
+  title: string;
+  message: string;
+  targetId?: string;
+  read: boolean;
+  createdAt: number;
+}
+
 interface DatabaseSchema {
   users: Record<string, ServerUser>;
+  sessions: Record<string, ServerSession>;
   posts: ServerPost[];
-  comments: Record<string, ServerComment[]>; // postId -> ServerComment[]
+  comments: Record<string, ServerComment[]>;
+  stories: ServerStory[];
+  notifications: ServerNotification[];
+  passwordResetTokens: Record<string, { email: string; token: string; expiresAt: number }>;
+  otpCodes: Record<string, { phone: string; code: string; expiresAt: number }>;
+}
+
+export function hashPassword(password: string, salt?: string): { hash: string; salt: string } {
+  const actualSalt = salt || crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, actualSalt, 10000, 64, 'sha512').toString('hex');
+  return { hash, salt: actualSalt };
+}
+
+export function verifyPassword(password: string, hash: string, salt: string): boolean {
+  try {
+    const calculated = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(calculated, 'hex'), Buffer.from(hash, 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 // Initial verified sample posts representing genuine Bangladeshi community media (with 0 fake counts)
@@ -142,9 +245,11 @@ const SEED_POSTS: ServerPost[] = [
     tags: ['Sajek', 'Travel', 'Bangladesh', 'Drone'],
     platform: 'motherland',
     likes: [],
-    reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] },
+    reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [], cool: [] },
     sharesCount: 0,
     commentsCount: 0,
+    viewsCount: 0,
+    isShort: false,
   },
   {
     id: 'post_nat_short_1',
@@ -175,18 +280,20 @@ const SEED_POSTS: ServerPost[] = [
     tags: ['Shorts', 'CoxsBazar', 'Reels', 'SeaBeach'],
     platform: 'motherland',
     likes: [],
-    reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] },
+    reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [], cool: [] },
     sharesCount: 0,
     commentsCount: 0,
+    viewsCount: 0,
+    isShort: true,
   },
   {
-    id: 'post_comm_1',
-    authorId: 'usr_heritage_bd',
+    id: 'post_nat_photo_1',
+    authorId: 'usr_heritage_dhaka',
     author: {
-      id: 'usr_heritage_bd',
-      name: 'Heritage Bangladesh',
-      handle: '@heritage_bd',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
+      id: 'usr_heritage_dhaka',
+      name: 'Heritage of Old Dhaka',
+      handle: '@heritage_dhaka',
+      avatar: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=200&auto=format&fit=crop&q=80',
       isVerified: true,
       platform: 'motherland',
     },
@@ -207,17 +314,24 @@ const SEED_POSTS: ServerPost[] = [
     tags: ['Dhaka', 'Heritage', 'History'],
     platform: 'motherland',
     likes: [],
-    reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] },
+    reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [], cool: [] },
     sharesCount: 0,
     commentsCount: 0,
+    viewsCount: 0,
+    isShort: false,
   },
 ];
 
 class DatabaseManager {
   private db: DatabaseSchema = {
     users: {},
+    sessions: {},
     posts: [],
     comments: {},
+    stories: [],
+    notifications: [],
+    passwordResetTokens: {},
+    otpCodes: {},
   };
 
   constructor() {
@@ -235,37 +349,43 @@ class DatabaseManager {
         const parsed = JSON.parse(raw);
         this.db = {
           users: parsed.users || {},
+          sessions: parsed.sessions || {},
           posts: parsed.posts || SEED_POSTS,
           comments: parsed.comments || {},
+          stories: parsed.stories || [],
+          notifications: parsed.notifications || [],
+          passwordResetTokens: parsed.passwordResetTokens || {},
+          otpCodes: parsed.otpCodes || {},
         };
       } else {
-        // Seed default database
+        // Seed initial verified community posts
         this.db = {
-          users: {
-            usr_motherland_citizen: {
-              id: 'usr_motherland_citizen',
-              name: 'Kefat Hossain',
-              handle: '@kefat',
-              email: 'kefat105@gmail.com',
-              avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
-              coverPhoto: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1200&auto=format&fit=crop&q=80',
-              bio: 'Building MOTHERLAND — Bangladesh’s Premier Social Super App & Digital Ecosystem. 🇧🇩🚀',
-              location: 'Dhaka, Bangladesh',
-              joinDate: 'November 2026',
-              isVerified: true,
-              platform: 'motherland',
-              followers: [],
-              following: [],
-            },
-          },
+          users: {},
+          sessions: {},
           posts: SEED_POSTS,
           comments: {},
+          stories: [],
+          notifications: [],
+          passwordResetTokens: {},
+          otpCodes: {},
         };
         this.persist();
       }
+
+      // Cleanup expired stories on start
+      this.cleanupExpiredStories();
     } catch (e) {
       console.error('[DB] Failed initializing database file, falling back to memory:', e);
-      this.db = { users: {}, posts: SEED_POSTS, comments: {} };
+      this.db = {
+        users: {},
+        sessions: {},
+        posts: SEED_POSTS,
+        comments: {},
+        stories: [],
+        notifications: [],
+        passwordResetTokens: {},
+        otpCodes: {},
+      };
     }
   }
 
@@ -280,13 +400,216 @@ class DatabaseManager {
     }
   }
 
+  // --- Session & Auth Operations ---
+  public createSession(userId: string): ServerSession {
+    const token = `mth_sess_${crypto.randomBytes(32).toString('hex')}`;
+    const session: ServerSession = {
+      token,
+      userId,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days persistent session
+    };
+    if (!this.db.sessions) this.db.sessions = {};
+    this.db.sessions[token] = session;
+    this.persist();
+    return session;
+  }
+
+  public getSession(token: string): ServerSession | null {
+    if (!this.db.sessions || !token) return null;
+    const sess = this.db.sessions[token];
+    if (!sess) return null;
+    if (Date.now() > sess.expiresAt) {
+      delete this.db.sessions[token];
+      this.persist();
+      return null;
+    }
+    return sess;
+  }
+
+  public deleteSession(token: string): boolean {
+    if (this.db.sessions && this.db.sessions[token]) {
+      delete this.db.sessions[token];
+      this.persist();
+      return true;
+    }
+    return false;
+  }
+
   // --- User Operations ---
   public getUser(userId: string): ServerUser | null {
     return this.db.users[userId] || null;
   }
 
+  public getUserByEmail(email: string): ServerUser | null {
+    const cleanEmail = email.toLowerCase().trim();
+    return Object.values(this.db.users).find((u) => u.email.toLowerCase() === cleanEmail) || null;
+  }
+
+  public getUserByHandle(handle: string): ServerUser | null {
+    const cleanHandle = handle.toLowerCase().trim().replace(/^@/, '');
+    return (
+      Object.values(this.db.users).find(
+        (u) => u.handle.toLowerCase().replace(/^@/, '') === cleanHandle
+      ) || null
+    );
+  }
+
+  public getUserByPhone(phone: string): ServerUser | null {
+    const cleanPhone = phone.replace(/[^0-9+]/g, '');
+    return Object.values(this.db.users).find((u) => u.phone && u.phone.replace(/[^0-9+]/g, '') === cleanPhone) || null;
+  }
+
   public getUserByGoogleId(googleId: string): ServerUser | null {
     return Object.values(this.db.users).find((u) => u.googleId === googleId) || null;
+  }
+
+  public registerUser(data: {
+    name: string;
+    username: string;
+    email: string;
+    password?: string;
+    phone?: string;
+    dob?: string;
+    gender?: string;
+    bio?: string;
+    location?: string;
+    website?: string;
+    avatar?: string;
+    coverPhoto?: string;
+    role?: 'user' | 'owner' | 'admin';
+    platform?: 'motherland' | 'google';
+    googleId?: string;
+  }): { user: ServerUser; session: ServerSession } {
+    const cleanEmail = data.email.toLowerCase().trim();
+    const cleanHandle = `@${data.username.toLowerCase().trim().replace(/^@/, '').replace(/[^a-z0-9_.]/g, '_')}`;
+
+    if (this.getUserByEmail(cleanEmail)) {
+      throw new Error('An account with this email address already exists.');
+    }
+    if (this.getUserByHandle(cleanHandle)) {
+      throw new Error('This username is already taken. Please choose another username.');
+    }
+
+    const userId = `usr_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    let passwordHash: string | undefined;
+    let passwordSalt: string | undefined;
+
+    if (data.password) {
+      const hashed = hashPassword(data.password);
+      passwordHash = hashed.hash;
+      passwordSalt = hashed.salt;
+    }
+
+    const newUser: ServerUser = {
+      id: userId,
+      email: cleanEmail,
+      phone: data.phone || undefined,
+      passwordHash,
+      passwordSalt,
+      name: data.name.trim(),
+      handle: cleanHandle,
+      avatar: data.avatar || '',
+      coverPhoto: data.coverPhoto || '',
+      bio: data.bio || '',
+      location: data.location || 'Bangladesh',
+      website: data.website || '',
+      gender: data.gender || '',
+      dob: data.dob || '',
+      joinDate: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+      role: data.role || 'user',
+      isVerified: data.role === 'owner',
+      isEmailVerified: !!data.googleId,
+      isPhoneVerified: false,
+      platform: data.platform || 'motherland',
+      friends: [],
+      friendRequestsSent: [],
+      friendRequestsReceived: [],
+      followers: [],
+      following: [],
+      blockedUsers: [],
+      settings: {
+        isPrivate: false,
+        notificationPreferences: {
+          likes: true,
+          comments: true,
+          friendRequests: true,
+          mentions: true,
+          system: true,
+        },
+      },
+      connectedYouTubeChannel: null,
+      googleId: data.googleId || undefined,
+    };
+
+    this.db.users[userId] = newUser;
+    const session = this.createSession(userId);
+    this.persist();
+
+    return { user: newUser, session };
+  }
+
+  public authenticate(identifier: string, password: string): { user: ServerUser; session: ServerSession } {
+    const cleanId = identifier.trim().toLowerCase();
+    const user =
+      this.getUserByEmail(cleanId) ||
+      this.getUserByHandle(cleanId) ||
+      this.getUserByPhone(cleanId);
+
+    if (!user) {
+      throw new Error('No MOTHERLAND account found with these credentials.');
+    }
+
+    if (!user.passwordHash || !user.passwordSalt) {
+      throw new Error('This account was created via Google Sign-In. Please sign in with Google or reset your password.');
+    }
+
+    const isValid = verifyPassword(password, user.passwordHash, user.passwordSalt);
+    if (!isValid) {
+      throw new Error('Incorrect password. Please try again.');
+    }
+
+    const session = this.createSession(user.id);
+    return { user, session };
+  }
+
+  public updateUser(userId: string, updates: Partial<ServerUser>): ServerUser {
+    const user = this.db.users[userId];
+    if (!user) throw new Error('User not found');
+
+    if (updates.name !== undefined) user.name = updates.name.trim();
+    if (updates.bio !== undefined) user.bio = updates.bio;
+    if (updates.location !== undefined) user.location = updates.location;
+    if (updates.website !== undefined) user.website = updates.website;
+    if (updates.gender !== undefined) user.gender = updates.gender;
+    if (updates.dob !== undefined) user.dob = updates.dob;
+    if (updates.avatar !== undefined) user.avatar = updates.avatar;
+    if (updates.coverPhoto !== undefined) user.coverPhoto = updates.coverPhoto;
+    if (updates.settings !== undefined) {
+      user.settings = { ...user.settings, ...updates.settings };
+    }
+
+    // Also update author info across the user's existing posts so profile picture updates everywhere!
+    if (updates.avatar !== undefined || updates.name !== undefined) {
+      this.db.posts.forEach((p) => {
+        if (p.authorId === userId || p.author.id === userId) {
+          if (updates.avatar !== undefined) p.author.avatar = updates.avatar;
+          if (updates.name !== undefined) p.author.name = updates.name;
+        }
+      });
+    }
+
+    this.persist();
+    return user;
+  }
+
+  public setOwnerRole(userId: string): ServerUser {
+    const user = this.db.users[userId];
+    if (!user) throw new Error('User not found');
+    user.role = 'owner';
+    user.isVerified = true;
+    this.persist();
+    return user;
   }
 
   public upsertGoogleUser(data: {
@@ -295,57 +618,37 @@ class DatabaseManager {
     name: string;
     avatar: string;
     connectedYouTubeChannel?: ServerUser['connectedYouTubeChannel'];
-  }): ServerUser {
-    let existing = this.getUserByGoogleId(data.googleId);
+  }): { user: ServerUser; session: ServerSession } {
+    let existing = this.getUserByGoogleId(data.googleId) || this.getUserByEmail(data.email);
 
     if (existing) {
+      existing.googleId = data.googleId;
       existing.name = data.name || existing.name;
-      existing.email = data.email || existing.email;
       existing.avatar = data.avatar || existing.avatar;
+      existing.isEmailVerified = true;
       if (data.connectedYouTubeChannel !== undefined) {
         existing.connectedYouTubeChannel = data.connectedYouTubeChannel;
       }
+      const session = this.createSession(existing.id);
       this.persist();
-      return existing;
+      return { user: existing, session };
     }
 
-    // Also check if default citizen account can be linked to this email
-    const defaultCitizen = this.db.users['usr_motherland_citizen'];
-    if (defaultCitizen && (!defaultCitizen.googleId || defaultCitizen.email === data.email)) {
-      defaultCitizen.googleId = data.googleId;
-      defaultCitizen.email = data.email;
-      defaultCitizen.name = data.name || defaultCitizen.name;
-      defaultCitizen.avatar = data.avatar || defaultCitizen.avatar;
-      if (data.connectedYouTubeChannel) {
-        defaultCitizen.connectedYouTubeChannel = data.connectedYouTubeChannel;
-      }
-      this.persist();
-      return defaultCitizen;
-    }
-
-    const newUserId = `usr_${data.googleId.slice(0, 12)}`;
-    const handle = `@${(data.email.split('@')[0] || data.name).toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-
-    const newUser: ServerUser = {
-      id: newUserId,
-      googleId: data.googleId,
-      email: data.email,
+    const reg = this.registerUser({
       name: data.name,
-      handle,
+      username: data.email.split('@')[0],
+      email: data.email,
       avatar: data.avatar,
-      bio: 'Verified MOTHERLAND Citizen via Google Authentication 🇧🇩',
-      location: 'Dhaka, Bangladesh',
-      joinDate: new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-      isVerified: true,
       platform: 'google',
-      followers: [],
-      following: [],
-      connectedYouTubeChannel: data.connectedYouTubeChannel || null,
-    };
+      googleId: data.googleId,
+    });
 
-    this.db.users[newUserId] = newUser;
-    this.persist();
-    return newUser;
+    if (data.connectedYouTubeChannel) {
+      reg.user.connectedYouTubeChannel = data.connectedYouTubeChannel;
+      this.persist();
+    }
+
+    return reg;
   }
 
   public disconnectYouTube(userId: string): ServerUser | null {
@@ -354,6 +657,142 @@ class DatabaseManager {
     user.connectedYouTubeChannel = null;
     this.persist();
     return user;
+  }
+
+  // --- Dynamic Friend Suggestions (Section 5) ---
+  public getFriendSuggestions(userId: string): ServerUser[] {
+    const currentUser = this.db.users[userId];
+    const totalUsers = Object.keys(this.db.users).length;
+
+    // Strict dynamic rules:
+    // < 3 users: 0
+    // 3 users: up to 2
+    // 10 users: 3-5
+    // 100 users: 10-12
+    if (totalUsers < 3) return [];
+
+    let maxSuggestions = 2;
+    if (totalUsers >= 50) maxSuggestions = 12;
+    else if (totalUsers >= 10) maxSuggestions = 5;
+    else if (totalUsers >= 3) maxSuggestions = 2;
+
+    const candidates = Object.values(this.db.users).filter((u) => {
+      if (u.id === userId) return false;
+      if (currentUser?.friends?.includes(u.id)) return false;
+      if (currentUser?.friendRequestsSent?.includes(u.id)) return false;
+      if (currentUser?.friendRequestsReceived?.includes(u.id)) return false;
+      if (currentUser?.blockedUsers?.includes(u.id)) return false;
+      return true;
+    });
+
+    return candidates.slice(0, maxSuggestions);
+  }
+
+  // --- Friend Requests & Relationships ---
+  public sendFriendRequest(fromUserId: string, toUserId: string): { success: boolean; status: string } {
+    const sender = this.db.users[fromUserId];
+    const receiver = this.db.users[toUserId];
+    if (!sender || !receiver) throw new Error('User not found');
+    if (fromUserId === toUserId) throw new Error('Cannot send friend request to yourself');
+
+    if (!sender.friendRequestsSent) sender.friendRequestsSent = [];
+    if (!receiver.friendRequestsReceived) receiver.friendRequestsReceived = [];
+    if (!sender.friends) sender.friends = [];
+
+    if (sender.friends.includes(toUserId)) {
+      return { success: true, status: 'already_friends' };
+    }
+    if (sender.friendRequestsSent.includes(toUserId)) {
+      return { success: true, status: 'request_already_sent' };
+    }
+
+    // Mutual request auto-accept
+    if (sender.friendRequestsReceived?.includes(toUserId)) {
+      return this.acceptFriendRequest(fromUserId, toUserId);
+    }
+
+    sender.friendRequestsSent.push(toUserId);
+    receiver.friendRequestsReceived.push(fromUserId);
+
+    this.createNotification({
+      userId: toUserId,
+      actorId: fromUserId,
+      actor: { id: sender.id, name: sender.name, handle: sender.handle, avatar: sender.avatar },
+      type: 'friend_request',
+      title: 'New Friend Request',
+      message: `${sender.name} sent you a friend request.`,
+      targetId: sender.id,
+    });
+
+    this.persist();
+    return { success: true, status: 'request_sent' };
+  }
+
+  public acceptFriendRequest(userId: string, requestFromUserId: string): { success: boolean; status: string } {
+    const user = this.db.users[userId];
+    const requester = this.db.users[requestFromUserId];
+    if (!user || !requester) throw new Error('User not found');
+
+    if (!user.friends) user.friends = [];
+    if (!requester.friends) requester.friends = [];
+
+    user.friendRequestsReceived = (user.friendRequestsReceived || []).filter((id) => id !== requestFromUserId);
+    requester.friendRequestsSent = (requester.friendRequestsSent || []).filter((id) => id !== userId);
+
+    if (!user.friends.includes(requestFromUserId)) user.friends.push(requestFromUserId);
+    if (!requester.friends.includes(userId)) requester.friends.push(userId);
+
+    this.createNotification({
+      userId: requestFromUserId,
+      actorId: userId,
+      actor: { id: user.id, name: user.name, handle: user.handle, avatar: user.avatar },
+      type: 'friend_accept',
+      title: 'Friend Request Accepted',
+      message: `${user.name} accepted your friend request. You are now friends!`,
+      targetId: user.id,
+    });
+
+    this.persist();
+    return { success: true, status: 'accepted' };
+  }
+
+  public rejectFriendRequest(userId: string, requestFromUserId: string): { success: boolean } {
+    const user = this.db.users[userId];
+    const requester = this.db.users[requestFromUserId];
+    if (user) {
+      user.friendRequestsReceived = (user.friendRequestsReceived || []).filter((id) => id !== requestFromUserId);
+    }
+    if (requester) {
+      requester.friendRequestsSent = (requester.friendRequestsSent || []).filter((id) => id !== userId);
+    }
+    this.persist();
+    return { success: true };
+  }
+
+  public cancelFriendRequest(userId: string, toUserId: string): { success: boolean } {
+    const sender = this.db.users[userId];
+    const receiver = this.db.users[toUserId];
+    if (sender) {
+      sender.friendRequestsSent = (sender.friendRequestsSent || []).filter((id) => id !== toUserId);
+    }
+    if (receiver) {
+      receiver.friendRequestsReceived = (receiver.friendRequestsReceived || []).filter((id) => id !== userId);
+    }
+    this.persist();
+    return { success: true };
+  }
+
+  public removeFriend(userId: string, friendId: string): { success: boolean } {
+    const user = this.db.users[userId];
+    const friend = this.db.users[friendId];
+    if (user && user.friends) {
+      user.friends = user.friends.filter((id) => id !== friendId);
+    }
+    if (friend && friend.friends) {
+      friend.friends = friend.friends.filter((id) => id !== userId);
+    }
+    this.persist();
+    return { success: true };
   }
 
   public toggleFollow(followerId: string, targetUserId: string): { isFollowing: boolean; followersCount: number; followingCount: number } {
@@ -375,6 +814,16 @@ class DatabaseManager {
     } else {
       target.followers.push(followerId);
       follower.following.push(targetUserId);
+
+      this.createNotification({
+        userId: targetUserId,
+        actorId: followerId,
+        actor: { id: follower.id, name: follower.name, handle: follower.handle, avatar: follower.avatar },
+        type: 'follow',
+        title: 'New Supporter',
+        message: `${follower.name} started supporting you.`,
+        targetId: follower.id,
+      });
     }
 
     this.persist();
@@ -386,14 +835,19 @@ class DatabaseManager {
   }
 
   // --- Posts Operations ---
-  public getPosts(options?: { platform?: string; limit?: number; offset?: number }): { posts: ServerPost[]; total: number } {
+  public getPosts(options?: { platform?: string; limit?: number; offset?: number; isShort?: boolean; authorId?: string }): { posts: ServerPost[]; total: number } {
     let list = [...this.db.posts];
 
     if (options?.platform && options.platform !== 'all') {
       list = list.filter((p) => p.platform === options.platform);
     }
+    if (options?.isShort !== undefined) {
+      list = list.filter((p) => !!p.isShort === options.isShort);
+    }
+    if (options?.authorId) {
+      list = list.filter((p) => p.authorId === options.authorId || p.author.id === options.authorId);
+    }
 
-    // Sort newest first
     const total = list.length;
     const offset = options?.offset || 0;
     const limit = options?.limit || 30;
@@ -407,17 +861,23 @@ class DatabaseManager {
   }
 
   public createPost(data: Omit<ServerPost, 'id' | 'likes' | 'reactions' | 'sharesCount' | 'commentsCount'> & { id?: string }): ServerPost {
+    const isShort =
+      data.isShort !== undefined
+        ? data.isShort
+        : data.media.some((m) => m.aspectRatio === '9:16') ||
+          (data.media.some((m) => m.type === 'video') && (data.content?.toLowerCase().includes('#shorts') || data.content?.toLowerCase().includes('shorts')));
+
     const newPost: ServerPost = {
       ...data,
-      id: data.id || `post_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      id: data.id || `post_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       likes: [],
-      reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] },
+      reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [], cool: [] },
       sharesCount: 0,
       commentsCount: 0,
       viewsCount: 0,
+      isShort,
     };
 
-    // Remove any existing post with same ID to avoid duplicates
     this.db.posts = this.db.posts.filter((p) => p.id !== newPost.id);
     this.db.posts.unshift(newPost);
     this.persist();
@@ -442,6 +902,7 @@ class DatabaseManager {
     originalVideoUrl?: string;
     platform?: string;
     duration?: string;
+    isShort?: boolean;
   }): ServerPost {
     let post = this.db.posts.find((p) => p.id === video.id || (video.originalVideoUrl && p.originalVideoUrl === video.originalVideoUrl));
     if (!post) {
@@ -463,7 +924,7 @@ class DatabaseManager {
             type: 'video',
             url: video.originalVideoUrl || '',
             thumbnailUrl: video.thumbnailUrl,
-            aspectRatio: '16:9',
+            aspectRatio: video.isShort ? '9:16' : '16:9',
             duration: video.duration,
           },
         ],
@@ -472,8 +933,9 @@ class DatabaseManager {
         platform: (video.platform as any) || 'youtube',
         youtubeVideoId: video.id.startsWith('yt_') ? video.id.replace('yt_', '') : video.id,
         originalVideoUrl: video.originalVideoUrl,
+        isShort: !!video.isShort,
         likes: [],
-        reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] },
+        reactions: { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [], cool: [] },
         sharesCount: 0,
         commentsCount: 0,
         viewsCount: 1,
@@ -485,12 +947,22 @@ class DatabaseManager {
   }
 
   public deletePost(postId: string, userId: string): boolean {
-    const idx = this.db.posts.findIndex((p) => p.id === postId && (p.authorId === userId || p.author.id === userId));
-    if (idx === -1) return false;
-    this.db.posts.splice(idx, 1);
-    delete this.db.comments[postId];
-    this.persist();
-    return true;
+    const post = this.db.posts.find((p) => p.id === postId);
+    if (!post) return false;
+
+    // Check ownership or admin
+    const user = this.db.users[userId];
+    const isOwner = post.authorId === userId || post.author.id === userId || user?.role === 'owner' || user?.role === 'admin';
+    if (!isOwner) return false;
+
+    const idx = this.db.posts.findIndex((p) => p.id === postId);
+    if (idx !== -1) {
+      this.db.posts.splice(idx, 1);
+      delete this.db.comments[postId];
+      this.persist();
+      return true;
+    }
+    return false;
   }
 
   public reactPost(postId: string, userId: string, reaction: string | null): ServerPost | null {
@@ -498,20 +970,37 @@ class DatabaseManager {
     if (!post) return null;
 
     if (!post.reactions) {
-      post.reactions = { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [] };
+      post.reactions = { like: [], love: [], care: [], haha: [], wow: [], sad: [], angry: [], cool: [] };
     }
     if (!post.likes) post.likes = [];
 
-    // Remove user from all reaction buckets
+    // Remove user from all reaction buckets (Enforce 1 reaction per user!)
     for (const rType of Object.keys(post.reactions)) {
       post.reactions[rType] = post.reactions[rType].filter((id) => id !== userId);
     }
     post.likes = post.likes.filter((id) => id !== userId);
 
-    // Apply new reaction if provided
-    if (reaction && post.reactions[reaction]) {
+    // Apply new reaction if provided (backward-compatible with existing 7-reaction posts)
+    if (reaction) {
+      if (!post.reactions[reaction]) {
+        post.reactions[reaction] = [];
+      }
       post.reactions[reaction].push(userId);
       post.likes.push(userId);
+
+      // Notify post author
+      const reactor = this.db.users[userId];
+      if (reactor && post.authorId !== userId) {
+        this.createNotification({
+          userId: post.authorId,
+          actorId: userId,
+          actor: { id: reactor.id, name: reactor.name, handle: reactor.handle, avatar: reactor.avatar },
+          type: 'reaction',
+          title: 'New Reaction',
+          message: `${reactor.name} reacted to your post.`,
+          targetId: post.id,
+        });
+      }
     }
 
     this.persist();
@@ -540,7 +1029,7 @@ class DatabaseManager {
     }
 
     const comment: ServerComment = {
-      id: `cmt_${Date.now()}`,
+      id: `cmt_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       postId,
       author,
       text: text.trim(),
@@ -554,6 +1043,19 @@ class DatabaseManager {
     // Recalculate commentsCount
     const allComments = this.db.comments[postId];
     post.commentsCount = allComments.reduce((acc, c) => acc + 1 + (c.replies?.length || 0), 0);
+
+    // Notify post author
+    if (post.authorId !== author.id) {
+      this.createNotification({
+        userId: post.authorId,
+        actorId: author.id,
+        actor: { id: author.id, name: author.name, handle: author.handle, avatar: author.avatar },
+        type: 'comment',
+        title: 'New Comment',
+        message: `${author.name} commented on your post: "${text.slice(0, 40)}..."`,
+        targetId: post.id,
+      });
+    }
 
     this.persist();
     return comment;
@@ -570,7 +1072,7 @@ class DatabaseManager {
     if (!comment.replies) comment.replies = [];
 
     const reply: ServerCommentReply = {
-      id: `rep_${Date.now()}`,
+      id: `rep_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       commentId,
       author,
       text: text.trim(),
@@ -582,6 +1084,19 @@ class DatabaseManager {
 
     // Recalculate commentsCount
     post.commentsCount = comments.reduce((acc, c) => acc + 1 + (c.replies?.length || 0), 0);
+
+    // Notify comment author
+    if (comment.author.id !== author.id) {
+      this.createNotification({
+        userId: comment.author.id,
+        actorId: author.id,
+        actor: { id: author.id, name: author.name, handle: author.handle, avatar: author.avatar },
+        type: 'reply',
+        title: 'New Reply',
+        message: `${author.name} replied to your comment: "${text.slice(0, 40)}..."`,
+        targetId: post.id,
+      });
+    }
 
     this.persist();
     return reply;
@@ -638,6 +1153,241 @@ class DatabaseManager {
     post.commentsCount = comments.reduce((acc, c) => acc + 1 + (c.replies?.length || 0), 0);
     this.persist();
     return true;
+  }
+
+  // --- Strict 24-Hour Stories (Section 13) ---
+  public getActiveStories(): ServerStory[] {
+    this.cleanupExpiredStories();
+    return this.db.stories || [];
+  }
+
+  public addStory(data: {
+    authorId: string;
+    author: ServerStory['author'];
+    mediaUrl: string;
+    mediaType: 'photo' | 'video';
+    caption?: string;
+  }): ServerStory {
+    const now = Date.now();
+    const story: ServerStory = {
+      id: `story_${now}_${crypto.randomBytes(3).toString('hex')}`,
+      authorId: data.authorId,
+      author: data.author,
+      mediaUrl: data.mediaUrl,
+      mediaType: data.mediaType,
+      caption: data.caption,
+      createdAt: now,
+      expiresAt: now + 24 * 60 * 60 * 1000, // Strictly 24 hours
+      views: [],
+      reactions: {},
+    };
+
+    if (!this.db.stories) this.db.stories = [];
+    this.db.stories.unshift(story);
+    this.persist();
+    return story;
+  }
+
+  public viewStory(storyId: string, userId: string): boolean {
+    const story = (this.db.stories || []).find((s) => s.id === storyId);
+    if (!story) return false;
+    if (!story.views.includes(userId)) {
+      story.views.push(userId);
+      this.persist();
+    }
+    return true;
+  }
+
+  private cleanupExpiredStories() {
+    const now = Date.now();
+    if (this.db.stories) {
+      const active = this.db.stories.filter((s) => s.expiresAt > now);
+      if (active.length !== this.db.stories.length) {
+        this.db.stories = active;
+        this.persist();
+      }
+    }
+  }
+
+  // --- Notifications System (Section 8) ---
+  public createNotification(data: {
+    userId: string;
+    actorId: string;
+    actor: { id: string; name: string; handle: string; avatar: string };
+    type: ServerNotification['type'];
+    category?: ServerNotification['category'];
+    title: string;
+    message: string;
+    targetId?: string;
+  }): ServerNotification | null {
+    if (data.userId === data.actorId) return null; // Never notify self
+
+    if (!this.db.notifications) this.db.notifications = [];
+    const now = Date.now();
+
+    // Prevent duplicate notification within 60 seconds
+    const existing = this.db.notifications.find(
+      (n) =>
+        n.userId === data.userId &&
+        n.actorId === data.actorId &&
+        n.type === data.type &&
+        n.targetId === data.targetId &&
+        now - n.createdAt < 60000
+    );
+    if (existing) return existing;
+
+    const notif: ServerNotification = {
+      id: `notif_${now}_${crypto.randomBytes(3).toString('hex')}`,
+      userId: data.userId,
+      actorId: data.actorId,
+      actor: data.actor,
+      type: data.type,
+      category: data.category || 'motherland',
+      title: data.title,
+      message: data.message,
+      targetId: data.targetId,
+      read: false,
+      createdAt: now,
+    };
+
+    this.db.notifications.unshift(notif);
+    if (this.db.notifications.length > 500) {
+      this.db.notifications = this.db.notifications.slice(0, 500);
+    }
+    this.persist();
+    return notif;
+  }
+
+  public getNotifications(userId: string, category?: string): { notifications: ServerNotification[]; unreadCount: number } {
+    if (!this.db.notifications) this.db.notifications = [];
+    let list = this.db.notifications.filter((n) => n.userId === userId);
+
+    if (category && category !== 'all') {
+      list = list.filter((n) => n.category === category);
+    }
+
+    const unreadCount = list.filter((n) => !n.read).length;
+    return { notifications: list.slice(0, 50), unreadCount };
+  }
+
+  public markNotificationRead(notifId: string, userId: string): boolean {
+    const notif = (this.db.notifications || []).find((n) => n.id === notifId && n.userId === userId);
+    if (notif) {
+      notif.read = true;
+      this.persist();
+      return true;
+    }
+    return false;
+  }
+
+  public markAllNotificationsRead(userId: string): boolean {
+    let changed = false;
+    (this.db.notifications || []).forEach((n) => {
+      if (n.userId === userId && !n.read) {
+        n.read = true;
+        changed = true;
+      }
+    });
+    if (changed) this.persist();
+    return true;
+  }
+
+  public deleteNotification(notifId: string, userId: string): boolean {
+    if (!this.db.notifications) return false;
+    const idx = this.db.notifications.findIndex((n) => n.id === notifId && n.userId === userId);
+    if (idx !== -1) {
+      this.db.notifications.splice(idx, 1);
+      this.persist();
+      return true;
+    }
+    return false;
+  }
+
+  // --- Universal Search Aggregator (Section 11) ---
+  public searchMotherland(query: string): {
+    users: ServerUser[];
+    posts: ServerPost[];
+    shorts: ServerPost[];
+    videos: ServerPost[];
+  } {
+    const q = query.toLowerCase().trim();
+    if (!q) return { users: [], posts: [], shorts: [], videos: [] };
+
+    const matchingUsers = Object.values(this.db.users)
+      .filter(
+        (u) =>
+          u.name.toLowerCase().includes(q) ||
+          u.handle.toLowerCase().includes(q) ||
+          u.bio.toLowerCase().includes(q) ||
+          u.location.toLowerCase().includes(q)
+      )
+      .slice(0, 10);
+
+    const matchingPosts = this.db.posts
+      .filter(
+        (p) =>
+          p.content.toLowerCase().includes(q) ||
+          p.author.name.toLowerCase().includes(q) ||
+          p.author.handle.toLowerCase().includes(q) ||
+          p.tags?.some((t) => t.toLowerCase().includes(q))
+      )
+      .slice(0, 20);
+
+    const shorts = matchingPosts.filter((p) => p.isShort);
+    const videos = matchingPosts.filter((p) => !p.isShort && p.media.some((m) => m.type === 'video'));
+
+    return {
+      users: matchingUsers,
+      posts: matchingPosts,
+      shorts,
+      videos,
+    };
+  }
+
+  // Autocomplete Suggestions
+  public getSearchSuggestions(query: string): string[] {
+    const q = query.toLowerCase().trim();
+    if (!q || q.length < 2) return [];
+
+    const suggestions = new Set<string>();
+
+    // Suggest matching user names/handles
+    Object.values(this.db.users).forEach((u) => {
+      if (u.name.toLowerCase().startsWith(q)) suggestions.add(u.name);
+      if (u.handle.toLowerCase().includes(q)) suggestions.add(u.handle);
+    });
+
+    // Suggest matching tags or topics
+    this.db.posts.forEach((p) => {
+      p.tags?.forEach((t) => {
+        if (t.toLowerCase().startsWith(q)) suggestions.add(`#${t}`);
+      });
+      // Match keywords in post titles
+      if (p.content.toLowerCase().includes(q)) {
+        const words = p.content.split(/\s+/);
+        const match = words.find((w) => w.toLowerCase().startsWith(q));
+        if (match && match.length > 2) suggestions.add(match.replace(/[^a-zA-Z0-9\u0980-\u09FF]/g, ''));
+      }
+    });
+
+    // Common curated Bangladeshi search terms
+    const popularTopics = [
+      'Bangladesh beautiful places',
+      'Bangladesh cricket tigers match highlights',
+      'Coke Studio Bangla top songs',
+      'Sajek Valley cloud scenery',
+      'Sundarbans documentary',
+      'Coxs Bazar sea beach',
+      'Dhaka street food review',
+      'Bangla new natok 2026',
+      'Bangla tech AI gadget review',
+    ];
+
+    popularTopics.forEach((t) => {
+      if (t.toLowerCase().includes(q)) suggestions.add(t);
+    });
+
+    return Array.from(suggestions).slice(0, 8);
   }
 }
 

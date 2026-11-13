@@ -31,6 +31,7 @@ interface UnifiedFeedProps {
   onOpenAddVideo: () => void;
   onOpenDetails: (video: UnifiedVideo) => void;
   searchOpen: boolean;
+  onOpenGlobalSearch?: () => void;
   onResetFilters: () => void;
 }
 
@@ -56,6 +57,7 @@ export const UnifiedFeed: React.FC<UnifiedFeedProps> = ({
   onOpenAddVideo,
   onOpenDetails,
   searchOpen,
+  onOpenGlobalSearch,
   onResetFilters,
 }) => {
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
@@ -138,6 +140,11 @@ export const UnifiedFeed: React.FC<UnifiedFeedProps> = ({
 
         const uniqueNew: UnifiedVideo[] = [];
         for (const v of res.videos) {
+          const isShortItem =
+            v.aspectRatio === '9:16' ||
+            v.originalVideoUrl?.includes('/shorts/') ||
+            v.title?.toLowerCase().includes('#shorts');
+          if (isShortItem) continue;
           if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
             seenIdsRef.current.add(v.id);
             seenIdsRef.current.add(v.videoId);
@@ -150,7 +157,9 @@ export const UnifiedFeed: React.FC<UnifiedFeedProps> = ({
       } catch (err) {
         console.warn('Live YouTube feed load fallback:', err);
         if (refresh && fallbackVideosRef.current.length > 0) {
-          setFeedVideos(fallbackVideosRef.current);
+          setFeedVideos(
+            fallbackVideosRef.current.filter((v) => v.aspectRatio !== '9:16')
+          );
         }
       } finally {
         setIsLoadingInitial(false);
@@ -183,6 +192,11 @@ export const UnifiedFeed: React.FC<UnifiedFeedProps> = ({
 
       const uniqueNew: UnifiedVideo[] = [];
       for (const v of res.videos) {
+        const isShortItem =
+          v.aspectRatio === '9:16' ||
+          v.originalVideoUrl?.includes('/shorts/') ||
+          v.title?.toLowerCase().includes('#shorts');
+        if (isShortItem) continue;
         if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
           seenIdsRef.current.add(v.id);
           seenIdsRef.current.add(v.videoId);
@@ -265,37 +279,32 @@ export const UnifiedFeed: React.FC<UnifiedFeedProps> = ({
 
   return (
     <div className="w-full pb-24 text-slate-100">
-      {/* Search Input Bar (Always accessible, live and responsive) */}
-      <div className="px-3 sm:px-4 py-3 bg-[#0d1320]/95 backdrop-blur-md border-b border-white/10 sticky top-[55px] z-30 shadow-xl">
-        <div className="max-w-3xl mx-auto space-y-2">
-          <form onSubmit={handleFormSubmit} className="relative flex items-center">
-            <Search className="w-4 h-4 text-emerald-400 absolute left-3.5 pointer-events-none" />
-            <input
-              type="text"
-              value={inputVal}
-              onChange={handleInputChange}
-              placeholder="সার্চ করুন: বাংলা নাটক, গান, খবর, ক্রিকেট, বা যা ইচ্ছা..."
-              className="w-full pl-10 pr-24 py-2.5 rounded-2xl bg-[#141b2d] border border-emerald-500/40 text-white placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 shadow-inner"
-            />
-            <div className="absolute right-2 flex items-center gap-1">
-              {inputVal && (
-                <button
-                  type="button"
-                  onClick={handleClearSearch}
-                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
-                  title="Clear search"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
+      {/* Quick Discovery & Single Universal Search Launcher Bar (No duplicate <input>) */}
+      <div className="px-3 sm:px-4 py-2.5 bg-[#0d1320]/95 backdrop-blur-md border-b border-white/10 sticky top-[55px] z-30 shadow-xl">
+        <div className="max-w-3xl mx-auto flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenGlobalSearch && onOpenGlobalSearch()}
+              className="flex-1 flex items-center gap-2.5 px-3.5 py-2 rounded-2xl bg-[#141b2d] hover:bg-[#1a243d] border border-emerald-500/30 text-left text-xs sm:text-sm text-slate-300 transition-all cursor-pointer"
+            >
+              <Search className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+              <span className="truncate">
+                {inputVal ? `Searching: "${inputVal}"` : 'সার্চ করুন: বাংলা নাটক, গান, খবর, ক্রিকেট...'}
+              </span>
+            </button>
+            {inputVal && (
               <button
-                type="submit"
-                className="px-3.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer"
+                type="button"
+                onClick={handleClearSearch}
+                className="px-2.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs flex items-center gap-1"
+                title="Clear filter"
               >
-                Search
+                <X className="w-3.5 h-3.5" />
+                <span className="hidden xs:inline">Clear</span>
               </button>
-            </div>
-          </form>
+            )}
+          </div>
 
           {/* Quick Search Chips from recent history */}
           {recentSearches.length > 0 && !inputVal && (

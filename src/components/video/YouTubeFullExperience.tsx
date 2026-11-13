@@ -63,6 +63,10 @@ import {
   History,
 } from 'lucide-react';
 import { UnifiedVideo } from '../../types/video';
+import { FireLikeIcon, TalkIcon, BoostIcon, PulseIcon } from '../fire/MotherlandIcons';
+import { FireEmojiPicker } from '../fire/FireEmojiPicker';
+import { FireRichText } from '../fire/FireRichText';
+import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 import {
   searchYouTube,
   searchYouTubeChannels,
@@ -88,7 +92,7 @@ import {
 import { YouTubeShortsFeed } from './YouTubeShortsFeed';
 import { YouTubeCreateModal } from './YouTubeCreateModal';
 import { YouTubeAccountModal } from './YouTubeAccountModal';
-import { InstallAppButton } from '../common/InstallAppButton';
+
 
 export type YouTubeNavSection =
   | 'home'
@@ -161,6 +165,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   const [comments, setComments] = useState<YouTubeCommentItem[]>([]);
   const [isLoadingComments, setIsLoadingComments] = useState(false);
   const [newCommentText, setNewCommentText] = useState('');
+  const [firePickerOpen, setFirePickerOpen] = useState(false);
   const [likedVideos, setLikedVideos] = useState<Record<string, boolean>>({});
   const [subscribedChannels, setSubscribedChannels] = useState<Record<string, boolean>>({
     'Coke Studio Bangla': true,
@@ -548,8 +553,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
         {/* Right: Desktop Create Action, Install, Notifications, Account */}
         <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
-          {/* Small Optional Install App Button */}
-          <InstallAppButton />
+
 
           {/* Desktop Create Action */}
           <button
@@ -700,7 +704,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                       </div>
                     </div>
 
-                    {/* Actions: Subscribe, Like, Share, External */}
+                    {/* Actions: Support, Fire Like, Boost, External */}
                     <div className="flex items-center gap-2 flex-wrap">
                       <button
                         onClick={() => {
@@ -711,11 +715,11 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                         }}
                         className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md ${
                           subscribedChannels[activeVideo.creatorName]
-                            ? 'bg-white/10 text-slate-300'
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                             : 'bg-red-600 hover:bg-red-500 text-white shadow-red-950/50'
                         }`}
                       >
-                        {subscribedChannels[activeVideo.creatorName] ? 'Subscribed ✓' : 'Subscribe'}
+                        {subscribedChannels[activeVideo.creatorName] ? 'Supporting ✓' : 'Support'}
                       </button>
 
                       <button
@@ -724,24 +728,24 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                         }}
                         className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all ${
                           likedVideos[activeVideo.videoId]
-                            ? 'bg-red-600/20 text-red-400 border-red-500/50'
+                            ? 'bg-orange-500/20 text-amber-300 border-orange-500/50'
                             : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
                         }`}
                       >
-                        <ThumbsUp className={`w-3.5 h-3.5 ${likedVideos[activeVideo.videoId] ? 'fill-current' : ''}`} />
-                        <span>{likedVideos[activeVideo.videoId] ? 'Liked' : 'Like'}</span>
+                        <FireLikeIcon className="w-4 h-4" active={Boolean(likedVideos[activeVideo.videoId])} />
+                        <span>{likedVideos[activeVideo.videoId] ? 'Fire Liked' : 'Fire Like'}</span>
                       </button>
 
                       <button
                         onClick={() => {
                           navigator.clipboard.writeText(activeVideo.originalVideoUrl);
-                          setCopiedNotice('Link copied!');
+                          setCopiedNotice('Boost link copied!');
                           setTimeout(() => setCopiedNotice(null), 2000);
                         }}
                         className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold flex items-center gap-1.5 border border-white/10"
                       >
-                        <Share2 className="w-3.5 h-3.5" />
-                        <span>{copiedNotice || 'Share'}</span>
+                        <BoostIcon className="w-4 h-4" />
+                        <span>{copiedNotice || 'Boost'}</span>
                       </button>
 
                       <a
@@ -770,12 +774,12 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                     </div>
                   </div>
 
-                  {/* Public Comments Section */}
+                  {/* Public Talk / Comments Section */}
                   <div className="pt-2 border-t border-white/5 space-y-2.5">
                     <div className="flex items-center justify-between">
                       <span className="font-bold text-xs text-white flex items-center gap-1.5">
-                        <MessageCircle className="w-3.5 h-3.5 text-red-400" />
-                        <span>Comments ({comments.length})</span>
+                        <TalkIcon className="w-4 h-4" active />
+                        <span>Talk ({comments.length})</span>
                       </span>
                       <span className="text-[10px] text-slate-500 font-mono">Live API</span>
                     </div>
@@ -797,22 +801,31 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                         ]);
                         setNewCommentText('');
                       }}
-                      className="flex items-center gap-2"
+                      className="space-y-1.5"
                     >
-                      <input
-                        type="text"
-                        value={newCommentText}
-                        onChange={(e) => setNewCommentText(e.target.value)}
-                        placeholder="Add a comment publicly..."
-                        className="flex-1 px-3 py-1.5 rounded-xl bg-[#141b2c] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-red-500"
-                      />
-                      <button
-                        type="submit"
-                        disabled={!newCommentText.trim()}
-                        className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-bold text-xs"
-                      >
-                        <Send className="w-3 h-3" />
-                      </button>
+                      <FireDraftPreview value={newCommentText} />
+                      <div className="flex items-center gap-2">
+                        <FirePickerTrigger
+                          size="sm"
+                          onClick={() => setFirePickerOpen(true)}
+                          active={firePickerOpen}
+                          title="Insert Fire Emoji"
+                        />
+                        <input
+                          type="text"
+                          value={newCommentText}
+                          onChange={(e) => setNewCommentText(e.target.value)}
+                          placeholder="Add a talk publicly..."
+                          className="flex-1 px-3 py-1.5 rounded-xl bg-[#141b2c] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-red-500"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!newCommentText.trim()}
+                          className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-bold text-xs"
+                        >
+                          <Send className="w-3 h-3" />
+                        </button>
+                      </div>
                     </form>
 
                     {/* Comments list */}
@@ -826,7 +839,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                           />
                           <div className="flex-1 min-w-0">
                             <span className="font-bold text-[11px] text-white block">{cmt.authorDisplayName}</span>
-                            <p className="text-slate-300 text-[11px] mt-0.5">{cmt.textDisplay}</p>
+                            <p className="text-slate-300 text-[11px] mt-0.5">
+                              <FireRichText text={cmt.textDisplay} emojiSize="xs" />
+                            </p>
                           </div>
                         </div>
                       ))}
@@ -941,8 +956,8 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
           <div className="p-3 sm:p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="font-extrabold text-base text-white flex items-center gap-2">
-                <Bell className="w-4 h-4 text-red-500" />
-                <span>Subscribed Channels & Premieres</span>
+                <PulseIcon className="w-4 h-4 text-red-500" active />
+                <span>Supported Channels &amp; Premieres</span>
               </h3>
             </div>
 
@@ -958,8 +973,8 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                       <p className="text-[10px] text-slate-400">Verified Partner Channel</p>
                     </div>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full bg-white/10 text-[10px] font-semibold text-slate-300">
-                    Subscribed
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-[10px] font-semibold text-emerald-300">
+                    Supporting
                   </span>
                 </div>
               ))}
@@ -1079,8 +1094,8 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         {activeNav === 'notifications' && (
           <div className="p-3 sm:p-5 space-y-3">
             <h3 className="font-bold text-base text-white flex items-center gap-2">
-              <Bell className="w-4 h-4 text-red-500" />
-              <span>Notifications</span>
+              <PulseIcon className="w-4 h-4 text-amber-400" active />
+              <span>Pulse Notifications</span>
             </h3>
 
             <div className="space-y-2">
@@ -1243,6 +1258,14 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         onClose={() => setAccountModalOpen(false)}
         currentAuth={authUser}
         onAuthUpdated={(auth) => setAuthUser(auth)}
+      />
+
+      <FireEmojiPicker
+        isOpen={firePickerOpen}
+        onClose={() => setFirePickerOpen(false)}
+        onSelect={(emoji) => {
+          setNewCommentText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.token} `);
+        }}
       />
     </div>
   );

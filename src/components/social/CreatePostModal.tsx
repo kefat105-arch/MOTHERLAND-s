@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { createNewPost, getStoredCurrentUser } from '../../services/socialService';
 import { PostMedia, PostPrivacy, SocialPost } from '../../types/social';
+import { FireEmojiPicker } from '../fire/FireEmojiPicker';
+import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 
 interface CreatePostModalProps {
   isOpen: boolean;
@@ -37,6 +39,7 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [firePickerOpen, setFirePickerOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -78,7 +81,7 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
     setMediaList((prev) => prev.filter((m) => m.id !== id));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!content.trim() && mediaList.length === 0) {
       setError('Please enter some text or add a photo/video.');
@@ -87,7 +90,7 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      const post = createNewPost(
+      const post = await createNewPost(
         content.trim(),
         mediaList,
         privacy,
@@ -129,13 +132,16 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <img
-                src={currentUser.avatar}
-                alt={currentUser.name}
+                src={
+                  currentUser?.avatar ||
+                  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'
+                }
+                alt={currentUser?.name || 'Citizen'}
                 className="w-10 h-10 rounded-full object-cover border border-emerald-500/40"
               />
               <div>
                 <span className="font-bold text-sm text-white block leading-tight">
-                  {currentUser.name}
+                  {currentUser?.name || 'Sign in required to post'}
                 </span>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <select
@@ -160,14 +166,17 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
           </div>
 
           {/* Text Area */}
-          <textarea
-            rows={4}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="What's on your mind? Share news, photos, thoughts with MOTHERLAND..."
-            className="w-full p-3.5 rounded-2xl bg-[#090d16] border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500/50 resize-none leading-relaxed"
-            autoFocus
-          />
+          <div className="space-y-2">
+            <textarea
+              rows={4}
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="What's on your mind? Share news, photos, thoughts with MOTHERLAND..."
+              className="w-full p-3.5 rounded-2xl bg-[#090d16] border border-white/10 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500/50 resize-none leading-relaxed"
+              autoFocus
+            />
+            <FireDraftPreview value={content} />
+          </div>
 
           {/* Upload Progress Bar if active */}
           {uploadProgress !== null && (
@@ -273,8 +282,22 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
                 <MapPin className="w-4 h-4" />
                 <span className="hidden sm:inline">Location</span>
               </button>
+
+              <FirePickerTrigger
+                onClick={() => setFirePickerOpen(true)}
+                active={firePickerOpen}
+                title="Insert MOTHERLAND Fire Emoji"
+              />
             </div>
           </div>
+
+          <FireEmojiPicker
+            isOpen={firePickerOpen}
+            onClose={() => setFirePickerOpen(false)}
+            onSelect={(emoji) => {
+              setContent((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.token} `);
+            }}
+          />
 
           {error && (
             <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs flex items-center gap-2">

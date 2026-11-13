@@ -85,6 +85,57 @@ export function getOfficialGoogleOAuthUrl(): string {
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
+export function triggerGoogleIdentityPrompt(
+  onSuccess: (user: GoogleAuthUser) => void,
+  onError: (err: string) => void
+): void {
+  if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+    try {
+      const client = (window as any).google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_OAUTH_CLIENT_ID,
+        scope: GOOGLE_OAUTH_SCOPES,
+        prompt: 'select_account',
+        callback: async (tokenResponse: any) => {
+          if (tokenResponse.error) {
+            onError('Google Sign-In was cancelled or failed: ' + tokenResponse.error);
+            return;
+          }
+          try {
+            const accessToken = tokenResponse.access_token;
+            const userInfo = await fetchGoogleUserInfo(accessToken);
+            const channelData = await fetchAuthenticatedChannel(accessToken);
+            const authUser: GoogleAuthUser = {
+              accessToken,
+              expiresAt: Date.now() + (tokenResponse.expires_in || 3600) * 1000,
+              email: userInfo.email,
+              name: userInfo.name,
+              avatarUrl: channelData?.avatarUrl || userInfo.picture,
+              googleId: userInfo.sub,
+              hasYouTubeChannel: !!channelData,
+              channelId: channelData?.channelId,
+              channelTitle: channelData?.channelTitle,
+              channelHandle: channelData?.channelHandle,
+              subscriberCount: channelData?.subscriberCount,
+              videoCount: channelData?.videoCount,
+              viewCount: channelData?.viewCount,
+              description: channelData?.description,
+            };
+            saveStoredGoogleAuth(authUser);
+            onSuccess(authUser);
+          } catch (err: any) {
+            onError(err?.message || 'Failed to fetch Google user details');
+          }
+        },
+      });
+      client.requestAccessToken();
+    } catch (err: any) {
+      onError(err?.message || 'Google Identity initialization failed');
+    }
+  } else {
+    onError('Google Identity Services SDK is still loading or blocked. Try again or use email sign-in.');
+  }
+}
+
 /**
  * Fetch Google UserInfo (email, name, picture, sub)
  */

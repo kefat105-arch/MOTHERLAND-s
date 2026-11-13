@@ -7,7 +7,7 @@
 
 export type PostPrivacy = 'public' | 'friends' | 'only_me';
 
-export type PostReactionType = 'like' | 'love' | 'care' | 'haha' | 'wow' | 'sad' | 'angry';
+export type PostReactionType = 'like' | 'love' | 'care' | 'haha' | 'wow' | 'sad' | 'angry' | 'cool';
 
 export interface AuthorProfile {
   id: string;
@@ -86,12 +86,58 @@ export interface SocialStory {
 }
 
 export interface CurrentUserProfile extends AuthorProfile {
+  email?: string;
+  phone?: string;
   coverPhoto: string;
   bio: string;
   location: string;
+  website?: string;
+  gender?: string;
+  dob?: string;
   joinDate: string;
+  role?: 'user' | 'owner' | 'admin';
   followersCount: number;
   followingCount: number;
+  friendsCount?: number;
+  isEmailVerified?: boolean;
+  isOwner?: boolean;
+}
+
+export interface UserRelationship {
+  isSelf: boolean;
+  isFriend: boolean;
+  requestSent: boolean;
+  requestReceived: boolean;
+  isFollowing: boolean;
+}
+
+export interface MotherlandNotification {
+  id: string;
+  userId: string;
+  actorId: string;
+  actor: AuthorProfile;
+  type:
+    | 'friend_request'
+    | 'friend_accept'
+    | 'follow'
+    | 'like'
+    | 'reaction'
+    | 'comment'
+    | 'reply'
+    | 'mention'
+    | 'share'
+    | 'post'
+    | 'video'
+    | 'story'
+    | 'system'
+    | 'youtube'
+    | 'google';
+  category: 'motherland' | 'youtube' | 'google' | 'facebook' | 'instagram';
+  title: string;
+  message: string;
+  targetId?: string;
+  read: boolean;
+  createdAt: number;
 }
 
 export type SocialNavTab = 'home' | 'friends' | 'videos' | 'marketplace' | 'notifications' | 'menu';
@@ -107,3 +153,4 @@ export interface MarketplaceItem {
   condition: string;
   postedAt: string;
 }
+

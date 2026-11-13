@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { MotherlandLogo } from './MotherlandLogo';
 import { Sparkles, ShieldCheck } from 'lucide-react';
+import { InstallAppButton } from '../common/InstallAppButton';
 
 interface MotherlandSplashScreenProps {
   onFinish: () => void;
@@ -45,10 +46,16 @@ export const MotherlandSplashScreen: React.FC<MotherlandSplashScreenProps> = ({
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 rounded-full bg-[#f42a41]/15 blur-2xl" />
       </div>
 
-      {/* Top minimal badge */}
-      <div className="relative z-10 pt-4 flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] text-emerald-400 font-mono tracking-wider">
-        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-        <span>SECURE SOCIAL ECOSYSTEM</span>
+      {/* Top Bar with Secure Badge & Top-Right Install Button (Loading Screen only) */}
+      <div className="relative z-20 w-full flex items-center justify-between pt-2 px-2">
+        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] text-emerald-400 font-mono tracking-wider">
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+          <span className="hidden sm:inline">SECURE SOCIAL ECOSYSTEM</span>
+          <span className="sm:hidden">MOTHERLAND</span>
+        </div>
+        <div className="flex items-center">
+          <InstallAppButton />
+        </div>
       </div>
 
       {/* Center Hero Emblem */}

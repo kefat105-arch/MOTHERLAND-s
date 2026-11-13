@@ -1,4 +1,3 @@
-import React from 'react';
 import {
   Sparkles,
   MessageSquare,
@@ -13,10 +12,13 @@ import {
   Facebook,
   Instagram,
   Flag,
+  Plus,
+  LogIn,
 } from 'lucide-react';
 import { MotherlandLogo } from './MotherlandLogo';
+import { PulseIcon } from '../fire/MotherlandIcons';
 import { YouTubeApiDiagnostic } from '../../services/youtubeService';
-import { InstallAppButton } from '../common/InstallAppButton';
+import { CurrentUserProfile } from '../../types/social';
 
 export type ActiveGlobalView =
   | 'motherland_home'
@@ -39,6 +41,11 @@ interface HeaderProps {
   isMobileDeviceView: boolean;
   onToggleDeviceView: () => void;
   ytDiagnostic: YouTubeApiDiagnostic;
+  currentUser?: CurrentUserProfile | null;
+  unreadNotificationCount?: number;
+  onOpenCreateMenu?: () => void;
+  onOpenNotifications?: () => void;
+  onOpenAuth?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -53,6 +60,11 @@ export const Header: React.FC<HeaderProps> = ({
   isMobileDeviceView,
   onToggleDeviceView,
   ytDiagnostic,
+  currentUser,
+  unreadNotificationCount = 0,
+  onOpenCreateMenu,
+  onOpenNotifications,
+  onOpenAuth,
 }) => {
   return (
     <header className="sticky top-0 z-40 w-full glass-panel border-b border-white/10 px-2 sm:px-5 py-2.5">
@@ -147,22 +159,44 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
 
-        {/* Top-Right Controls: Install, Search, Messenger, Profile, Server, Specs, Device frame */}
+        {/* Top-Right Controls: Universal Search, Plus (+) Action, Notifications, Messenger, Profile/Sign In, Server, Specs, Device frame */}
         <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
-          {/* Small Top-Right Install App Button (Section 1 requirement) */}
-          <InstallAppButton />
-
-          {/* Search Toggle */}
+          {/* Universal Search Bar Trigger */}
           <button
             onClick={onToggleSearch}
-            className={`p-2 rounded-xl transition-colors ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs transition-all ${
               searchOpen
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                : 'bg-white/5 hover:bg-white/10 text-slate-300'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-xs'
+                : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
             }`}
-            title="Search"
+            title="Open Universal Search (YouTube, Videos, Shorts, Posts, People)"
           >
-            <Search className="w-4 h-4" />
+            <Search className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline text-[11px] text-slate-400">Search...</span>
+          </button>
+
+          {/* Prominent PLUS (+) Button (Requirement 11) */}
+          <button
+            onClick={onOpenCreateMenu}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold text-xs shadow-md shadow-emerald-950/40 border border-emerald-400/40 active:scale-95 transition-all"
+            title="Create (+) Post, Photo, Video, Shorts, Story, Link"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span className="hidden md:inline">Create</span>
+          </button>
+
+          {/* Unified Notification Center Pulse (MOTHERLAND Custom Icon) */}
+          <button
+            onClick={onOpenNotifications}
+            className="relative p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5 transition-colors"
+            title="Pulse Notifications & Alerts"
+          >
+            <PulseIcon className="w-4 h-4 text-amber-400" active={unreadNotificationCount > 0} />
+            {unreadNotificationCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-black flex items-center justify-center animate-pulse border-2 border-[#05070c]">
+                {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+              </span>
+            )}
           </button>
 
           {/* Messenger Hub Launcher */}
@@ -172,26 +206,43 @@ export const Header: React.FC<HeaderProps> = ({
             title="MOTHERLAND Messenger Hub"
           >
             <MessageSquare className="w-4 h-4" />
-            <span className="hidden lg:inline text-xs font-semibold text-slate-200">
-              Messenger
+            <span className="hidden xl:inline text-xs font-semibold text-slate-200">
+              Chat
             </span>
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           </button>
 
-          {/* Current User Profile Trigger */}
-          <button
-            onClick={onOpenProfile}
-            className="p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200 flex items-center gap-1.5 border border-white/5 transition-colors"
-            title="Your MOTHERLAND Profile"
-          >
-            <User className="w-4 h-4 text-emerald-400" />
-            <span className="hidden md:inline text-xs font-medium">Profile</span>
-          </button>
+          {/* User Account / Profile / Sign In */}
+          {currentUser ? (
+            <button
+              onClick={onOpenProfile}
+              className="p-1 sm:px-2 sm:py-1 rounded-xl bg-white/5 hover:bg-white/10 text-slate-200 flex items-center gap-1.5 border border-white/5 transition-colors"
+              title={`Logged in as ${currentUser.name}`}
+            >
+              <img
+                src={currentUser.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'}
+                alt={currentUser.name}
+                className="w-5 h-5 rounded-full object-cover border border-emerald-400"
+              />
+              <span className="hidden lg:inline text-xs font-medium max-w-[80px] truncate">
+                {currentUser.name.split(' ')[0]}
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={onOpenAuth}
+              className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition-all flex items-center gap-1"
+              title="Sign in or Create Account"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Sign In</span>
+            </button>
+          )}
 
           {/* Multi-Server Registry Trigger */}
           <button
             onClick={onOpenServerManager}
-            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-indigo-400 hover:text-indigo-300 border border-white/5 transition-colors"
+            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-indigo-400 hover:text-indigo-300 border border-white/5 transition-colors hidden sm:flex"
             title="Multi-Server Manager & Backend Registry"
           >
             <Server className="w-4 h-4" />
@@ -200,7 +251,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Master Verification Specs Report */}
           <button
             onClick={onOpenDiagnostics}
-            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-emerald-400 border border-white/5 transition-colors hidden xs:flex"
+            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-emerald-400 border border-white/5 transition-colors hidden md:flex"
             title="Master Implementation Verification Matrix"
           >
             <ShieldCheck className="w-4 h-4 text-emerald-400" />

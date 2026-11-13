@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Trash2, ChevronLeft, ChevronRight, Play, Pause } from 'lucide-react';
 import { SocialStory } from '../../types/social';
+import { FireRichText } from '../fire/FireRichText';
 
 interface StoryViewerModalProps {
   stories: SocialStory[];
@@ -195,7 +196,7 @@ export const StoryViewerModal: React.FC<StoryViewerModalProps> = ({
         {/* Caption Overlay */}
         {currentStory.caption && (
           <div className="absolute bottom-4 left-3 right-3 z-30 p-3 rounded-2xl bg-black/75 backdrop-blur-md border border-white/10 text-white text-xs leading-relaxed text-center">
-            {currentStory.caption}
+            <FireRichText text={currentStory.caption} emojiSize="sm" />
           </div>
         )}
       </div>

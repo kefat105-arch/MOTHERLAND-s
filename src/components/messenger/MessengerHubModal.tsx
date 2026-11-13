@@ -26,6 +26,9 @@ import {
   clearMessageHistory,
 } from '../../services/messengerService';
 import { MessengerCredentials, MessengerPlatform, RealMessage } from '../../types/messenger';
+import { FireEmojiPicker } from '../fire/FireEmojiPicker';
+import { FireRichText } from '../fire/FireRichText';
+import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 
 interface MessengerHubModalProps {
   isOpen: boolean;
@@ -42,6 +45,7 @@ export const MessengerHubModal: React.FC<MessengerHubModalProps> = ({
   const [messages, setMessages] = useState<RealMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [lastActionResult, setLastActionResult] = useState<string | null>(null);
+  const [firePickerOpen, setFirePickerOpen] = useState(false);
 
   // Settings / Credentials state
   const [showCreds, setShowCreds] = useState(false);
@@ -341,10 +345,18 @@ export const MessengerHubModal: React.FC<MessengerHubModalProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Message Content
-                </label>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-slate-300">
+                    Message Content
+                  </label>
+                  <FirePickerTrigger
+                    size="sm"
+                    onClick={() => setFirePickerOpen(true)}
+                    active={firePickerOpen}
+                    title="Insert MOTHERLAND Fire Emoji"
+                  />
+                </div>
                 <textarea
                   rows={2}
                   required
@@ -353,6 +365,7 @@ export const MessengerHubModal: React.FC<MessengerHubModalProps> = ({
                   placeholder="Type your message..."
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#141b2c] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-blue-500/50 resize-none"
                 />
+                <FireDraftPreview value={messageText} />
               </div>
 
               {lastActionResult && (
@@ -413,7 +426,9 @@ export const MessengerHubModal: React.FC<MessengerHubModalProps> = ({
                         </span>
                         <span className="text-[10px] text-slate-500">{m.timestamp}</span>
                       </div>
-                      <p className="mt-1 text-slate-300 text-xs">{m.text}</p>
+                      <p className="mt-1 text-slate-300 text-xs">
+                        <FireRichText text={m.text} emojiSize="xs" />
+                      </p>
                     </div>
                     <span
                       className={`text-[10px] font-mono px-2 py-0.5 rounded-full flex-shrink-0 ${
@@ -446,6 +461,14 @@ export const MessengerHubModal: React.FC<MessengerHubModalProps> = ({
           </button>
         </div>
       </div>
+
+      <FireEmojiPicker
+        isOpen={firePickerOpen}
+        onClose={() => setFirePickerOpen(false)}
+        onSelect={(emoji) => {
+          setMessageText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.token} `);
+        }}
+      />
     </div>
   );
 };

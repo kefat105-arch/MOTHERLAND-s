@@ -12,6 +12,7 @@ import {
   MessengerPlatformInfo,
   RealMessage,
 } from '../types/messenger';
+import { fireTokensToExternalText } from './fireEmojiService';
 
 const CREDENTIALS_STORAGE_KEY = 'motherland_messenger_credentials';
 const CONNECTED_ACCOUNTS_STORAGE_KEY = 'motherland_connected_accounts_v2';
@@ -328,6 +329,8 @@ export async function sendWhatsAppMessage(
   const token = waAccount?.accessToken || creds.whatsappAccessToken;
   const phoneId = waAccount?.accountId || creds.whatsappPhoneNumberId;
 
+  const externalText = fireTokensToExternalText(text);
+
   // If user configured official Cloud API token & Phone Number ID
   if (phoneId && token) {
     try {
@@ -344,7 +347,7 @@ export async function sendWhatsAppMessage(
             recipient_type: 'individual',
             to: cleanPhone,
             type: 'text',
-            text: { preview_url: true, body: text },
+            text: { preview_url: true, body: externalText },
           }),
         }
       );
@@ -367,7 +370,7 @@ export async function sendWhatsAppMessage(
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.warn('WhatsApp Cloud API call failed, using wa.me direct launcher fallback:', errMsg);
-      const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+      const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(externalText)}`;
       window.open(waUrl, '_blank', 'noopener,noreferrer');
       recordMessageEvent({
         id: `msg_wa_${Date.now()}`,
@@ -384,7 +387,7 @@ export async function sendWhatsAppMessage(
   }
 
   // Direct wa.me launch
-  const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+  const waUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(externalText)}`;
   window.open(waUrl, '_blank', 'noopener,noreferrer');
   recordMessageEvent({
     id: `msg_wa_${Date.now()}`,
@@ -412,6 +415,8 @@ export async function sendFacebookMessage(
 
   const pageToken = fbAccount?.accessToken || creds.facebookPageAccessToken;
 
+  const externalText = fireTokensToExternalText(text);
+
   if (pageToken) {
     try {
       const response = await fetch(
@@ -421,7 +426,7 @@ export async function sendFacebookMessage(
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             recipient: { id: cleanRecipient },
-            message: { text },
+            message: { text: externalText },
           }),
         }
       );

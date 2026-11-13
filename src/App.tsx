@@ -23,6 +23,18 @@ import {
   YouTubeApiDiagnostic,
   getCachedYouTubeDiagnostic,
 } from './services/youtubeService';
+import { AuthModal } from './components/auth/AuthModal';
+import { CreateActionMenu, CreateActionType } from './components/common/CreateActionMenu';
+import { NotificationCenterModal } from './components/notifications/NotificationCenterModal';
+import { CreatePostModal } from './components/social/CreatePostModal';
+import { CreateStoryModal } from './components/social/CreateStoryModal';
+import {
+  getStoredCurrentUser,
+  fetchMe,
+  fetchNotifications,
+  saveStoredCurrentUser,
+} from './services/socialService';
+import { CurrentUserProfile, SocialPost, SocialStory } from './types/social';
 
 export default function App() {
   // Splash Screen on initial launch
@@ -47,6 +59,16 @@ export default function App() {
   const [detailVideo, setDetailVideo] = useState<UnifiedVideo | null>(null);
   const [isMobileDeviceView, setIsMobileDeviceView] = useState<boolean>(false);
 
+  // Social Overhaul State (Auth, Create Menu, Notifications)
+  const [currentUser, setCurrentUser] = useState<CurrentUserProfile | null>(getStoredCurrentUser());
+  const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
+  const [createMenuOpen, setCreateMenuOpen] = useState<boolean>(false);
+  const [notificationsOpen, setNotificationsOpen] = useState<boolean>(false);
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+  const [createPostOpen, setCreatePostOpen] = useState<boolean>(false);
+  const [createPostType, setCreatePostType] = useState<'text' | 'photo' | 'video'>('text');
+  const [createStoryOpen, setCreateStoryOpen] = useState<boolean>(false);
+
   // Diagnostic state for the provided YouTube Key
   const [diagnostic, setDiagnostic] = useState<YouTubeApiDiagnostic>(getCachedYouTubeDiagnostic());
 
@@ -55,6 +77,62 @@ export default function App() {
       setDiagnostic(diag);
     });
   }, []);
+
+  // Fetch verified user on mount
+  useEffect(() => {
+    fetchMe()
+      .then((me) => {
+        if (me) {
+          setCurrentUser(me);
+          saveStoredCurrentUser(me);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Polling notification count
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const { unreadCount: count } = await fetchNotifications();
+      setUnreadCount(count);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshNotifications();
+    const interval = setInterval(refreshNotifications, 30000);
+    return () => clearInterval(interval);
+  }, [refreshNotifications]);
+
+  const handleSelectCreateAction = (action: CreateActionType) => {
+    setCreateMenuOpen(false);
+    switch (action) {
+      case 'text':
+        setCreatePostType('text');
+        setCreatePostOpen(true);
+        break;
+      case 'photo':
+        setCreatePostType('photo');
+        setCreatePostOpen(true);
+        break;
+      case 'video':
+        setAddVideoOpen(true);
+        break;
+      case 'shorts':
+        setActiveView('tiktok');
+        setAddVideoOpen(true);
+        break;
+      case 'story':
+        setCreateStoryOpen(true);
+        break;
+      case 'link':
+        setCreatePostType('text');
+        setCreatePostOpen(true);
+        break;
+    }
+  };
 
   // Compute feed videos for universal video stream
   const videos = useMemo(() => {
@@ -135,6 +213,11 @@ export default function App() {
             isMobileDeviceView={isMobileDeviceView}
             onToggleDeviceView={() => setIsMobileDeviceView(!isMobileDeviceView)}
             ytDiagnostic={diagnostic}
+            currentUser={currentUser}
+            unreadNotificationCount={unreadCount}
+            onOpenCreateMenu={() => setCreateMenuOpen(true)}
+            onOpenNotifications={() => setNotificationsOpen(true)}
+            onOpenAuth={() => setAuthModalOpen(true)}
           />
         )}
 
@@ -143,6 +226,7 @@ export default function App() {
           {/* 1. MOTHERLAND Native Social Home Feed (Section 4 & 11A) */}
           {activeView === 'motherland_home' && (
             <MotherlandHomeFeed
+              currentUser={currentUser}
               onOpenUniversalVideos={() => setActiveView('all_videos')}
               onOpenUserProfile={() => setProfileOpen(true)}
             />
@@ -198,6 +282,7 @@ export default function App() {
                 onOpenAddVideo={() => setAddVideoOpen(true)}
                 onOpenDetails={(v) => setDetailVideo(v)}
                 searchOpen={searchOpen}
+                onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
                 onResetFilters={handleResetFilters}
               />
             </>
@@ -211,15 +296,67 @@ export default function App() {
             onSelectView={handleSelectGlobalView}
             onOpenMessenger={() => setMessengerOpen(true)}
             onOpenProfile={() => setProfileOpen(true)}
+            onOpenCreateMenu={() => setCreateMenuOpen(true)}
           />
         )}
       </div>
 
       {/* Modals & Dialogs */}
+      {/* 1. Multi-Step Authentication & Account Creation Modal */}
+      <AuthModal
+        isOpen={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onAuthSuccess={(user: CurrentUserProfile) => {
+          setCurrentUser(user);
+          saveStoredCurrentUser(user);
+          setAuthModalOpen(false);
+        }}
+      />
+
+      {/* 2. Central PLUS (+) Action Menu (6 workflows) */}
+      <CreateActionMenu
+        isOpen={createMenuOpen}
+        onClose={() => setCreateMenuOpen(false)}
+        onSelectOption={handleSelectCreateAction}
+      />
+
+      {/* 3. Unified Notification Center (Filtered by Platform) */}
+      <NotificationCenterModal
+        isOpen={notificationsOpen}
+        onClose={() => {
+          setNotificationsOpen(false);
+          refreshNotifications();
+        }}
+      />
+
+      {/* 4. Native Post Composer */}
+      <CreatePostModal
+        isOpen={createPostOpen}
+        onClose={() => setCreatePostOpen(false)}
+        onPostCreated={() => {
+          setActiveView('motherland_home');
+        }}
+        initialType={createPostType}
+      />
+
+      {/* 5. 24-Hour Story Composer */}
+      <CreateStoryModal
+        isOpen={createStoryOpen}
+        onClose={() => setCreateStoryOpen(false)}
+        onStoryCreated={() => {
+          setActiveView('motherland_home');
+        }}
+      />
+
       <UserProfileModal
         isOpen={profileOpen}
         onClose={() => setProfileOpen(false)}
         onOpenImageLightbox={(url, alt) => {}}
+        onLogout={() => setCurrentUser(null)}
+        onOpenAuth={() => {
+          setProfileOpen(false);
+          setAuthModalOpen(true);
+        }}
       />
 
       <ServerManagerModal

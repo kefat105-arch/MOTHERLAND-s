@@ -52,6 +52,9 @@ import {
   MessengerPlatform,
   RealMessage,
 } from '../../types/messenger';
+import { FireEmojiPicker } from '../fire/FireEmojiPicker';
+import { FireRichText } from '../fire/FireRichText';
+import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 
 interface UnifiedSocialMessengerProps {
   onClose?: () => void;
@@ -73,6 +76,7 @@ export const UnifiedSocialMessenger: React.FC<UnifiedSocialMessengerProps> = ({ 
   const [isSending, setIsSending] = useState(false);
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [firePickerOpen, setFirePickerOpen] = useState(false);
 
   // Connection management modal / drawer
   const [connectDrawerOpen, setConnectDrawerOpen] = useState(false);
@@ -661,7 +665,7 @@ export const UnifiedSocialMessenger: React.FC<UnifiedSocialMessengerProps> = ({ 
                     </div>
 
                     <p className="text-xs text-slate-400 truncate leading-tight">
-                      {conv.lastMessageText}
+                      <FireRichText text={conv.lastMessageText} emojiSize="xs" />
                     </p>
 
                     <div className="flex items-center justify-between mt-1.5">
@@ -791,7 +795,9 @@ export const UnifiedSocialMessenger: React.FC<UnifiedSocialMessengerProps> = ({ 
                 {activeChatMessages.map((msg) => (
                   <div key={msg.id} className="flex flex-col items-end space-y-1">
                     <div className="max-w-md p-3 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white text-xs shadow-md">
-                      <p className="leading-relaxed">{msg.text}</p>
+                      <p className="leading-relaxed">
+                        <FireRichText text={msg.text} emojiSize="sm" />
+                      </p>
                       <div className="flex items-center justify-end gap-1.5 mt-1 text-[9px] text-blue-200 font-mono">
                         <span>{msg.timestamp}</span>
                         {msg.status === 'sent_via_api' ? (
@@ -861,35 +867,52 @@ export const UnifiedSocialMessenger: React.FC<UnifiedSocialMessengerProps> = ({ 
           {/* Real Message Composer */}
           <form
             onSubmit={handleSendMessage}
-            className="p-3 sm:p-4 bg-[#0e1423] border-t border-white/5 flex items-center gap-2"
+            className="p-3 sm:p-4 bg-[#0e1423] border-t border-white/5 space-y-2"
           >
-            <button
-              type="button"
-              className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
-              title="Add attachment (where API permits)"
-            >
-              <Paperclip className="w-4 h-4" />
-            </button>
+            <FireDraftPreview value={inputText} />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-colors"
+                title="Add attachment (where API permits)"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
 
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Type your message to dispatch..."
-              className="flex-1 px-4 py-2.5 rounded-xl bg-[#141b2c] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-blue-500/50"
-            />
+              <FirePickerTrigger
+                onClick={() => setFirePickerOpen(true)}
+                active={firePickerOpen}
+                title="Insert MOTHERLAND Fire Emoji"
+              />
 
-            <button
-              type="submit"
-              disabled={!inputText.trim() || isSending}
-              className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-blue-900/40 transition-all active:scale-95 flex-shrink-0"
-            >
-              <Send className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Send</span>
-            </button>
+              <input
+                type="text"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="Type your message to dispatch..."
+                className="flex-1 px-4 py-2.5 rounded-xl bg-[#141b2c] border border-white/10 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-blue-500/50"
+              />
+
+              <button
+                type="submit"
+                disabled={!inputText.trim() || isSending}
+                className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-blue-900/40 transition-all active:scale-95 flex-shrink-0"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Send</span>
+              </button>
+            </div>
           </form>
         </div>
       </div>
+
+      <FireEmojiPicker
+        isOpen={firePickerOpen}
+        onClose={() => setFirePickerOpen(false)}
+        onSelect={(emoji) => {
+          setInputText((prev) => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.token} `);
+        }}
+      />
     </div>
   );
 };

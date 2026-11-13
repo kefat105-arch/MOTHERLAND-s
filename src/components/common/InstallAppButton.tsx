@@ -20,17 +20,9 @@ export const InstallAppButton: React.FC<InstallAppButtonProps> = ({
     triggerInstall,
   } = usePWAInstall();
 
-  // If already installed in standalone mode, display a quiet, verified badge
+  // If already installed in standalone mode, do not show button
   if (isInstalled) {
-    return (
-      <span
-        className={`inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-[11px] font-semibold text-emerald-400 select-none ${className}`}
-        title="MOTHERLAND is running as an installed app"
-      >
-        <CheckCircle2 className="w-3.5 h-3.5" />
-        <span className="hidden sm:inline">Installed</span>
-      </span>
-    );
+    return null;
   }
 
   return (

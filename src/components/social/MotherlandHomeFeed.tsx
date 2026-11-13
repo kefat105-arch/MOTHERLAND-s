@@ -4,7 +4,6 @@ import {
   Users,
   Film,
   ShoppingBag,
-  Bell,
   Menu,
   Plus,
   Image as ImageIcon,
@@ -16,7 +15,10 @@ import {
   RefreshCw,
   Sliders,
   Filter,
+  UserPlus,
+  UserCheck,
 } from 'lucide-react';
+import { PulseIcon } from '../fire/MotherlandIcons';
 import {
   SocialNavTab,
   SocialPost,
@@ -31,6 +33,12 @@ import {
   syncPostsFromBackend,
   getStoredStories,
   saveStoredStories,
+  fetchActiveStories,
+  fetchFriendSuggestions,
+  sendFriendRequestApi,
+  cancelFriendRequestApi,
+  getWatchHistory,
+  fetchNotifications,
 } from '../../services/socialService';
 import { searchYouTube } from '../../services/youtubeService';
 import { UnifiedVideo } from '../../types/video';
@@ -42,18 +50,26 @@ import { ImageLightboxModal } from './ImageLightboxModal';
 import { VideoEditorStudio } from '../video/VideoEditorStudio';
 
 interface MotherlandHomeFeedProps {
+  currentUser?: CurrentUserProfile | null;
   onOpenUniversalVideos?: () => void;
   onOpenUserProfile?: () => void;
 }
 
 type FeedFilter = 'all' | 'motherland' | 'youtube' | 'videos' | 'photos';
 
+const DEFAULT_AVATAR =
+  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80';
+
 export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
+  currentUser: propCurrentUser,
   onOpenUniversalVideos,
   onOpenUserProfile,
 }) => {
   const [socialTab, setSocialTab] = useState<SocialNavTab>('home');
-  const [currentUser] = useState<CurrentUserProfile>(getStoredCurrentUser());
+  const [localCurrentUser, setLocalCurrentUser] = useState<CurrentUserProfile | null>(
+    () => propCurrentUser ?? getStoredCurrentUser()
+  );
+  const currentUser = propCurrentUser !== undefined ? propCurrentUser : localCurrentUser;
   const [nativePosts, setNativePosts] = useState<SocialPost[]>(getStoredPosts());
   const [mixedPosts, setMixedPosts] = useState<SocialPost[]>([]);
   const [stories, setStories] = useState<SocialStory[]>(getStoredStories());
@@ -80,6 +96,17 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [lightboxAlt, setLightboxAlt] = useState<string | undefined>(undefined);
   const [editorStudioOpen, setEditorStudioOpen] = useState(false);
+
+  // Dynamic Friend Suggestions & Requests (Strict requirement 5)
+  const [friendSuggestions, setFriendSuggestions] = useState<any[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [sentRequestUserIds, setSentRequestUserIds] = useState<Set<string>>(new Set());
+  const [tabNotifications, setTabNotifications] = useState<any[]>([]);
+  const isRefreshingRef = useRef(false);
+
+  useEffect(() => {
+    setLocalCurrentUser(getStoredCurrentUser());
+  }, [propCurrentUser]);
 
   // Convert UnifiedVideo to SocialPost format
   const convertYouTubeToSocialPost = useCallback((video: UnifiedVideo): SocialPost => {
@@ -113,7 +140,6 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
         },
       ],
       createdAt: video.publishedAt ? new Date(video.publishedAt).toLocaleDateString() : 'Recent',
-      // Real counts: ZERO fake likes or comments
       likesCount: 0,
       commentsCount: 0,
       sharesCount: 0,
@@ -123,7 +149,7 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
       platform: 'youtube',
       youtubeVideoId: video.videoId || undefined,
       originalVideoUrl: video.originalVideoUrl,
-      reactions: { like: 0, love: 0, care: 0, haha: 0, wow: 0, sad: 0, angry: 0 },
+      reactions: { like: 0, love: 0, care: 0, haha: 0, wow: 0, sad: 0, angry: 0, cool: 0 },
       userReaction: null,
     };
   }, []);
@@ -131,10 +157,18 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
   // Fetch real YouTube videos and interleave with native posts
   const loadMixedFeed = useCallback(
     async (isRefresh: boolean = false) => {
-      if (isRefreshing) return;
+      if (isRefreshingRef.current) return;
+      isRefreshingRef.current = true;
       if (isRefresh) setIsRefreshing(true);
 
       try {
+        // Sync active unexpired stories from backend (Strict 24h expiration)
+        fetchActiveStories().then((activeStories) => {
+          if (activeStories && Array.isArray(activeStories)) {
+            setStories(activeStories);
+          }
+        }).catch(() => {});
+
         // Sync real posts from backend database
         const stored = await syncPostsFromBackend();
         setNativePosts(stored);
@@ -167,18 +201,32 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
           }
         }
 
-        setMixedPosts(interleaved);
+        // Prioritize fresh/unwatched videos (Requirement 15)
+        const watchedHistory = getWatchHistory();
+        const watchedSet = new Set(watchedHistory);
+        const prioritized = [...interleaved].sort((a, b) => {
+          const aId = a.youtubeVideoId || a.id;
+          const bId = b.youtubeVideoId || b.id;
+          const aWatched = watchedSet.has(aId);
+          const bWatched = watchedSet.has(bId);
+          if (aWatched && !bWatched) return 1;
+          if (!aWatched && bWatched) return -1;
+          return 0;
+        });
+
+        setMixedPosts(prioritized);
       } catch (err) {
         console.warn('Could not fetch YouTube videos for home feed:', err);
         // Fallback to native posts
         setMixedPosts(getStoredPosts());
       } finally {
+        isRefreshingRef.current = false;
         if (isRefresh) {
           setTimeout(() => setIsRefreshing(false), 300);
         }
       }
     },
-    [convertYouTubeToSocialPost, isRefreshing]
+    [convertYouTubeToSocialPost]
   );
 
   // Initial load
@@ -238,6 +286,44 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
 
     return () => observer.disconnect();
   }, [socialTab, isLoadingMore, hasMore, loadMoreVideos]);
+
+  // Load real dynamic friend suggestions or notifications when switching tabs
+  useEffect(() => {
+    if (socialTab === 'friends') {
+      setLoadingSuggestions(true);
+      fetchFriendSuggestions()
+        .then((data) => {
+          setFriendSuggestions(data || []);
+        })
+        .catch((err) => {
+          console.warn('Failed to fetch friend suggestions:', err);
+          setFriendSuggestions([]);
+        })
+        .finally(() => {
+          setLoadingSuggestions(false);
+        });
+    } else if (socialTab === 'notifications') {
+      fetchNotifications()
+        .then((res) => {
+          setTabNotifications(res.notifications || []);
+        })
+        .catch(() => setTabNotifications([]));
+    }
+  }, [socialTab]);
+
+  const handleToggleFriendRequest = async (userId: string) => {
+    if (sentRequestUserIds.has(userId)) {
+      await cancelFriendRequestApi(userId);
+      setSentRequestUserIds((prev) => {
+        const next = new Set(prev);
+        next.delete(userId);
+        return next;
+      });
+    } else {
+      await sendFriendRequestApi(userId);
+      setSentRequestUserIds((prev) => new Set(prev).add(userId));
+    }
+  };
 
   // Touch Pull-to-Refresh Handlers
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -410,10 +496,10 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
               ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-xs'
               : 'hover:bg-white/5 text-slate-400 hover:text-white'
           }`}
-          title="Notifications"
+          title="Pulse Notifications"
         >
-          <Bell className="w-4 h-4" />
-          <span className="hidden xs:inline">Alerts</span>
+          <PulseIcon className="w-4 h-4" />
+          <span className="hidden xs:inline">Pulse</span>
           <span className="w-2 h-2 rounded-full bg-emerald-400 absolute top-1.5 right-3" />
         </button>
 
@@ -449,8 +535,8 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
                 className="relative flex-shrink-0 w-28 h-44 rounded-2xl overflow-hidden bg-[#111728] border border-emerald-500/30 hover:border-emerald-400 cursor-pointer group shadow-lg flex flex-col justify-between p-2 select-none"
               >
                 <img
-                  src={currentUser.avatar}
-                  alt={currentUser.name}
+                  src={currentUser?.avatar || DEFAULT_AVATAR}
+                  alt={currentUser?.name || 'Guest'}
                   className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform opacity-60"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-black via-black/30 to-transparent" />
@@ -497,15 +583,15 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
           <div className="rounded-3xl bg-[#0f1422] border border-white/10 p-4 shadow-xl">
             <div className="flex items-center gap-3">
               <img
-                src={currentUser.avatar}
-                alt={currentUser.name}
+                src={currentUser?.avatar || DEFAULT_AVATAR}
+                alt={currentUser?.name || 'Guest'}
                 className="w-10 h-10 rounded-full object-cover border border-emerald-500/40"
               />
               <button
                 onClick={() => handleOpenCreatePost('text')}
                 className="flex-1 text-left px-4 py-2.5 rounded-2xl bg-[#141b2e] hover:bg-[#1a233b] border border-white/5 text-xs sm:text-sm text-slate-400 hover:text-slate-200 transition-colors"
               >
-                What&apos;s on your mind, {currentUser.name.split(' ')[0]}?
+                What&apos;s on your mind, {(currentUser?.name || 'Friend').split(' ')[0]}?
               </button>
             </div>
 
@@ -607,60 +693,86 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
         </>
       )}
 
-      {/* Friends Tab */}
+      {/* Friends Tab — Dynamic Friend Requests & Suggestions (Strict Requirement 5) */}
       {socialTab === 'friends' && (
         <div className="p-5 rounded-3xl bg-[#0f1422] border border-white/10 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-bold text-base text-white">Friends & Community Connect</h3>
-            <span className="text-xs text-emerald-400 font-mono font-semibold">
-              {currentUser.followersCount} Followers
+            <div>
+              <h3 className="font-bold text-base text-white">Friend Suggestions</h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                People you may know on MOTHERLAND based on genuine active members
+              </p>
+            </div>
+            <span className="text-xs text-emerald-400 font-mono font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30">
+              {currentUser?.friendsCount || 0} Friends
             </span>
           </div>
-          <p className="text-xs text-slate-400">
-            Connect with verified Bangladeshi creators, photographers, and community leaders inside MOTHERLAND.
-          </p>
 
-          <div className="divide-y divide-white/5">
-            {[
-              {
-                name: 'Heritage Bangladesh',
-                handle: '@heritage_bd',
-                avatar:
-                  'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
-                bio: 'Preserving Bengali historical architecture and culture.',
-              },
-              {
-                name: 'Ananya Sen',
-                handle: '@ananya_art',
-                avatar:
-                  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&auto=format&fit=crop&q=80',
-                bio: 'Wildlife photography & mangrove expeditions in Khulna.',
-              },
-              {
-                name: 'Rafiqul Islam',
-                handle: '@rafiq_drone',
-                avatar:
-                  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&auto=format&fit=crop&q=80',
-                bio: 'Aerial drone cinematographer across Dhaka and Cox’s Bazar.',
-              },
-            ].map((f, i) => (
-              <div key={i} className="py-3 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <img src={f.avatar} alt={f.name} className="w-10 h-10 rounded-full object-cover" />
-                  <div>
-                    <div className="flex items-center gap-1 font-bold text-white text-xs sm:text-sm">
-                      <span>{f.name}</span>
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+          {loadingSuggestions ? (
+            <div className="py-8 flex flex-col items-center justify-center text-xs text-slate-400 space-y-2">
+              <div className="w-6 h-6 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" />
+              <span>Checking community network...</span>
+            </div>
+          ) : friendSuggestions.length === 0 ? (
+            <div className="py-8 text-center space-y-2">
+              <Users className="w-10 h-10 text-slate-600 mx-auto" />
+              <h4 className="text-sm font-semibold text-slate-300">No suggestions yet</h4>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                As more genuine citizens create accounts on MOTHERLAND, dynamic friend suggestions will appear here according to privacy rules.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-white/5">
+              {friendSuggestions.map((sugUser) => {
+                const isRequested = sentRequestUserIds.has(sugUser.id);
+                return (
+                  <div key={sugUser.id} className="py-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={sugUser.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'}
+                        alt={sugUser.name}
+                        className="w-10 h-10 rounded-full object-cover border border-emerald-500/30"
+                      />
+                      <div>
+                        <div className="flex items-center gap-1 font-bold text-white text-xs sm:text-sm">
+                          <span>{sugUser.name}</span>
+                          {sugUser.isOwner && (
+                            <span className="px-1.5 py-0.2 rounded-md bg-amber-500/20 text-amber-300 text-[9px] font-mono border border-amber-500/30">
+                              Founder
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400 line-clamp-1">
+                          {sugUser.bio || `@${sugUser.username}`}
+                        </p>
+                      </div>
                     </div>
-                    <p className="text-[11px] text-slate-400 line-clamp-1">{f.bio}</p>
+
+                    <button
+                      onClick={() => handleToggleFriendRequest(sugUser.id)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 ${
+                        isRequested
+                          ? 'bg-white/10 hover:bg-white/15 text-slate-300 border border-white/10'
+                          : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-950/40'
+                      }`}
+                    >
+                      {isRequested ? (
+                        <>
+                          <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Requested</span>
+                        </>
+                      ) : (
+                        <>
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>Add Friend</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                </div>
-                <button className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold">
-                  Following
-                </button>
-              </div>
-            ))}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -713,22 +825,28 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
       {/* Notifications Tab */}
       {socialTab === 'notifications' && (
         <div className="p-5 rounded-3xl bg-[#0f1422] border border-white/10 space-y-3">
-          <h3 className="font-bold text-base text-white mb-2">Notifications & Activity</h3>
-          <div className="space-y-2">
-            {[
-              { id: 'n1', text: 'Heritage Bangladesh liked your community post.', time: '10m ago' },
-              { id: 'n2', text: 'Rafiqul Islam published a new story from Dhaka.', time: '1h ago' },
-              { id: 'n3', text: 'Dhaka Culinary Trails replied to your comment on Kacchi Biryani.', time: '3h ago' },
-            ].map((n) => (
-              <div
-                key={n.id}
-                className="p-3 rounded-2xl bg-[#141b2c] border border-white/5 text-xs flex items-center justify-between"
-              >
-                <span className="text-slate-200">{n.text}</span>
-                <span className="text-[10px] text-slate-500 font-mono ml-2">{n.time}</span>
-              </div>
-            ))}
-          </div>
+          <h3 className="font-bold text-base text-white mb-2">Notifications &amp; Activity</h3>
+          {tabNotifications.length === 0 ? (
+            <p className="text-xs text-slate-400 py-4 text-center">
+              {currentUser
+                ? 'No new notifications right now. Real activity from your connections will appear here.'
+                : 'Sign in to view your personalized notifications.'}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {tabNotifications.map((n) => (
+                <div
+                  key={n.id}
+                  className="p-3 rounded-2xl bg-[#141b2c] border border-white/5 text-xs flex items-center justify-between"
+                >
+                  <span className="text-slate-200">{n.message || n.title}</span>
+                  <span className="text-[10px] text-slate-500 font-mono ml-2">
+                    {n.createdAt ? new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -736,10 +854,14 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
       {socialTab === 'menu' && (
         <div className="p-5 rounded-3xl bg-[#0f1422] border border-white/10 space-y-4">
           <div className="flex items-center gap-3 pb-3 border-b border-white/5">
-            <img src={currentUser.avatar} alt={currentUser.name} className="w-12 h-12 rounded-full object-cover" />
+            <img
+              src={currentUser?.avatar || DEFAULT_AVATAR}
+              alt={currentUser?.name || 'Guest'}
+              className="w-12 h-12 rounded-full object-cover"
+            />
             <div>
-              <h4 className="font-bold text-white text-base">{currentUser.name}</h4>
-              <span className="text-xs text-slate-400 font-mono">{currentUser.handle}</span>
+              <h4 className="font-bold text-white text-base">{currentUser?.name || 'Guest Visitor'}</h4>
+              <span className="text-xs text-slate-400 font-mono">{currentUser?.handle || '@guest'}</span>
             </div>
           </div>
 
@@ -793,7 +915,14 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
           // Create a new post with the edited video
           const newPost: SocialPost = {
             id: `post_studio_${Date.now()}`,
-            author: currentUser,
+            author: {
+              id: currentUser?.id || 'guest',
+              name: currentUser?.name || 'MOTHERLAND Creator',
+              handle: currentUser?.handle || '@creator',
+              avatar: currentUser?.avatar || DEFAULT_AVATAR,
+              isVerified: currentUser?.isVerified,
+              platform: 'motherland',
+            },
             content: data.textOverlay || 'Created with MOTHERLAND Video Studio 🇧🇩',
             media: [
               {
@@ -804,15 +933,15 @@ export const MotherlandHomeFeed: React.FC<MotherlandHomeFeedProps> = ({
               },
             ],
             createdAt: 'Just now',
-            likesCount: 1,
+            likesCount: 0,
             commentsCount: 0,
             sharesCount: 0,
             isLiked: false,
             isSaved: false,
             privacy: 'public',
             platform: 'motherland',
-            reactions: { like: 1, love: 0, care: 0, haha: 0, wow: 0, sad: 0, angry: 0 },
-            userReaction: 'like',
+            reactions: { like: 0, love: 0, care: 0, haha: 0, wow: 0, sad: 0, angry: 0, cool: 0 },
+            userReaction: null,
           };
           handlePostCreated(newPost);
         }}

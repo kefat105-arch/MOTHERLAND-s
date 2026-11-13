@@ -72,3 +72,23 @@
 .glow-motherland {
   box-shadow: 0 0 30px -5px rgba(16, 185, 129, 0.35);
 }
+
+@keyframes fire-pop {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2px) scale(1.06); }
+}
+
+@keyframes fire-wiggle {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  25% { transform: rotate(-5deg) scale(1.05); }
+  75% { transform: rotate(5deg) scale(1.05); }
+}
+
+.animate-fire-pop {
+  animation: fire-pop 2.2s ease-in-out infinite;
+}
+
+.animate-fire-wiggle {
+  animation: fire-wiggle 1.8s ease-in-out infinite;
+}
+
