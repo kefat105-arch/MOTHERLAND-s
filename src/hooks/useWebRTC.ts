@@ -117,7 +117,7 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
       endClearTimerRef.current = window.setTimeout(() => {
         setCall(null);
         onCallEnded?.();
-      }, 1800);
+      }, finalPhase === 'failed' ? 5000 : 1800);
     },
     [cleanupPeerAndMedia, onCallEnded]
   );
@@ -154,9 +154,18 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
       remoteStreamRef.current = remote;
       setRemoteStream(remote);
 
-      stream.getTracks().forEach((track) => {
-        pc.addTrack(track, stream);
-      });
+      const tracks = stream.getTracks();
+      if (tracks.length > 0) {
+        tracks.forEach((track) => {
+          pc.addTrack(track, stream);
+        });
+      }
+      if (!tracks.some((t) => t.kind === 'audio')) {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      }
+      if (callType === 'video' && !tracks.some((t) => t.kind === 'video')) {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      }
 
       pc.ontrack = (event) => {
         event.streams.forEach((s) => {
@@ -235,9 +244,17 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
   );
 
   const acquireUserMedia = useCallback(
-    async (wantVideo: boolean, facingMode: 'user' | 'environment' = 'user'): Promise<{ stream: MediaStream; actualVideo: boolean }> => {
+    async (
+      wantVideo: boolean,
+      facingMode: 'user' | 'environment' = 'user'
+    ): Promise<{ stream: MediaStream; actualVideo: boolean; actualAudio: boolean; fallbackNote?: string }> => {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Media devices API unavailable in this browser context.');
+        return {
+          stream: new MediaStream(),
+          actualVideo: false,
+          actualAudio: false,
+          fallbackNote: 'Microphone/camera unavailable in this browser context — listen-only mode.',
+        };
       }
       if (wantVideo) {
         try {
@@ -245,21 +262,52 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
             audio: { echoCancellation: true, noiseSuppression: true },
             video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
           });
-          return { stream, actualVideo: true };
-        } catch {
+          return { stream, actualVideo: true, actualAudio: true };
+        } catch (err: any) {
           // Graceful fallback to audio-only if camera denied or missing
-          const audioStream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true },
-            video: false,
-          });
-          return { stream: audioStream, actualVideo: false };
+          try {
+            const audioStream = await navigator.mediaDevices.getUserMedia({
+              audio: { echoCancellation: true, noiseSuppression: true },
+              video: false,
+            });
+            return {
+              stream: audioStream,
+              actualVideo: false,
+              actualAudio: true,
+              fallbackNote: 'Camera unavailable — continuing as voice call.',
+            };
+          } catch (audioErr: any) {
+            const name = audioErr?.name || err?.name || '';
+            if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+              throw new Error('Microphone & camera permission denied. Please allow access in browser settings.');
+            }
+            return {
+              stream: new MediaStream(),
+              actualVideo: false,
+              actualAudio: false,
+              fallbackNote: 'No camera/microphone detected — joined in listen-only mode.',
+            };
+          }
         }
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-        video: false,
-      });
-      return { stream, actualVideo: false };
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+          video: false,
+        });
+        return { stream, actualVideo: false, actualAudio: true };
+      } catch (audioErr: any) {
+        const name = audioErr?.name || '';
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+          throw new Error('Microphone permission denied. Please allow microphone access in browser settings.');
+        }
+        return {
+          stream: new MediaStream(),
+          actualVideo: false,
+          actualAudio: false,
+          fallbackNote: 'No microphone detected — joined in listen-only mode.',
+        };
+      }
     },
     []
   );
@@ -280,8 +328,30 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
       if (!currentUser) return;
       if (callRef.current) return;
 
-      const peer = conv.participants.find((p) => p.id !== currentUser.id) || conv.participants[0];
-      if (!peer) return;
+      const peer = conv.participants.find((p) => p.id !== currentUser.id);
+      if (!peer) {
+        setCall({
+          callId: `call_${Date.now()}`,
+          conversationId: conv.id,
+          peerUserId: currentUser.id,
+          peerName: conv.name || currentUser.displayName,
+          peerAvatar: currentUser.avatar,
+          isGroupCall: Boolean(conv.isGroup),
+          callType,
+          phase: 'failed',
+          durationSeconds: 0,
+          isMuted: true,
+          isCameraOff: true,
+          facingMode: 'user',
+          remoteMuted: false,
+          remoteCameraOff: true,
+          hasTurn: false,
+          statusNote: 'No other member in this conversation to call.',
+        });
+        if (endClearTimerRef.current) window.clearTimeout(endClearTimerRef.current);
+        endClearTimerRef.current = window.setTimeout(() => setCall(null), 3500);
+        return;
+      }
 
       const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const isGroup = Boolean(conv.isGroup);
@@ -309,34 +379,46 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
       });
 
       try {
-        const { stream, actualVideo } = await acquireUserMedia(callType === 'video', 'user');
+        const { stream, actualVideo, actualAudio, fallbackNote } = await acquireUserMedia(
+          callType === 'video',
+          'user'
+        );
         localStreamRef.current = stream;
         setLocalStream(stream);
-        if (callType === 'video' && !actualVideo) {
+        if ((callType === 'video' && !actualVideo) || !actualAudio || fallbackNote) {
           setCall((prev) =>
             prev
               ? {
                   ...prev,
-                  callType: 'audio',
-                  isCameraOff: true,
-                  statusNote: 'Camera unavailable — continuing as voice call.',
+                  callType: actualVideo ? 'video' : 'audio',
+                  isCameraOff: !actualVideo,
+                  isMuted: !actualAudio,
+                  statusNote: fallbackNote || prev.statusNote,
                 }
               : prev
           );
         }
 
-        const pc = await createPeerConnection(callId, conv.id, peer.id, actualVideo ? 'video' : 'audio', stream);
+        const effectiveCallType = actualVideo ? 'video' : 'audio';
+        const pc = await createPeerConnection(callId, conv.id, peer.id, effectiveCallType, stream);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        const sent = sendWsEvent('call:signal', {
+        const signalPayload = {
           callId,
           conversationId: conv.id,
           targetUserId: isGroup ? undefined : peer.id,
-          callType: actualVideo ? 'video' : 'audio',
+          callType: effectiveCallType,
           signalType: 'offer',
           sdp: offer,
-        });
+        };
+
+        let sent = sendWsEvent('call:signal', signalPayload);
+        for (let attempt = 0; !sent && attempt < 8; attempt++) {
+          await new Promise((r) => window.setTimeout(r, 300));
+          if (!callRef.current || callRef.current.callId !== callId) return;
+          sent = sendWsEvent('call:signal', signalPayload);
+        }
 
         if (!sent) {
           throw new Error('Realtime Wave socket is reconnecting. Please try again in a moment.');
@@ -370,11 +452,24 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
 
     setCall((prev) => (prev ? { ...prev, phase: 'connecting', statusNote: 'Connecting media...' } : prev));
     try {
-      const { stream, actualVideo } = await acquireUserMedia(cur.callType === 'video', cur.facingMode);
+      const { stream, actualVideo, actualAudio, fallbackNote } = await acquireUserMedia(
+        cur.callType === 'video',
+        cur.facingMode
+      );
       localStreamRef.current = stream;
       setLocalStream(stream);
-      if (cur.callType === 'video' && !actualVideo) {
-        setCall((prev) => (prev ? { ...prev, isCameraOff: true, callType: 'audio' } : prev));
+      if ((cur.callType === 'video' && !actualVideo) || !actualAudio || fallbackNote) {
+        setCall((prev) =>
+          prev
+            ? {
+                ...prev,
+                isCameraOff: !actualVideo,
+                isMuted: !actualAudio,
+                callType: actualVideo ? 'video' : 'audio',
+                statusNote: fallbackNote || prev.statusNote,
+              }
+            : prev
+        );
       }
 
       const pc = await createPeerConnection(
@@ -427,6 +522,16 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
   const endCall = useCallback(() => {
     const cur = callRef.current;
     if (!cur) return;
+    if (cur.phase === 'ended' || cur.phase === 'failed') {
+      if (endClearTimerRef.current) {
+        window.clearTimeout(endClearTimerRef.current);
+        endClearTimerRef.current = null;
+      }
+      cleanupPeerAndMedia();
+      setCall(null);
+      onCallEnded?.();
+      return;
+    }
     sendWsEvent('call:signal', {
       callId: cur.callId,
       conversationId: cur.conversationId,
@@ -436,7 +541,7 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
       durationSeconds: cur.durationSeconds,
     });
     finishCallUI('ended', cur.phase === 'outgoing' ? 'Canceled' : 'Call ended');
-  }, [finishCallUI, sendWsEvent]);
+  }, [cleanupPeerAndMedia, finishCallUI, onCallEnded, sendWsEvent]);
 
   const toggleMute = useCallback(() => {
     const stream = localStreamRef.current;

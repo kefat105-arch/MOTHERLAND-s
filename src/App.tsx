@@ -49,6 +49,8 @@ import { AuthModal } from './components/AuthModal';
 import { SocialAppsHub } from './components/social-apps/SocialAppsHub';
 import { MotherlandLogo } from './components/layout/MotherlandLogo';
 import { YouTubeFullExperience } from './components/video/YouTubeFullExperience';
+import { CallOverlay } from './components/wave/CallOverlay';
+import { useWebRTC } from './hooks/useWebRTC';
 import {
   useBackHandler,
   subscribeEdgeSwipeProgress,
@@ -108,7 +110,11 @@ export default function App() {
     message: ChatMessage;
   } | null>(null);
   const [onlineUsersMap, setOnlineUsersMap] = useState<Record<string, boolean>>({});
+  const [typingMap, setTypingMap] = useState<
+    Record<string, { userId: string; userName: string; expiresAt: number }>
+  >({});
   const [chatTargetUserId, setChatTargetUserId] = useState<string | null>(null);
+  const handleCallSignalRef = useRef<(payload: Record<string, any>) => void>(() => {});
 
   // Loading States
   const [isLoadingFeed, setIsLoadingFeed] = useState(true);
@@ -218,9 +224,35 @@ export default function App() {
         });
         setMessagesRealtimeSignal((s) => s + 1);
         refreshUnreadMessages();
-      } else if (evt.type === 'chat:read') {
+      } else if (
+        evt.type === 'chat:read' ||
+        evt.type === 'chat:message_update' ||
+        evt.type === 'chat:message_delete' ||
+        evt.type === 'conv:update'
+      ) {
         setMessagesRealtimeSignal((s) => s + 1);
         refreshUnreadMessages();
+      } else if (evt.type === 'chat:typing' && evt.conversationId && evt.userId) {
+        const convId = String(evt.conversationId);
+        if (evt.isTyping) {
+          setTypingMap((prev) => ({
+            ...prev,
+            [convId]: {
+              userId: String(evt.userId),
+              userName: String(evt.userName || 'Someone'),
+              expiresAt: Date.now() + 3500,
+            },
+          }));
+        } else {
+          setTypingMap((prev) => {
+            if (!prev[convId]) return prev;
+            const next = { ...prev };
+            delete next[convId];
+            return next;
+          });
+        }
+      } else if (evt.type === 'call:signal') {
+        handleCallSignalRef.current(evt);
       } else if (evt.type === 'friend:update') {
         setFriendsRefreshSignal((s) => s + 1);
         refreshNotifications();
@@ -242,7 +274,30 @@ export default function App() {
     [refreshUnreadMessages, refreshNotifications]
   );
 
-  useRealtime(currentUser ? authToken : '', handleRealtimeEvent);
+  const { sendEvent: sendWsEvent } = useRealtime(
+    currentUser ? authToken : '',
+    handleRealtimeEvent
+  );
+
+  const {
+    call: activeCall,
+    localStream,
+    remoteStream,
+    startCall,
+    acceptIncomingCall,
+    declineIncomingCall,
+    endCall,
+    toggleMute,
+    toggleCamera,
+    switchCamera,
+    switchToAudioOnly,
+    handleCallSignal,
+  } = useWebRTC({
+    currentUser,
+    sendWsEvent,
+    onCallEnded: () => setMessagesRealtimeSignal((s) => s + 1),
+  });
+  handleCallSignalRef.current = handleCallSignal;
 
   // Initial Data Bootstrap
   useEffect(() => {
@@ -1039,6 +1094,17 @@ export default function App() {
               setChatTargetUserId(userId);
               setIsMessagesOpen(true);
             }}
+            onCallUser={async (userId, callType) => {
+              if (!requireSignedIn()) return;
+              try {
+                const res = await api.createDirectConversation(userId);
+                if (res.conversation) {
+                  startCall(res.conversation, callType);
+                }
+              } catch (err) {
+                console.error('Direct call error:', err);
+              }
+            }}
             onOpenAuth={() => setIsAuthOpen(true)}
             refreshSignal={friendsRefreshSignal}
           />
@@ -1267,7 +1333,10 @@ export default function App() {
         realtimeSignal={messagesRealtimeSignal}
         incomingRealtimeMessage={incomingRealtimeMessage}
         onlineUsersMap={onlineUsersMap}
+        typingMap={typingMap}
         onOpenAuth={() => setIsAuthOpen(true)}
+        sendWsEvent={sendWsEvent}
+        onStartCall={startCall}
       />
 
       {/* 8. Notifications Drawer */}
@@ -1299,6 +1368,20 @@ export default function App() {
       <SocialAppsHub
         isOpen={isSocialAppsOpen}
         onClose={() => setIsSocialAppsOpen(false)}
+      />
+
+      {/* 12. Real-Time WebRTC Audio / Video Call Overlay */}
+      <CallOverlay
+        call={activeCall}
+        localStream={localStream}
+        remoteStream={remoteStream}
+        onAccept={acceptIncomingCall}
+        onDecline={declineIncomingCall}
+        onEnd={endCall}
+        onToggleMute={toggleMute}
+        onToggleCamera={toggleCamera}
+        onSwitchCamera={switchCamera}
+        onSwitchToAudioOnly={switchToAudioOnly}
       />
     </div>
   );

@@ -314,10 +314,13 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         <button
           type="button"
           onClick={onEnd}
-          aria-label="End call"
-          className="w-14 h-12 rounded-2xl bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-lg transition cursor-pointer"
+          aria-label={call.phase === 'failed' || call.phase === 'ended' ? 'Close call screen' : 'End call'}
+          className="px-4 h-12 rounded-2xl bg-red-500 hover:bg-red-600 text-white flex items-center justify-center gap-2 shadow-lg transition cursor-pointer"
         >
           <PhoneOff className="w-5 h-5" />
+          {(call.phase === 'failed' || call.phase === 'ended') && (
+            <span className="text-xs font-bold">Close</span>
+          )}
         </button>
       </div>
     </div>

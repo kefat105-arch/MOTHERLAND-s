@@ -15,6 +15,8 @@ import {
   Briefcase,
   LogIn,
   Loader2,
+  Phone,
+  Video,
 } from 'lucide-react';
 import { api } from '../api';
 import type { UserProfile, FriendRequest } from '../types';
@@ -24,6 +26,7 @@ interface FriendsViewProps {
   currentUser: UserProfile | null;
   onRefreshUser: () => void;
   onOpenChatWithUser: (userId: string) => void;
+  onCallUser?: (userId: string, callType: 'audio' | 'video') => void;
   onOpenAuth: () => void;
   refreshSignal?: number;
 }
@@ -32,6 +35,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   currentUser,
   onRefreshUser,
   onOpenChatWithUser,
+  onCallUser,
   onOpenAuth,
   refreshSignal = 0,
 }) => {
@@ -206,14 +210,38 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   const renderRelationshipButton = (user: UserProfile) => {
     if (user.relationshipStatus === 'friend') {
       return (
-        <button
-          type="button"
-          onClick={() => onOpenChatWithUser(user.id)}
-          className="min-h-[40px] px-3 py-1.5 rounded-xl bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)] text-xs font-bold flex items-center gap-1.5 flex-shrink-0"
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
-          <span>Message</span>
-        </button>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {onCallUser && (
+            <>
+              <button
+                type="button"
+                onClick={() => onCallUser(user.id, 'audio')}
+                className="w-10 h-10 rounded-xl bg-[var(--bg-surface-alt)] hover:bg-[var(--accent-primary)] text-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--border-subtle)] flex items-center justify-center transition-colors"
+                title="Audio Call"
+                aria-label={`Audio call ${user.displayName}`}
+              >
+                <Phone className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onCallUser(user.id, 'video')}
+                className="w-10 h-10 rounded-xl bg-[var(--bg-surface-alt)] hover:bg-[var(--accent-primary)] text-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--border-subtle)] flex items-center justify-center transition-colors"
+                title="Video Call"
+                aria-label={`Video call ${user.displayName}`}
+              >
+                <Video className="w-4 h-4" />
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => onOpenChatWithUser(user.id)}
+            className="min-h-[40px] px-3 py-1.5 rounded-xl bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)] text-xs font-bold flex items-center gap-1.5 flex-shrink-0"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>Message</span>
+          </button>
+        </div>
       );
     }
     if (user.relationshipStatus === 'pending_sent' && user.pendingRequestId) {
@@ -429,6 +457,28 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   </button>
 
                   <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {onCallUser && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onCallUser(friend.id, 'audio')}
+                          className="w-10 h-10 rounded-xl bg-[var(--bg-surface-alt)] hover:bg-[var(--accent-primary)] text-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--border-subtle)] flex items-center justify-center transition-colors"
+                          title="Audio Call"
+                          aria-label={`Audio call ${friend.displayName}`}
+                        >
+                          <Phone className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onCallUser(friend.id, 'video')}
+                          className="w-10 h-10 rounded-xl bg-[var(--bg-surface-alt)] hover:bg-[var(--accent-primary)] text-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--border-subtle)] flex items-center justify-center transition-colors"
+                          title="Video Call"
+                          aria-label={`Video call ${friend.displayName}`}
+                        >
+                          <Video className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       onClick={() => onOpenChatWithUser(friend.id)}
