@@ -24,15 +24,55 @@ export interface GoogleAuthUser {
   description?: string;
 }
 
-const GOOGLE_AUTH_STORAGE_KEY = 'motherland_google_youtube_auth_v3';
+import { setStoredAuthToken, saveAccount } from '../api';
 
-export const GOOGLE_OAUTH_CLIENT_ID =
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_CLIENT_ID) ||
-  '659697151808-google-studio-client.apps.googleusercontent.com';
+const GOOGLE_AUTH_STORAGE_KEY = 'motherland_google_youtube_auth_v3';
+const RUNTIME_CLIENT_ID_KEY = 'motherland_google_client_id_runtime_v1';
+
+let runtimeGoogleClientId = '';
+
+export function setRuntimeGoogleClientId(clientId?: string | null): void {
+  const cleaned = (clientId || '').trim();
+  if (cleaned) {
+    runtimeGoogleClientId = cleaned;
+    try {
+      localStorage.setItem(RUNTIME_CLIENT_ID_KEY, cleaned);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function resolveGoogleClientId(): string {
+  const envId =
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_CLIENT_ID) || '';
+  if (envId && !String(envId).includes('659697151808-google-studio-client')) {
+    return String(envId).trim();
+  }
+  if (runtimeGoogleClientId) return runtimeGoogleClientId;
+  try {
+    const stored = localStorage.getItem(RUNTIME_CLIENT_ID_KEY) || '';
+    if (stored && !stored.includes('659697151808-google-studio-client')) {
+      return stored.trim();
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+export function isGoogleClientIdConfigured(): boolean {
+  return Boolean(resolveGoogleClientId());
+}
+
+export function getGoogleRedirectUri(): string {
+  return typeof window !== 'undefined' ? window.location.origin : '';
+}
 
 export const GOOGLE_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/youtube',
   'https://www.googleapis.com/auth/youtube.readonly',
   'https://www.googleapis.com/auth/youtube.upload',
 ].join(' ');
@@ -71,28 +111,82 @@ export function removeStoredGoogleAuth(): void {
  * Generates official Google OAuth 2.0 URL with prompt=select_account
  * so user can select from existing Google accounts or add another account
  */
-export function getOfficialGoogleOAuthUrl(): string {
-  const redirectUri = typeof window !== 'undefined' ? window.location.origin : '';
+export function getOfficialGoogleOAuthUrl(customClientId?: string): string {
+  const clientId = (customClientId || resolveGoogleClientId()).trim();
+  const redirectUri = getGoogleRedirectUri();
   const params = new URLSearchParams({
-    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'token',
     scope: GOOGLE_OAUTH_SCOPES,
     include_granted_scopes: 'true',
-    prompt: 'select_account', // Forces Google Account Chooser
+    prompt: 'select_account',
     state: 'motherland_google_auth',
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+export async function completeGoogleSignInWithToken(
+  accessToken: string,
+  expiresInSeconds = 3600
+): Promise<{ authUser: GoogleAuthUser; motherlandUser?: any }> {
+  const userInfo = await fetchGoogleUserInfo(accessToken);
+  const channelData = await fetchAuthenticatedChannel(accessToken);
+  const authUser: GoogleAuthUser = {
+    accessToken,
+    expiresAt: Date.now() + Number(expiresInSeconds || 3600) * 1000,
+    email: userInfo.email,
+    name: userInfo.name,
+    avatarUrl: channelData?.avatarUrl || userInfo.picture,
+    googleId: userInfo.sub,
+    hasYouTubeChannel: !!channelData,
+    channelId: channelData?.channelId,
+    channelTitle: channelData?.channelTitle,
+    channelHandle: channelData?.channelHandle,
+    subscriberCount: channelData?.subscriberCount,
+    videoCount: channelData?.videoCount,
+    viewCount: channelData?.viewCount,
+    description: channelData?.description,
+  };
+  saveStoredGoogleAuth(authUser);
+  const motherlandUser = await syncGoogleUserWithBackend(accessToken, authUser);
+  return { authUser, motherlandUser };
+}
+
+export async function parseGoogleOAuthHashRedirect(): Promise<GoogleAuthUser | null> {
+  if (typeof window === 'undefined') return null;
+  const hash = window.location.hash || '';
+  if (!hash.includes('access_token=')) return null;
+  try {
+    const params = new URLSearchParams(hash.replace(/^#/, ''));
+    const accessToken = params.get('access_token');
+    const expiresIn = Number(params.get('expires_in') || 3600);
+    if (!accessToken) return null;
+    // Clean URL fragment cleanly without reload
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    const { authUser } = await completeGoogleSignInWithToken(accessToken, expiresIn);
+    return authUser;
+  } catch (err) {
+    console.warn('Failed completing Google OAuth hash redirect:', err);
+    return null;
+  }
 }
 
 export function triggerGoogleIdentityPrompt(
   onSuccess: (user: GoogleAuthUser) => void,
   onError: (err: string) => void
 ): void {
+  const clientId = resolveGoogleClientId();
+  if (!clientId) {
+    onError(
+      'Google OAuth Client ID is not configured for this preview domain yet. Add VITE_GOOGLE_CLIENT_ID / GOOGLE_CLIENT_ID or authorize via Google Cloud Console.'
+    );
+    return;
+  }
   if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
     try {
       const client = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: GOOGLE_OAUTH_CLIENT_ID,
+        client_id: clientId,
         scope: GOOGLE_OAUTH_SCOPES,
         prompt: 'select_account',
         callback: async (tokenResponse: any) => {
@@ -101,26 +195,10 @@ export function triggerGoogleIdentityPrompt(
             return;
           }
           try {
-            const accessToken = tokenResponse.access_token;
-            const userInfo = await fetchGoogleUserInfo(accessToken);
-            const channelData = await fetchAuthenticatedChannel(accessToken);
-            const authUser: GoogleAuthUser = {
-              accessToken,
-              expiresAt: Date.now() + (tokenResponse.expires_in || 3600) * 1000,
-              email: userInfo.email,
-              name: userInfo.name,
-              avatarUrl: channelData?.avatarUrl || userInfo.picture,
-              googleId: userInfo.sub,
-              hasYouTubeChannel: !!channelData,
-              channelId: channelData?.channelId,
-              channelTitle: channelData?.channelTitle,
-              channelHandle: channelData?.channelHandle,
-              subscriberCount: channelData?.subscriberCount,
-              videoCount: channelData?.videoCount,
-              viewCount: channelData?.viewCount,
-              description: channelData?.description,
-            };
-            saveStoredGoogleAuth(authUser);
+            const { authUser } = await completeGoogleSignInWithToken(
+              tokenResponse.access_token,
+              tokenResponse.expires_in || 3600
+            );
             onSuccess(authUser);
           } catch (err: any) {
             onError(err?.message || 'Failed to fetch Google user details');
@@ -132,7 +210,7 @@ export function triggerGoogleIdentityPrompt(
       onError(err?.message || 'Google Identity initialization failed');
     }
   } else {
-    onError('Google Identity Services SDK is still loading or blocked. Try again or use email sign-in.');
+    onError('Google Identity Services SDK is still loading or blocked in this iframe.');
   }
 }
 
@@ -238,6 +316,12 @@ export async function syncGoogleUserWithBackend(
     });
     if (res.ok) {
       const json = await res.json();
+      if (json.token) {
+        setStoredAuthToken(json.token);
+        if (json.user) {
+          saveAccount(json.user, json.token);
+        }
+      }
       return json.user;
     }
   } catch (err) {

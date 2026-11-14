@@ -61,6 +61,10 @@ import {
   Disc3,
   Bookmark,
   History,
+  Pencil,
+  AlertCircle,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { UnifiedVideo } from '../../types/video';
 import { FireLikeIcon, TalkIcon, BoostIcon, PulseIcon } from '../fire/MotherlandIcons';
@@ -77,18 +81,26 @@ import {
   clearYouTubeSearchHistory,
   getStudioUploadedVideos,
   deleteStudioUploadedVideo,
+  fetchMyYouTubeChannelVideos,
+  updateMyYouTubeVideo,
+  deleteMyYouTubeVideo,
   YouTubeChannelItem,
   YouTubePlaylistItem,
   YouTubeCommentItem,
   StudioUploadedVideo,
+  YouTubeManagedVideo,
 } from '../../services/youtubeService';
 import {
   GoogleAuthUser,
   getStoredGoogleAuth,
-  saveStoredGoogleAuth,
-  removeStoredGoogleAuth,
-  YouTubeUploadResult,
 } from '../../services/youtubeAuthService';
+import {
+  filterUnsuppressed,
+  recordWatchedSuppression,
+  WATCH_SUPPRESSED_EVENT,
+} from '../../services/watchSuppression';
+import { api } from '../../api';
+import type { SavedVideoItem } from '../../types';
 import { YouTubeShortsFeed } from './YouTubeShortsFeed';
 import { YouTubeCreateModal } from './YouTubeCreateModal';
 import { YouTubeAccountModal } from './YouTubeAccountModal';
@@ -117,33 +129,66 @@ interface YouTubeFullExperienceProps {
   onOpenAddVideo?: () => void;
   onOpenVerticalShorts?: () => void;
   onBackToMotherland?: () => void;
+  refreshSignal?: number;
 }
 
 const YOUTUBE_FEED_CACHE_KEY = 'motherland_yt_feed_cache_v3';
+
+function readCachedYouTubeFeed(): UnifiedVideo[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(YOUTUBE_FEED_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.videos)) {
+      return filterUnsuppressed(parsed.videos.map((v: UnifiedVideo) => ({ ...v, youtubeId: v.videoId })));
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedYouTubeFeed(videos: UnifiedVideo[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(
+      YOUTUBE_FEED_CACHE_KEY,
+      JSON.stringify({ savedAt: Date.now(), videos: videos.slice(0, 48) })
+    );
+  } catch {
+    // ignore storage quota
+  }
+}
 
 export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   onOpenVideoDetails,
   onOpenAddVideo,
   onOpenVerticalShorts,
   onBackToMotherland,
+  refreshSignal = 0,
 }) => {
+  const cachedInitialVideos = useRef<UnifiedVideo[]>(readCachedYouTubeFeed());
+
   // Navigation State
   const [activeNav, setActiveNav] = useState<YouTubeNavSection>('home');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [ytSubRefreshSignal, setYtSubRefreshSignal] = useState(0);
 
   // Search State
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchType, setSearchType] = useState<'video' | 'channel' | 'playlist'>('video');
-  const [searchOrder, setSearchOrder] = useState<'relevance' | 'date' | 'viewCount' | 'rating'>('relevance');
+  const [searchType] = useState<'video' | 'channel' | 'playlist'>('video');
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [channelResults, setChannelResults] = useState<YouTubeChannelItem[]>([]);
   const [playlistResults, setPlaylistResults] = useState<YouTubePlaylistItem[]>([]);
 
   // Feed Videos & Playback State
-  const [videos, setVideos] = useState<UnifiedVideo[]>([]);
-  const [activeVideo, setActiveVideo] = useState<UnifiedVideo | null>(null);
+  const [videos, setVideos] = useState<UnifiedVideo[]>(cachedInitialVideos.current);
+  const [activeVideo, setActiveVideo] = useState<UnifiedVideo | null>(
+    cachedInitialVideos.current[0] || null
+  );
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
-  const [isLoadingInitial, setIsLoadingInitial] = useState(true);
+  const [isLoadingInitial, setIsLoadingInitial] = useState(cachedInitialVideos.current.length === 0);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedChip, setSelectedChip] = useState('🔥 ট্রেন্ডিং বাংলাদেশ');
@@ -157,8 +202,19 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   // Create (+) Modal State
   const [createModalOpen, setCreateModalOpen] = useState(false);
 
-  // Studio Uploaded Videos State
+  // Studio Uploaded Videos & Live Channel Video Management State
   const [studioVideos, setStudioVideos] = useState<StudioUploadedVideo[]>([]);
+  const [channelVideos, setChannelVideos] = useState<YouTubeManagedVideo[]>([]);
+  const [isLoadingChannelVideos, setIsLoadingChannelVideos] = useState(false);
+  const [channelVideosError, setChannelVideosError] = useState<string | null>(null);
+  const [editingVideo, setEditingVideo] = useState<YouTubeManagedVideo | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editPrivacy, setEditPrivacy] = useState<'public' | 'unlisted' | 'private'>('public');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [deletingVideo, setDeletingVideo] = useState<YouTubeManagedVideo | null>(null);
+  const [isDeletingVideo, setIsDeletingVideo] = useState(false);
+  const [savedVideosList, setSavedVideosList] = useState<SavedVideoItem[]>([]);
   const [studioNotice, setStudioNotice] = useState<string | null>(null);
 
   // Active Video Comments & Likes State
@@ -186,11 +242,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   // Infinite Scroll & Deduplication Refs
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
-
-  // Edge Swipe Refs
-  const edgeStartXRef = useRef<number>(0);
-  const edgeStartYRef = useRef<number>(0);
-  const isEdgeSwipeRef = useRef<boolean>(false);
+  const lastRefreshAtRef = useRef<number>(Date.now());
+  const activeVideoRef = useRef<UnifiedVideo | null>(activeVideo);
+  activeVideoRef.current = activeVideo;
 
   // 9 Discovery Chips
   const discoveryChips = [
@@ -211,21 +265,97 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     setSearchHistory(getYouTubeSearchHistory());
   }, []);
 
+  // Load real YouTube channel videos for Studio / Your Videos / Your Channel
+  const loadChannelVideos = useCallback(async () => {
+    setIsLoadingChannelVideos(true);
+    setChannelVideosError(null);
+    try {
+      const res = await fetchMyYouTubeChannelVideos(authUser?.accessToken);
+      setChannelVideos(res.videos || []);
+    } catch (err: any) {
+      setChannelVideosError(
+        err?.message || 'Sign in with your Google account to manage your YouTube channel videos.'
+      );
+    } finally {
+      setIsLoadingChannelVideos(false);
+    }
+  }, [authUser?.accessToken]);
+
+  useEffect(() => {
+    if (authUser?.accessToken || api.getToken()) {
+      loadChannelVideos();
+    }
+  }, [authUser?.accessToken, loadChannelVideos]);
+
   // Fetch comments whenever active video changes
   useEffect(() => {
     if (activeVideo?.videoId) {
-      setIsLoadingComments(true);
       getYouTubeVideoComments(activeVideo.videoId, 10).then((cmts) => {
         setComments(cmts);
-        setIsLoadingComments(false);
       });
     }
   }, [activeVideo]);
 
+  // Suppress active YouTube video after 6 seconds of playback so it stays hidden for 14 days
+  useEffect(() => {
+    if (!activeVideo?.videoId) return;
+    if (
+      activeNav !== 'home' &&
+      activeNav !== 'explore' &&
+      activeNav !== 'trending' &&
+      activeNav !== 'music' &&
+      activeNav !== 'gaming' &&
+      activeNav !== 'sports'
+    ) {
+      return;
+    }
+
+    const watchedTarget = activeVideo;
+    const timer = window.setTimeout(() => {
+      recordWatchedSuppression(watchedTarget.id, watchedTarget.videoId);
+      if (api.getToken()) {
+        api
+          .recordWatchProgress({
+            videoId: watchedTarget.id,
+            youtubeId: watchedTarget.videoId,
+            videoType: 'long',
+            source: 'youtube',
+            title: watchedTarget.title,
+            thumbnailUrl: watchedTarget.thumbnailUrl,
+            channelTitle: watchedTarget.creatorName,
+            duration: watchedTarget.duration || '0:00',
+            watchSeconds: 10,
+            durationSeconds: 60,
+            completed: false,
+          })
+          .catch(() => {});
+      }
+    }, 6000);
+
+    return () => window.clearTimeout(timer);
+  }, [activeVideo?.videoId, activeNav]);
+
+  // Prune suppressed videos live when watch suppression fires (keep currently playing activeVideo until switched)
+  useEffect(() => {
+    const onSuppressed = () => {
+      const currentId = activeVideoRef.current?.videoId;
+      setVideos((prev) =>
+        prev.filter((v) => {
+          if (currentId && v.videoId === currentId) return true;
+          return (
+            filterUnsuppressed([{ id: v.id, youtubeId: v.videoId }]).length > 0
+          );
+        })
+      );
+    };
+    window.addEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
+    return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
+  }, []);
+
   // Core Feed Loader by Search Query
-  const loadFeed = useCallback(async (searchTerm: string, refresh: boolean = true) => {
+  const loadFeed = useCallback(async (searchTerm: string, refresh: boolean = true, silent = false) => {
     if (refresh) {
-      setIsLoadingInitial(true);
+      if (!silent) setIsLoadingInitial((prev) => prev && videos.length === 0);
       seenIdsRef.current.clear();
     }
 
@@ -237,8 +367,12 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         safeSearch: 'none',
       });
 
+      const filteredRaw = filterUnsuppressed(
+        res.videos.map((v) => ({ ...v, youtubeId: v.videoId }))
+      );
+
       const uniqueVideos: UnifiedVideo[] = [];
-      for (const v of res.videos) {
+      for (const v of filteredRaw) {
         if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
           seenIdsRef.current.add(v.id);
           seenIdsRef.current.add(v.videoId);
@@ -246,22 +380,27 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         }
       }
 
-      setVideos((prev) => (refresh ? uniqueVideos : [...prev, ...uniqueVideos]));
+      if (refresh && uniqueVideos.length > 0) {
+        writeCachedYouTubeFeed(uniqueVideos);
+      }
+
+      setVideos((prev) => (refresh ? (uniqueVideos.length > 0 ? uniqueVideos : prev) : [...prev, ...uniqueVideos]));
       setNextPageToken(res.nextPageToken);
+      lastRefreshAtRef.current = Date.now();
 
       if (refresh && uniqueVideos.length > 0) {
-        setActiveVideo(uniqueVideos[0]);
+        setActiveVideo((cur) => (silent && cur ? cur : uniqueVideos[0]));
       }
     } catch (err) {
       console.error('Feed loading error:', err);
     } finally {
       setIsLoadingInitial(false);
     }
-  }, []);
+  }, [videos.length]);
 
-  // Initial feed load
+  // Initial feed load (silent background refresh if cache already hydrated)
   useEffect(() => {
-    loadFeed(discoveryChips[0].q, true);
+    loadFeed(discoveryChips[0].q, true, cachedInitialVideos.current.length > 0);
   }, []);
 
   // Infinite Scroll Pagination
@@ -278,8 +417,11 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         safeSearch: 'none',
       });
 
+      const filtered = filterUnsuppressed(
+        res.videos.map((v) => ({ ...v, youtubeId: v.videoId }))
+      );
       const newItems: UnifiedVideo[] = [];
-      for (const v of res.videos) {
+      for (const v of filtered) {
         if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
           seenIdsRef.current.add(v.id);
           seenIdsRef.current.add(v.videoId);
@@ -295,6 +437,11 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
       setIsFetchingMore(false);
     }
   }, [isFetchingMore, nextPageToken, activeQuery]);
+
+  // Edge Swipe Refs
+  const edgeStartXRef = useRef<number>(0);
+  const edgeStartYRef = useRef<number>(0);
+  const isEdgeSwipeRef = useRef<boolean>(false);
 
   // IntersectionObserver for continuous discovery
   useEffect(() => {
@@ -344,7 +491,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     }
   };
 
-  // Home Button & YouTube Logo Feed Refresh (Requirement 6)
+  // Home Button & YouTube Logo Feed Refresh
   const handleRefreshFeed = useCallback(async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
@@ -361,13 +508,133 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     setActiveQuery(chosen);
 
     try {
-      await loadFeed(chosen, true);
-      setStudioNotice('YouTube feed refreshed with latest trending recommendations!');
-      setTimeout(() => setStudioNotice(null), 3000);
+      await loadFeed(chosen, true, false);
+      setStudioNotice('YouTube feed refreshed with fresh recommendations!');
+      setTimeout(() => setStudioNotice(null), 2600);
     } finally {
       setIsRefreshing(false);
     }
   }, [isRefreshing, loadFeed]);
+
+  // Respond to parent refreshSignal (when user clicks YouTube icon in MOTHERLAND)
+  useEffect(() => {
+    if (refreshSignal > 0) {
+      if (activeNav === 'shorts') {
+        setYtSubRefreshSignal((s) => s + 1);
+      } else {
+        handleRefreshFeed();
+      }
+    }
+  }, [refreshSignal]);
+
+  // Auto-refresh on tab return (>60s stale)
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastRefreshAtRef.current > 60000) {
+        loadFeed(activeQuery, true, true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [activeQuery, loadFeed]);
+
+  // Navigate to ANY YouTube section & refresh it automatically when clicked
+  const handleSelectYouTubeNav = useCallback(
+    (section: YouTubeNavSection) => {
+      setDrawerOpen(false);
+      setActiveNav(section);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      if (section === 'home') {
+        handleRefreshFeed();
+      } else if (section === 'shorts') {
+        setYtSubRefreshSignal((s) => s + 1);
+      } else if (section === 'studio' || section === 'my_uploads' || section === 'my_channel') {
+        setStudioVideos(getStudioUploadedVideos());
+        loadChannelVideos();
+      } else if (section === 'saved_videos') {
+        if (api.getToken()) {
+          api
+            .getSavedCollection()
+            .then((res) => setSavedVideosList(res.videos || []))
+            .catch(() => {});
+        }
+      } else if (section === 'trending') {
+        setActiveQuery('Bangladesh trending viral music videos');
+        loadFeed('Bangladesh trending viral music videos', true, true);
+      } else if (section === 'music') {
+        setActiveQuery('Coke Studio Bangla popular music');
+        loadFeed('Coke Studio Bangla popular music', true, true);
+      } else if (section === 'gaming') {
+        setActiveQuery('Gaming highlights livestream 2026');
+        loadFeed('Gaming highlights livestream 2026', true, true);
+      } else if (section === 'sports') {
+        setActiveQuery('Bangladesh cricket football highlights');
+        loadFeed('Bangladesh cricket football highlights', true, true);
+      } else if (section === 'explore') {
+        searchYouTubeChannels('Bangladesh', 12).then(setChannelResults).catch(() => {});
+        loadFeed('Bangladesh viral documentary culture', true, true);
+      } else if (section === 'playlists') {
+        searchYouTubePlaylists('Coke Studio Bangla', 12).then(setPlaylistResults).catch(() => {});
+      }
+    },
+    [handleRefreshFeed, loadChannelVideos, loadFeed]
+  );
+
+  // Studio Edit / Delete handlers
+  const handleSaveEditVideo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingVideo || !editTitle.trim()) return;
+    setIsSavingEdit(true);
+    try {
+      await updateMyYouTubeVideo(
+        editingVideo.youtubeId,
+        {
+          title: editTitle.trim(),
+          description: editDescription.trim(),
+          privacyStatus: editPrivacy,
+        },
+        authUser?.accessToken
+      );
+      setChannelVideos((prev) =>
+        prev.map((v) =>
+          v.youtubeId === editingVideo.youtubeId
+            ? {
+                ...v,
+                title: editTitle.trim(),
+                description: editDescription.trim(),
+                privacyStatus: editPrivacy,
+              }
+            : v
+        )
+      );
+      setEditingVideo(null);
+      setStudioNotice(`Updated "${editTitle.trim()}" on YouTube.`);
+      setTimeout(() => setStudioNotice(null), 3000);
+    } catch (err: any) {
+      setChannelVideosError(err?.message || 'Could not update video.');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleConfirmDeleteVideo = async () => {
+    if (!deletingVideo) return;
+    setIsDeletingVideo(true);
+    try {
+      await deleteMyYouTubeVideo(deletingVideo.youtubeId, authUser?.accessToken);
+      deleteStudioUploadedVideo(deletingVideo.youtubeId);
+      setChannelVideos((prev) => prev.filter((v) => v.youtubeId !== deletingVideo.youtubeId));
+      setStudioVideos(getStudioUploadedVideos());
+      setStudioNotice(`Deleted "${deletingVideo.title}" from your YouTube channel.`);
+      setDeletingVideo(null);
+      setTimeout(() => setStudioNotice(null), 3000);
+    } catch (err: any) {
+      setChannelVideosError(err?.message || 'Could not delete video from YouTube.');
+    } finally {
+      setIsDeletingVideo(false);
+    }
+  };
 
   // Edge Swipe Gesture Listener (Requirement 11)
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -620,8 +887,13 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
       {/* VIEWPORT CONTENT CONTAINER */}
       <div className="flex-1 w-full flex flex-col">
-        {/* VIEW 1: HOME & RECOMMENDED FEED */}
-        {activeNav === 'home' && (
+        {/* VIEW 1: HOME, EXPLORE, TRENDING, MUSIC, GAMING, SPORTS */}
+        {(activeNav === 'home' ||
+          activeNav === 'explore' ||
+          activeNav === 'trending' ||
+          activeNav === 'music' ||
+          activeNav === 'gaming' ||
+          activeNav === 'sports') && (
           <div className="space-y-4 sm:space-y-6">
             {/* 9 Category Discovery Chips */}
             <div className="px-2 sm:px-0 pt-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
@@ -945,8 +1217,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         {activeNav === 'shorts' && (
           <div className="flex-1 w-full flex items-center justify-center py-1 sm:py-3">
             <YouTubeShortsFeed
-              onBackToHome={() => setActiveNav('home')}
+              onBackToHome={() => handleSelectYouTubeNav('home')}
               onOpenDetails={onOpenVideoDetails}
+              refreshSignal={ytSubRefreshSignal}
             />
           </div>
         )}
@@ -1019,47 +1292,210 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
           </div>
         )}
 
-        {/* VIEW 5: CREATOR STUDIO (Section 4 & 5) */}
-        {activeNav === 'studio' && (
+        {/* VIEW 5: CREATOR STUDIO, YOUR VIDEOS & YOUR CHANNEL (Full Upload / Edit / Delete Management) */}
+        {(activeNav === 'studio' || activeNav === 'my_uploads' || activeNav === 'my_channel') && (
           <div className="p-3 sm:p-5 space-y-5">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="font-extrabold text-base sm:text-lg text-white flex items-center gap-2">
                   <Upload className="w-5 h-5 text-red-500" />
-                  <span>MOTHERLAND YouTube Studio</span>
+                  <span>
+                    {activeNav === 'my_channel'
+                      ? 'Your YouTube Channel & Management'
+                      : activeNav === 'my_uploads'
+                      ? 'Your Uploaded YouTube Videos'
+                      : 'MOTHERLAND YouTube Studio'}
+                  </span>
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Manage your uploaded videos, analytics & live broadcast status
+                  Manage your YouTube channel videos — edit title, description, visibility, or delete videos
                 </p>
               </div>
 
-              <button
-                onClick={() => setCreateModalOpen(true)}
-                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg active:scale-95"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Upload Video</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={loadChannelVideos}
+                  disabled={isLoadingChannelVideos}
+                  className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-200 flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingChannelVideos ? 'animate-spin text-red-400' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreateModalOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg active:scale-95"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Upload Video</span>
+                </button>
+              </div>
             </div>
 
-            {/* Studio Uploaded Videos List */}
+            {/* Channel Identity Banner */}
+            <div className="p-4 rounded-2xl bg-[#0f1422] border border-white/10 flex flex-wrap items-center justify-between gap-3">
+              {authUser ? (
+                <>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img
+                      src={authUser.avatarUrl}
+                      alt={authUser.channelTitle || authUser.name}
+                      className="w-12 h-12 rounded-full object-cover border-2 border-red-500/60"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-bold text-sm text-white truncate">
+                        {authUser.channelTitle || authUser.name}
+                      </div>
+                      <div className="text-xs text-slate-400 truncate">
+                        {authUser.email} {authUser.subscriberCount ? `• ${authUser.subscriberCount} subscribers` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAccountModalOpen(true)}
+                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-white"
+                  >
+                    Switch / Account Settings
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="text-xs text-slate-300 space-y-0.5">
+                    <div className="font-bold text-sm text-white">Connect Google Account for YouTube Management</div>
+                    <div>Sign in with Google to view, edit, and delete videos on your YouTube channel.</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAccountModalOpen(true)}
+                    className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold"
+                  >
+                    Sign In with Google
+                  </button>
+                </>
+              )}
+            </div>
+
+            {channelVideosError && (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{channelVideosError}</span>
+                </div>
+                {!authUser && (
+                  <button
+                    type="button"
+                    onClick={() => setAccountModalOpen(true)}
+                    className="px-3 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold text-[11px] flex-shrink-0"
+                  >
+                    Connect
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Live Channel Videos from YouTube Data API v3 */}
             <div className="space-y-3">
               <h4 className="font-bold text-xs text-white uppercase tracking-wider">
-                Your Channel Uploads ({studioVideos.length})
+                YouTube Channel Videos ({channelVideos.length})
               </h4>
 
-              {studioVideos.length === 0 ? (
-                <div className="p-8 rounded-3xl bg-[#0f1422] border border-white/10 text-center space-y-2">
-                  <FileVideo className="w-8 h-8 text-slate-500 mx-auto" />
-                  <p className="text-xs text-slate-300 font-semibold">No uploaded videos yet in your studio.</p>
-                  <button
-                    onClick={() => setCreateModalOpen(true)}
-                    className="mt-2 px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-bold"
-                  >
-                    Upload Your First Video
-                  </button>
+              {isLoadingChannelVideos ? (
+                <div className="py-10 flex items-center justify-center gap-2 text-xs text-slate-400">
+                  <Loader2 className="w-5 h-5 animate-spin text-red-500" />
+                  <span>Loading your channel videos from YouTube...</span>
                 </div>
+              ) : channelVideos.length === 0 ? (
+                studioVideos.length === 0 && (
+                  <div className="p-8 rounded-3xl bg-[#0f1422] border border-white/10 text-center space-y-2">
+                    <FileVideo className="w-8 h-8 text-slate-500 mx-auto" />
+                    <p className="text-xs text-slate-300 font-semibold">
+                      {authUser
+                        ? 'No uploaded videos found on this YouTube channel yet.'
+                        : 'Sign in with Google to load and manage your YouTube channel videos.'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => (authUser ? setCreateModalOpen(true) : setAccountModalOpen(true))}
+                      className="mt-2 px-4 py-2 rounded-xl bg-red-600 text-white text-xs font-bold"
+                    >
+                      {authUser ? 'Upload Your First Video' : 'Connect Google Account'}
+                    </button>
+                  </div>
+                )
               ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                  {channelVideos.map((vid) => (
+                    <div key={vid.youtubeId} className="p-3 rounded-2xl bg-[#0f1422] border border-white/10 space-y-2.5">
+                      <div className="relative aspect-video rounded-xl bg-black overflow-hidden">
+                        <img src={vid.thumbnailUrl} alt={vid.title} className="w-full h-full object-cover" />
+                        <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/75 text-[10px] text-white uppercase font-bold flex items-center gap-1">
+                          {vid.privacyStatus === 'private' ? (
+                            <Lock className="w-2.5 h-2.5 text-amber-400" />
+                          ) : vid.privacyStatus === 'unlisted' ? (
+                            <EyeOff className="w-2.5 h-2.5 text-slate-300" />
+                          ) : (
+                            <Globe className="w-2.5 h-2.5 text-emerald-400" />
+                          )}
+                          <span>{vid.privacyStatus}</span>
+                        </span>
+                      </div>
+
+                      <div>
+                        <h5 className="font-bold text-xs text-white line-clamp-2">{vid.title}</h5>
+                        <p className="text-[10px] text-slate-400 mt-1 tabular-nums">
+                          {vid.stats.views.toLocaleString()} views · {vid.stats.likes.toLocaleString()} likes ·{' '}
+                          {vid.publishedAt ? new Date(vid.publishedAt).toLocaleDateString() : 'YouTube'}
+                        </p>
+                      </div>
+
+                      <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingVideo(vid);
+                            setEditTitle(vid.title);
+                            setEditDescription(vid.description || '');
+                            setEditPrivacy(vid.privacyStatus || 'public');
+                          }}
+                          className="flex-1 py-1.5 px-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 text-[11px] font-semibold flex items-center justify-center gap-1"
+                        >
+                          <Pencil className="w-3 h-3 text-emerald-400" />
+                          <span>Edit</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setDeletingVideo(vid)}
+                          className="flex-1 py-1.5 px-2 rounded-lg bg-red-600/15 hover:bg-red-600/25 text-red-400 text-[11px] font-semibold flex items-center justify-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete</span>
+                        </button>
+
+                        <a
+                          href={`https://www.youtube.com/watch?v=${vid.youtubeId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="py-1.5 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] font-semibold flex items-center gap-1"
+                          title="Open on YouTube"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Recent Session Studio Uploads Fallback */}
+            {studioVideos.length > 0 && (
+              <div className="space-y-3 pt-2 border-t border-white/10">
+                <h4 className="font-bold text-xs text-slate-300 uppercase tracking-wider">
+                  Recent Device Uploads ({studioVideos.length})
+                </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                   {studioVideos.map((vid) => (
                     <div key={vid.id} className="p-3 rounded-2xl bg-[#0f1422] border border-white/10 space-y-2">
@@ -1072,25 +1508,129 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                       <h5 className="font-bold text-xs text-white line-clamp-1">{vid.title}</h5>
                       <div className="flex items-center justify-between text-[10px] text-slate-400">
                         <span>{vid.uploadedAt}</span>
-                        <a
-                          href={`https://www.youtube.com/watch?v=${vid.videoId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-red-400 hover:underline flex items-center gap-0.5"
-                        >
-                          <span>Open</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              deleteStudioUploadedVideo(vid.id);
+                              setStudioVideos(getStudioUploadedVideos());
+                            }}
+                            className="text-red-400 hover:underline flex items-center gap-0.5"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Remove</span>
+                          </button>
+                          <a
+                            href={`https://www.youtube.com/watch?v=${vid.videoId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-slate-300 hover:text-white flex items-center gap-0.5"
+                          >
+                            <span>Open</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
-              )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* VIEW 6: PLAYLISTS */}
+        {activeNav === 'playlists' && (
+          <div className="p-3 sm:p-5 space-y-4">
+            <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+              <ListVideo className="w-4 h-4 text-red-500" />
+              <span>YouTube Playlists</span>
+            </h3>
+            {playlistResults.length === 0 ? (
+              <p className="text-xs text-slate-400">Search playlists or tap refresh to explore curated collections.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {playlistResults.map((pl) => (
+                  <a
+                    key={pl.id}
+                    href={`https://www.youtube.com/playlist?list=${pl.id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-2xl bg-[#0f1422] border border-white/10 overflow-hidden hover:border-red-500/40 transition-colors"
+                  >
+                    <div className="aspect-video bg-black">
+                      <img src={pl.thumbnailUrl} alt={pl.title} className="w-full h-full object-cover" />
+                    </div>
+                    <div className="p-3">
+                      <h4 className="font-bold text-xs text-white line-clamp-2">{pl.title}</h4>
+                      <p className="text-[11px] text-slate-400 mt-1">{pl.channelTitle}</p>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* VIEW 7: SAVED VIDEOS */}
+        {activeNav === 'saved_videos' && (
+          <div className="p-3 sm:p-5 space-y-4">
+            <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+              <Bookmark className="w-4 h-4 text-red-500" />
+              <span>Saved Videos ({savedVideosList.length})</span>
+            </h3>
+            {savedVideosList.length === 0 ? (
+              <p className="text-xs text-slate-400">No saved videos yet. Save videos from MOTHERLAND Video Theater to view them here.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {savedVideosList.map((sv) => (
+                  <div key={sv.videoId} className="rounded-2xl bg-[#0f1422] border border-white/10 overflow-hidden p-3 space-y-2">
+                    <div className="aspect-video rounded-xl bg-black overflow-hidden">
+                      <img src={sv.thumbnailUrl} alt={sv.title} className="w-full h-full object-cover" />
+                    </div>
+                    <h4 className="font-bold text-xs text-white line-clamp-2">{sv.title}</h4>
+                    <p className="text-[11px] text-slate-400">{sv.channelTitle}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* VIEW 8: SETTINGS */}
+        {activeNav === 'settings' && (
+          <div className="p-3 sm:p-5 space-y-4 max-w-2xl">
+            <h3 className="font-extrabold text-base text-white flex items-center gap-2">
+              <SettingsIcon className="w-4 h-4 text-red-500" />
+              <span>YouTube Account &amp; Playback Settings</span>
+            </h3>
+            <div className="p-4 rounded-2xl bg-[#0f1422] border border-white/10 space-y-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="font-bold text-white">Google / YouTube Account</div>
+                  <div className="text-slate-400">
+                    {authUser ? `${authUser.name} (${authUser.email})` : 'Not connected'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAccountModalOpen(true)}
+                  className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold"
+                >
+                  {authUser ? 'Manage Account' : 'Connect Google'}
+                </button>
+              </div>
+              <div className="pt-3 border-t border-white/10 text-slate-300">
+                <div className="font-bold text-white">14-Day Watched Filter</div>
+                <div className="text-slate-400 mt-0.5">
+                  Videos and Shorts you watch are automatically hidden from your feeds for 14 days so you always discover fresh content.
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* VIEW 6: NOTIFICATIONS */}
+        {/* VIEW 9: NOTIFICATIONS */}
         {activeNav === 'notifications' && (
           <div className="p-3 sm:p-5 space-y-3">
             <h3 className="font-bold text-base text-white flex items-center gap-2">
@@ -1117,10 +1657,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[#090d16]/98 backdrop-blur-lg border-t border-white/10 px-3 py-2 flex items-center justify-around sm:hidden">
         {/* Home */}
         <button
-          onClick={() => {
-            if (activeNav === 'home') handleRefreshFeed();
-            else setActiveNav('home');
-          }}
+          onClick={() => handleSelectYouTubeNav('home')}
           className={`flex flex-col items-center gap-1 text-[10px] font-semibold transition-all ${
             activeNav === 'home' ? 'text-red-400' : 'text-slate-400'
           }`}
@@ -1131,7 +1668,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
         {/* Shorts */}
         <button
-          onClick={() => setActiveNav('shorts')}
+          onClick={() => handleSelectYouTubeNav('shorts')}
           className={`flex flex-col items-center gap-1 text-[10px] font-semibold transition-all ${
             activeNav === 'shorts' ? 'text-red-400' : 'text-slate-400'
           }`}
@@ -1152,7 +1689,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
         {/* Subscriptions */}
         <button
-          onClick={() => setActiveNav('subscriptions')}
+          onClick={() => handleSelectYouTubeNav('subscriptions')}
           className={`flex flex-col items-center gap-1 text-[10px] font-semibold transition-all ${
             activeNav === 'subscriptions' ? 'text-red-400' : 'text-slate-400'
           }`}
@@ -1163,7 +1700,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
         {/* Studio / You */}
         <button
-          onClick={() => setActiveNav('studio')}
+          onClick={() => handleSelectYouTubeNav('studio')}
           className={`flex flex-col items-center gap-1 text-[10px] font-semibold transition-all ${
             activeNav === 'studio' ? 'text-red-400' : 'text-slate-400'
           }`}
@@ -1201,10 +1738,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                   return (
                     <button
                       key={item.id}
-                      onClick={() => {
-                        setActiveNav(item.id);
-                        setDrawerOpen(false);
-                      }}
+                      onClick={() => handleSelectYouTubeNav(item.id)}
                       className={`w-full px-3 py-2.5 rounded-xl flex items-center gap-3 text-xs font-semibold transition-all ${
                         isCur
                           ? 'bg-red-600 text-white shadow-md shadow-red-950/60 font-bold'
@@ -1257,8 +1791,127 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         isOpen={accountModalOpen}
         onClose={() => setAccountModalOpen(false)}
         currentAuth={authUser}
-        onAuthUpdated={(auth) => setAuthUser(auth)}
+        onAuthUpdated={(auth) => {
+          setAuthUser(auth);
+          if (auth) loadChannelVideos();
+          else setChannelVideos([]);
+        }}
       />
+
+      {/* IN-APP VIDEO EDIT MODAL */}
+      {editingVideo && (
+        <div className="fixed inset-0 z-[75] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={handleSaveEditVideo}
+            className="w-full max-w-md bg-[#0c1220] border border-white/15 rounded-3xl p-5 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h4 className="font-bold text-sm text-white">Edit YouTube Video</h4>
+              <button
+                type="button"
+                onClick={() => setEditingVideo(null)}
+                className="p-1.5 rounded-lg bg-white/5 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-slate-300 block mb-1">Title</label>
+              <input
+                type="text"
+                required
+                maxLength={100}
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-[#111728] border border-white/10 text-xs text-white focus:outline-none focus:border-red-500"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-slate-300 block mb-1">Description</label>
+              <textarea
+                rows={3}
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-[#111728] border border-white/10 text-xs text-white focus:outline-none focus:border-red-500 resize-none"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-slate-300 block mb-1">Visibility</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {(['public', 'unlisted', 'private'] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setEditPrivacy(p)}
+                    className={`py-2 rounded-xl text-xs font-bold capitalize border ${
+                      editPrivacy === p
+                        ? 'bg-red-600 text-white border-red-500'
+                        : 'bg-white/5 text-slate-300 border-white/10'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingVideo(null)}
+                className="px-4 py-2 rounded-xl bg-white/5 text-xs font-semibold text-slate-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingEdit || !editTitle.trim()}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-xs font-bold text-white flex items-center gap-1.5"
+              >
+                {isSavingEdit && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Save Changes</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* IN-APP DELETE CONFIRMATION MODAL */}
+      {deletingVideo && (
+        <div className="fixed inset-0 z-[75] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-[#0c1220] border border-red-500/30 rounded-3xl p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-red-600/20 text-red-400 flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-white">Delete YouTube Video?</h4>
+                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                  Are you sure you want to permanently delete &ldquo;{deletingVideo.title}&rdquo; from your YouTube channel?
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeletingVideo(null)}
+                disabled={isDeletingVideo}
+                className="px-4 py-2 rounded-xl bg-white/5 text-xs font-semibold text-slate-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteVideo}
+                disabled={isDeletingVideo}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-xs font-bold text-white flex items-center gap-1.5"
+              >
+                {isDeletingVideo && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>Delete Video</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <FireEmojiPicker
         isOpen={firePickerOpen}

@@ -1580,3 +1580,69 @@ export function deleteStudioUploadedVideo(id: string): void {
     console.error('Failed deleting studio video:', e);
   }
 }
+
+export interface YouTubeManagedVideo {
+  id: string;
+  youtubeId: string;
+  title: string;
+  description: string;
+  thumbnailUrl: string;
+  publishedAt: string;
+  privacyStatus: 'public' | 'unlisted' | 'private';
+  madeForKids?: boolean;
+  categoryId?: string;
+  tags: string[];
+  duration?: string;
+  stats: {
+    views: number;
+    likes: number;
+    comments: number;
+  };
+}
+
+export async function fetchMyYouTubeChannelVideos(accessToken?: string): Promise<{
+  hasChannel?: boolean;
+  channel?: any;
+  videos: YouTubeManagedVideo[];
+}> {
+  const headers: Record<string, string> = {};
+  if (accessToken) headers['x-google-access-token'] = accessToken;
+  const res = await fetch('/api/youtube/my-videos', { headers });
+  const data = await res.json().catch(() => ({ videos: [] }));
+  if (!res.ok) {
+    throw new Error(data?.message || data?.error || 'Failed to load channel videos');
+  }
+  return data;
+}
+
+export async function updateMyYouTubeVideo(
+  videoId: string,
+  payload: { title?: string; description?: string; privacyStatus?: 'public' | 'unlisted' | 'private'; tags?: string[] },
+  accessToken?: string
+): Promise<any> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) headers['x-google-access-token'] = accessToken;
+  const res = await fetch(`/api/youtube/my-videos/${encodeURIComponent(videoId)}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.message || data?.error || 'Failed to update YouTube video');
+  }
+  return data;
+}
+
+export async function deleteMyYouTubeVideo(videoId: string, accessToken?: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (accessToken) headers['x-google-access-token'] = accessToken;
+  const res = await fetch(`/api/youtube/my-videos/${encodeURIComponent(videoId)}`, {
+    method: 'DELETE',
+    headers,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.message || data?.error || 'Failed to delete YouTube video');
+  }
+}

@@ -8,6 +8,7 @@ import {
   registerYTListeningHandshake,
   parseYTInfoMessage,
 } from '../utils/youtubePlayerBridge';
+import { recordWatchedSuppression } from '../services/watchSuppression';
 
 interface PersistentWatchPlayerProps {
   video: LongVideo | null;
@@ -73,9 +74,9 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
     lastReportedSecRef.current = 0;
   }, [video?.id]);
 
-  // Accurate meaningful watch progress reporting (>= 8s or >= 25%) without triggering on accidental clicks
+  // Accurate meaningful watch progress reporting (>= 8s or >= 25%) for both guests & signed-in users
   useEffect(() => {
-    if (!video || !api.getToken()) return;
+    if (!video) return;
     const flush = (force = false) => {
       const watched = watchedSecondsRef.current;
       const dur = durationRef.current;
@@ -85,21 +86,24 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
       if (!meetsThreshold) return;
       if (!force && watched - lastReportedSecRef.current < 5) return;
       lastReportedSecRef.current = watched;
-      api
-        .recordWatchProgress({
-          videoId: video.id,
-          youtubeId: video.youtubeId,
-          videoType: 'long',
-          source: video.source,
-          title: video.title,
-          thumbnailUrl: video.thumbnailUrl,
-          channelTitle: video.channel.title,
-          duration: video.duration,
-          watchSeconds: Math.round(Math.max(watched, pos)),
-          durationSeconds: Math.round(dur),
-          completed: ratio >= 0.9,
-        })
-        .catch(() => {});
+      recordWatchedSuppression(video.id, video.youtubeId);
+      if (api.getToken()) {
+        api
+          .recordWatchProgress({
+            videoId: video.id,
+            youtubeId: video.youtubeId,
+            videoType: 'long',
+            source: video.source,
+            title: video.title,
+            thumbnailUrl: video.thumbnailUrl,
+            channelTitle: video.channel.title,
+            duration: video.duration,
+            watchSeconds: Math.round(Math.max(watched, pos)),
+            durationSeconds: Math.round(dur),
+            completed: ratio >= 0.9,
+          })
+          .catch(() => {});
+      }
     };
 
     const tick = window.setInterval(() => {

@@ -28,11 +28,14 @@ import type {
   ChatReplySnapshot,
   UserPrivacySettings,
   NotificationPreferences,
+  DeviceSessionInfo,
 } from './types';
+import { getSuppressedIdsHeaderValue } from './services/watchSuppression';
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'motherland_auth_token';
 const SAVED_ACCOUNTS_KEY = 'motherland_saved_accounts';
+const GOOGLE_AUTH_STORAGE_KEY = 'motherland_google_youtube_auth_v3';
 
 export interface SavedAccountItem {
   id: string;
@@ -98,13 +101,45 @@ export function removeSavedAccount(userId: string): void {
   }
 }
 
+function getStoredGoogleAccessToken(): string {
+  try {
+    const raw = localStorage.getItem(GOOGLE_AUTH_STORAGE_KEY);
+    if (!raw) return '';
+    const parsed = JSON.parse(raw);
+    if (parsed?.accessToken && (!parsed.expiresAt || Number(parsed.expiresAt) > Date.now())) {
+      return String(parsed.accessToken);
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
 async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const token = getStoredAuthToken();
   const headers = new Headers(options.headers || {});
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-  return fetch(url, { ...options, headers });
+  const googleToken = getStoredGoogleAccessToken();
+  if (googleToken && !headers.has('x-google-access-token')) {
+    headers.set('x-google-access-token', googleToken);
+  }
+  if (
+    url.includes('/posts') ||
+    url.includes('/videos/') ||
+    url.includes('/youtube/feed')
+  ) {
+    const suppressedHeader = getSuppressedIdsHeaderValue();
+    if (suppressedHeader) {
+      headers.set('x-suppressed-ids', suppressedHeader);
+    }
+  }
+  return fetch(url, {
+    credentials: options.credentials || 'same-origin',
+    ...options,
+    headers,
+  });
 }
 
 async function parseJsonOrThrow<T = any>(res: Response): Promise<T> {
@@ -248,6 +283,36 @@ export const api = {
     return parseJsonOrThrow(res);
   },
 
+  async getMyYouTubeVideos(): Promise<{
+    hasChannel?: boolean;
+    channel?: any;
+    videos: any[];
+    error?: string;
+    message?: string;
+  }> {
+    const res = await authFetch(`${API_BASE}/youtube/my-videos`);
+    return parseJsonOrThrow(res);
+  },
+
+  async updateMyYouTubeVideo(
+    videoId: string,
+    payload: { title?: string; description?: string; privacyStatus?: 'public' | 'unlisted' | 'private'; tags?: string[] }
+  ): Promise<{ success: boolean; video: any }> {
+    const res = await authFetch(`${API_BASE}/youtube/my-videos/${encodeURIComponent(videoId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async deleteMyYouTubeVideo(videoId: string): Promise<{ success: boolean; videoId: string }> {
+    const res = await authFetch(`${API_BASE}/youtube/my-videos/${encodeURIComponent(videoId)}`, {
+      method: 'DELETE',
+    });
+    return parseJsonOrThrow(res);
+  },
+
   async uploadVideoToYouTube(params: {
     file: File;
     thumbnailFile?: File | null;
@@ -301,8 +366,11 @@ export const api = {
     return new Promise<YouTubeUploadResult>((resolve) => {
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', `${API_BASE}/youtube/upload/stream/${encodeURIComponent(prepData.sessionId)}`);
+      xhr.withCredentials = true;
       const token = getStoredAuthToken();
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      const googleToken = getStoredGoogleAccessToken();
+      if (googleToken) xhr.setRequestHeader('x-google-access-token', googleToken);
       xhr.setRequestHeader('Content-Type', params.file.type || 'video/mp4');
 
       xhr.upload.onprogress = (evt) => {
@@ -337,6 +405,7 @@ export const api = {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${API_BASE}/media/upload`);
+      xhr.withCredentials = true;
       const token = getStoredAuthToken();
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
@@ -415,6 +484,49 @@ export const api = {
       return { user: null, isGuest: true, error: 'Unauthorized' };
     }
     return res.json();
+  },
+
+  async getActiveSessions(): Promise<{ sessions: DeviceSessionInfo[] }> {
+    const res = await authFetch(`${API_BASE}/auth/sessions`);
+    return parseJsonOrThrow(res);
+  },
+
+  async revokeSession(sessionId: string): Promise<{ success: boolean; revokedCurrent?: boolean }> {
+    const res = await authFetch(`${API_BASE}/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    });
+    const data = await parseJsonOrThrow<{ success: boolean; revokedCurrent?: boolean }>(res);
+    if (data.revokedCurrent) {
+      setStoredAuthToken('');
+    }
+    return data;
+  },
+
+  async logoutAllDevices(keepCurrent = true): Promise<{ success: boolean; removedCount: number; keptCurrent: boolean }> {
+    const res = await authFetch(`${API_BASE}/auth/logout-all`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keepCurrent }),
+    });
+    const data = await parseJsonOrThrow<{ success: boolean; removedCount: number; keptCurrent: boolean }>(res);
+    if (!keepCurrent) {
+      setStoredAuthToken('');
+    }
+    return data;
+  },
+
+  async deleteMyAccount(payload: { password?: string; confirmUsername?: string }): Promise<{ success: boolean; deletedUserId: string }> {
+    const res = await authFetch(`${API_BASE}/users/me`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await parseJsonOrThrow<{ success: boolean; deletedUserId: string }>(res);
+    if (data.deletedUserId) {
+      removeSavedAccount(data.deletedUserId);
+    }
+    setStoredAuthToken('');
+    return data;
   },
 
   async sendOtp(identifier: string, type: 'register' | 'phone_verify' | 'forgot_password'): Promise<{ success: boolean; message: string; debugOtp?: string }> {

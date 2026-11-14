@@ -22,9 +22,31 @@ import {
   Camera,
   Bell,
   Play,
+  Smartphone,
+  Trash2,
+  AlertTriangle,
+  CheckCircle2,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { api } from '../api';
-import type { UserProfile, Post, ShortVideo, LongVideo, SavedVideoItem, UserPrivacySettings, NotificationPreferences } from '../types';
+import {
+  isGlobalSoundMuted,
+  setGlobalSoundMuted,
+  previewMotherlandRingtone,
+  playNotificationChime,
+  subscribeSoundState,
+} from '../utils/motherlandSoundEngine';
+import type {
+  UserProfile,
+  Post,
+  ShortVideo,
+  LongVideo,
+  SavedVideoItem,
+  UserPrivacySettings,
+  NotificationPreferences,
+  DeviceSessionInfo,
+} from '../types';
 import { PostCard } from './PostCard';
 import { useBackHandler } from '../hooks/useBackNavigation';
 
@@ -42,6 +64,7 @@ interface ProfileViewProps {
   onDeletePost: (postId: string) => void;
   onOpenAuthModal?: () => void;
   onLogout?: () => void;
+  onAccountDeleted?: () => void;
   onSwitchAccount?: (account: UserProfile) => void;
   onPlaySavedVideo?: (video: SavedVideoItem) => void;
 }
@@ -73,6 +96,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onDeletePost,
   onOpenAuthModal,
   onLogout,
+  onAccountDeleted,
   onSwitchAccount,
   onPlaySavedVideo,
 }) => {
@@ -82,6 +106,21 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [ownerClaimNotice, setOwnerClaimNotice] = useState('');
   const [isClaimingOwner, setIsClaimingOwner] = useState(false);
   const [accountNotice, setAccountNotice] = useState('');
+  const [activeSessions, setActiveSessions] = useState<DeviceSessionInfo[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [sessionNotice, setSessionNotice] = useState('');
+  const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
+  const [loggingOutDevices, setLoggingOutDevices] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteConfirmUsername, setDeleteConfirmUsername] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [soundMuted, setSoundMuted] = useState<boolean>(() => isGlobalSoundMuted());
+
+  useEffect(() => {
+    return subscribeSoundState(() => setSoundMuted(isGlobalSoundMuted()));
+  }, []);
 
   // Paginated profile posts backed directly by /api/users/:id/posts
   const [profilePosts, setProfilePosts] = useState<Post[]>([]);
@@ -165,6 +204,29 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       .catch(() => {})
       .finally(() => {
         if (mounted) setLoadingSaved(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [currentUser?.id, activeTab]);
+
+  useEffect(() => {
+    if (!currentUser || activeTab !== 'settings') return;
+    let mounted = true;
+    setLoadingSessions(true);
+    setSessionNotice('');
+    api
+      .getActiveSessions()
+      .then((res) => {
+        if (!mounted) return;
+        setActiveSessions(res.sessions || []);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setActiveSessions([]);
+      })
+      .finally(() => {
+        if (mounted) setLoadingSessions(false);
       });
     return () => {
       mounted = false;
@@ -881,6 +943,47 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     );
                   })}
                 </div>
+
+                <div className="mt-4 pt-3 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-bold text-[var(--text-primary)]">
+                      MOTHERLAND Shonar Dhwani Audio
+                    </p>
+                    <p className="text-[11px] text-[var(--text-secondary)]">
+                      Original call ringtone &amp; notification chime synthesized cleanly in-app
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void previewMotherlandRingtone()}
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary-border)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Volume2 className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                      Preview Ringtone
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void playNotificationChime(true)}
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary-border)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Bell className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
+                      Preview Notification
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGlobalSoundMuted(!soundMuted)}
+                      className={`min-h-[44px] px-3.5 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 cursor-pointer ${
+                        soundMuted
+                          ? 'bg-[var(--bg-surface-alt)] border-[var(--border-subtle)] text-[var(--text-muted)]'
+                          : 'bg-[var(--accent-primary-soft)] border-[var(--accent-primary-border)] text-[var(--accent-primary)]'
+                      }`}
+                    >
+                      {soundMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                      {soundMuted ? 'Sound Muted' : 'Sound On'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -994,20 +1097,251 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               )}
             </div>
 
-            <div className="ml-glass rounded-2xl p-5 flex items-center justify-between">
+            {/* Active Device Sessions Management */}
+            <div className="ml-glass rounded-2xl p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+                    <Smartphone className="w-4 h-4 text-[var(--accent-primary)]" />
+                    Active Device Sessions
+                  </h3>
+                  <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Your account stays signed in across reloads and updates. Review or revoke individual devices here.
+                  </p>
+                </div>
+                {activeSessions.length > 1 && (
+                  <button
+                    type="button"
+                    disabled={loggingOutDevices}
+                    onClick={async () => {
+                      setLoggingOutDevices(true);
+                      setSessionNotice('');
+                      try {
+                        const res = await api.logoutAllDevices(true);
+                        const refreshed = await api.getActiveSessions();
+                        setActiveSessions(refreshed.sessions || []);
+                        setSessionNotice(`Logged out ${res.removedCount} other device${res.removedCount === 1 ? '' : 's'}.`);
+                      } catch (err: any) {
+                        setSessionNotice(err?.message || 'Unable to log out other devices.');
+                      } finally {
+                        setLoggingOutDevices(false);
+                      }
+                    }}
+                    className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] text-xs font-bold text-[var(--text-primary)] hover:border-[var(--accent-primary-border)] transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {loggingOutDevices ? 'Signing out...' : 'Log Out Other Devices'}
+                  </button>
+                )}
+              </div>
+
+              {sessionNotice && (
+                <p className="text-xs font-medium text-[var(--accent-primary)] flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>{sessionNotice}</span>
+                </p>
+              )}
+
+              {loadingSessions ? (
+                <div className="py-4 flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                  <Loader2 className="w-4 h-4 animate-spin text-[var(--accent-primary)]" />
+                  <span>Loading active sessions...</span>
+                </div>
+              ) : activeSessions.length === 0 ? (
+                <p className="text-xs text-[var(--text-secondary)] py-2">
+                  No additional session records found for this account.
+                </p>
+              ) : (
+                <div className="divide-y divide-[var(--border-subtle)]">
+                  {activeSessions.map((sess) => (
+                    <div
+                      key={sess.id}
+                      className="py-3 first:pt-1 last:pb-1 flex items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-[var(--text-primary)] truncate">
+                          {sess.deviceName || 'Web Browser'}
+                          {sess.isCurrent ? ' · This device' : ''}
+                        </p>
+                        <p className="text-[11px] text-[var(--text-secondary)] mt-0.5 tabular-nums">
+                          {sess.authMethod === 'google' ? 'Google Sign-In' : 'Password Login'} · Last active{' '}
+                          {new Date(sess.lastUsedAt || sess.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={revokingSessionId === sess.id}
+                        onClick={async () => {
+                          setRevokingSessionId(sess.id);
+                          setSessionNotice('');
+                          try {
+                            const res = await api.revokeSession(sess.id);
+                            if (res.revokedCurrent) {
+                              onLogout?.();
+                              return;
+                            }
+                            setActiveSessions((prev) => prev.filter((item) => item.id !== sess.id));
+                            setSessionNotice('Device session revoked.');
+                          } catch (err: any) {
+                            setSessionNotice(err?.message || 'Failed to revoke session.');
+                          } finally {
+                            setRevokingSessionId(null);
+                          }
+                        }}
+                        className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] text-xs font-semibold text-[var(--text-primary)] hover:text-[var(--danger)] hover:border-[var(--danger)]/40 transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                      >
+                        {revokingSessionId === sess.id ? 'Revoking...' : sess.isCurrent ? 'Sign Out' : 'Log Out'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] text-[var(--text-secondary)]">
+                  End every active session on all devices immediately.
+                </span>
+                <button
+                  type="button"
+                  disabled={loggingOutDevices}
+                  onClick={async () => {
+                    setLoggingOutDevices(true);
+                    try {
+                      await api.logoutAllDevices(false);
+                      onLogout?.();
+                    } catch (err: any) {
+                      setSessionNotice(err?.message || 'Unable to log out all devices.');
+                      setLoggingOutDevices(false);
+                    }
+                  }}
+                  className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger)]/30 text-xs font-bold hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50"
+                >
+                  Log Out All Devices
+                </button>
+              </div>
+            </div>
+
+            <div className="ml-glass rounded-2xl p-5 flex items-center justify-between gap-3">
               <div>
                 <h4 className="text-sm font-bold text-[var(--text-primary)]">Log Out of MOTHERLAND</h4>
-                <p className="text-xs text-[var(--text-secondary)]">Safely end this session</p>
+                <p className="text-xs text-[var(--text-secondary)]">Safely end this device session without affecting your account data</p>
               </div>
               {onLogout && (
                 <button
                   type="button"
                   onClick={onLogout}
-                  className="px-4 py-2 bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger)]/30 hover:opacity-90 font-bold rounded-xl text-xs flex items-center gap-2 transition-colors cursor-pointer"
+                  className="min-h-[44px] px-4 py-2 bg-[var(--danger-soft)] text-[var(--danger)] border border-[var(--danger)]/30 hover:opacity-90 font-bold rounded-xl text-xs flex items-center gap-2 transition-colors cursor-pointer shrink-0"
                 >
                   <LogOut className="w-4 h-4" />
                   Sign Out
                 </button>
+              )}
+            </div>
+
+            {/* Permanent Account Ownership & Explicit Self-Deletion */}
+            <div className="ml-glass rounded-2xl p-5 space-y-3 border border-[var(--danger)]/20">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+                    <Trash2 className="w-4 h-4 text-[var(--danger)]" />
+                    Delete Account Permanently
+                  </h4>
+                  <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                    Your account, media, and posts are preserved permanently unless you explicitly delete your account here.
+                  </p>
+                </div>
+                {!showDeleteConfirm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDeleteConfirm(true);
+                      setDeleteError('');
+                      setDeletePassword('');
+                      setDeleteConfirmUsername('');
+                    }}
+                    className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--danger)]/40 text-[var(--danger)] bg-transparent hover:bg-[var(--danger-soft)] text-xs font-bold transition-colors cursor-pointer shrink-0"
+                  >
+                    Delete Account
+                  </button>
+                )}
+              </div>
+
+              {showDeleteConfirm && (
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setDeleteError('');
+                    if (deleteConfirmUsername.trim().replace(/^@/, '').toLowerCase() !== currentUser.username.toLowerCase()) {
+                      setDeleteError(`Please type @${currentUser.username} to confirm permanent account deletion.`);
+                      return;
+                    }
+                    setIsDeletingAccount(true);
+                    try {
+                      await api.deleteMyAccount({
+                        password: deletePassword || undefined,
+                        confirmUsername: deleteConfirmUsername.trim(),
+                      });
+                      setShowDeleteConfirm(false);
+                      if (onAccountDeleted) {
+                        onAccountDeleted();
+                      } else {
+                        onLogout?.();
+                      }
+                    } catch (err: any) {
+                      setDeleteError(err?.message || 'Could not delete account. Please verify your credentials.');
+                    } finally {
+                      setIsDeletingAccount(false);
+                    }
+                  }}
+                  className="pt-3 border-t border-[var(--border-subtle)] space-y-3"
+                >
+                  <div className="flex items-start gap-2 text-xs text-[var(--danger)]">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      This action permanently removes your MOTHERLAND profile, sessions, uploaded media assets, and posts. Type{' '}
+                      <strong className="font-bold">@{currentUser.username}</strong> below to confirm.
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <input
+                      type="text"
+                      required
+                      value={deleteConfirmUsername}
+                      onChange={(e) => setDeleteConfirmUsername(e.target.value)}
+                      placeholder={`Confirm @${currentUser.username}`}
+                      className="min-h-[44px] bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] rounded-xl px-3.5 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--danger)]"
+                    />
+                    <input
+                      type="password"
+                      value={deletePassword}
+                      onChange={(e) => setDeletePassword(e.target.value)}
+                      placeholder="Current password (if set)"
+                      className="min-h-[44px] bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] rounded-xl px-3.5 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--danger)]"
+                    />
+                  </div>
+                  {deleteError && (
+                    <p className="text-xs font-semibold text-[var(--danger)]">{deleteError}</p>
+                  )}
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isDeletingAccount}
+                      onClick={() => {
+                        setShowDeleteConfirm(false);
+                        setDeleteError('');
+                      }}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] text-xs font-semibold text-[var(--text-primary)] cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isDeletingAccount}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-[var(--danger)] text-white text-xs font-bold hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50"
+                    >
+                      {isDeletingAccount ? 'Deleting Account...' : 'Confirm Permanent Deletion'}
+                    </button>
+                  </div>
+                </form>
               )}
             </div>
           </div>

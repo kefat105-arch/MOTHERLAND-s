@@ -31,21 +31,45 @@ import {
 } from 'lucide-react';
 import { UnifiedVideo } from '../../types/video';
 import { searchYouTube } from '../../services/youtubeService';
+import {
+  filterUnsuppressed,
+  recordWatchedSuppression,
+  WATCH_SUPPRESSED_EVENT,
+} from '../../services/watchSuppression';
 import { FireLikeIcon, TalkIcon, BoostIcon } from '../fire/MotherlandIcons';
 import { FireEmojiPicker } from '../fire/FireEmojiPicker';
 import { FireRichText } from '../fire/FireRichText';
 import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 
+const YT_SHORTS_CACHE_KEY = 'motherland_yt_shorts_cache_v1';
+
+function readCachedYtShorts(): UnifiedVideo[] {
+  try {
+    const raw = localStorage.getItem(YT_SHORTS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.items)) {
+      return filterUnsuppressed(parsed.items);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 interface YouTubeShortsFeedProps {
   onBackToHome?: () => void;
   onOpenDetails?: (video: UnifiedVideo) => void;
+  refreshSignal?: number;
 }
 
 export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   onBackToHome,
   onOpenDetails,
+  refreshSignal = 0,
 }) => {
-  const [shorts, setShorts] = useState<UnifiedVideo[]>([]);
+  const initialCached = readCachedYtShorts();
+  const [shorts, setShorts] = useState<UnifiedVideo[]>(initialCached);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
@@ -65,7 +89,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   // Pagination
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(initialCached.length === 0);
 
   // Gesture handling refs
   const touchStartY = useRef<number>(0);
@@ -76,46 +100,80 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
 
-  // Load initial YouTube Shorts
-  useEffect(() => {
-    let active = true;
-    async function loadShorts() {
+  // Load YouTube Shorts cleanly (instant hydration + silent refresh)
+  const loadInitialShorts = useCallback(async (showSpinnerIfEmpty = false) => {
+    if (showSpinnerIfEmpty && shorts.length === 0) {
       setInitialLoading(true);
-      try {
-        const res = await searchYouTube({
-          query: 'Bangladesh shorts viral comedy trending 2026',
-          regionCode: 'BD',
-          safeSearch: 'none',
-          pageSize: 24,
-        });
-
-        if (!active) return;
-        const validShorts: UnifiedVideo[] = [];
-        for (const v of res.videos) {
-          if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
-            seenIdsRef.current.add(v.id);
-            seenIdsRef.current.add(v.videoId);
-            validShorts.push({
-              ...v,
-              aspectRatio: '9:16',
-            });
-          }
-        }
-
-        setShorts(validShorts);
-        setNextPageToken(res.nextPageToken);
-      } catch (err) {
-        console.warn('Failed loading initial shorts:', err);
-      } finally {
-        if (active) setInitialLoading(false);
-      }
     }
+    try {
+      const res = await searchYouTube({
+        query: 'Bangladesh shorts viral comedy trending 2026',
+        regionCode: 'BD',
+        safeSearch: 'none',
+        pageSize: 24,
+      });
 
-    loadShorts();
-    return () => {
-      active = false;
+      const validShorts: UnifiedVideo[] = [];
+      for (const v of res.videos) {
+        if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
+          seenIdsRef.current.add(v.id);
+          seenIdsRef.current.add(v.videoId);
+          validShorts.push({
+            ...v,
+            aspectRatio: '9:16',
+          });
+        }
+      }
+
+      const unsuppressed = filterUnsuppressed(validShorts);
+      if (unsuppressed.length > 0) {
+        setShorts(unsuppressed);
+        setCurrentIndex(0);
+        try {
+          localStorage.setItem(YT_SHORTS_CACHE_KEY, JSON.stringify({ items: unsuppressed.slice(0, 20), savedAt: Date.now() }));
+        } catch {
+          // ignore
+        }
+      }
+      setNextPageToken(res.nextPageToken);
+    } catch (err) {
+      console.warn('Failed loading initial shorts:', err);
+    } finally {
+      setInitialLoading(false);
+    }
+  }, [shorts.length]);
+
+  useEffect(() => {
+    seenIdsRef.current.clear();
+    loadInitialShorts(initialCached.length === 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal]);
+
+  // Listen for live watch suppression events
+  useEffect(() => {
+    const onSuppressed = () => {
+      setShorts((prev) => filterUnsuppressed(prev));
     };
+    window.addEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
+    return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
   }, []);
+
+  // Track 4s genuine Short watch for 14-day suppression + preload next Short thumbnail
+  const activeShortForTrack = shorts[currentIndex];
+  useEffect(() => {
+    if (!activeShortForTrack) return;
+    const next = shorts[currentIndex + 1];
+    if (next?.thumbnailUrl) {
+      const img = new Image();
+      img.src = next.thumbnailUrl;
+    }
+    const timer = window.setTimeout(() => {
+      if (isPlaying) {
+        recordWatchedSuppression(activeShortForTrack.id, activeShortForTrack.videoId);
+      }
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [activeShortForTrack?.id, currentIndex, isPlaying, shorts]);
 
   // Fetch more shorts when approaching end of list
   const fetchMoreShorts = useCallback(async () => {
@@ -143,7 +201,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
         }
       }
 
-      setShorts((prev) => [...prev, ...newShorts]);
+      setShorts((prev) => [...prev, ...filterUnsuppressed(newShorts)]);
       setNextPageToken(res.nextPageToken);
     } catch (err) {
       console.warn('Pagination load shorts error:', err);
@@ -315,15 +373,23 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
       className="relative w-full max-w-md mx-auto h-[calc(100dvh-130px)] sm:h-[800px] max-h-[860px] bg-black rounded-none sm:rounded-3xl overflow-hidden shadow-2xl select-none flex flex-col justify-between border-0 sm:border border-white/10"
       style={{ touchAction: 'pan-y' }}
     >
-      {/* Active Short Video Player (Full 9:16 Area) */}
+      {/* Active Short Video Player (Full 9:16 Area with instant thumbnail backdrop) */}
       <div className="absolute inset-0 w-full h-full bg-black z-0 flex items-center justify-center overflow-hidden">
+        {activeShort.thumbnailUrl && (
+          <img
+            src={activeShort.thumbnailUrl}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 w-full h-full object-cover opacity-80 pointer-events-none"
+          />
+        )}
         <iframe
           key={activeShort.videoId}
           src={`https://www.youtube-nocookie.com/embed/${activeShort.videoId}?autoplay=1&mute=${
             isMuted ? '1' : '0'
           }&controls=0&loop=1&playlist=${activeShort.videoId}&modestbranding=1&rel=0&playsinline=1`}
           title={activeShort.title}
-          className="w-full h-full object-cover scale-[1.02] pointer-events-none"
+          className="relative z-[1] w-full h-full object-cover scale-[1.02] pointer-events-none"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen
         />

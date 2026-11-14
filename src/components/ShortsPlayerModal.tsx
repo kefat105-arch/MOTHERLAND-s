@@ -33,6 +33,7 @@ import {
   parseYTInfoMessage,
 } from '../utils/youtubePlayerBridge';
 import { useBackHandler } from '../hooks/useBackNavigation';
+import { recordWatchedSuppression } from '../services/watchSuppression';
 import { FireLikeIcon } from './fire/MotherlandIcons';
 import { FireRichText } from './fire/FireRichText';
 
@@ -145,33 +146,36 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     reportedShortRef.current = false;
   }, [currentIndex]);
 
-  // Track genuine Shorts watch (>=5s) for Watch History & 7-day discovery suppression
+  // Track genuine Shorts watch (>=4s) for Watch History & 14-day discovery suppression (both guests & signed-in users)
   useEffect(() => {
     const activeShort = items[currentIndex];
-    if (!isOpen || !activeShort || !api.getToken()) return;
+    if (!isOpen || !activeShort) return;
     const flushShort = () => {
       const w = watchedSecondsRef.current;
-      if (reportedShortRef.current || w < 5) return;
+      if (reportedShortRef.current || w < 4) return;
       reportedShortRef.current = true;
-      api
-        .recordWatchProgress({
-          videoId: activeShort.id,
-          youtubeId: activeShort.youtubeId,
-          videoType: 'short',
-          source: activeShort.source,
-          title: activeShort.title,
-          thumbnailUrl: activeShort.thumbnailUrl,
-          channelTitle: activeShort.creator.name,
-          watchSeconds: Math.round(w),
-          durationSeconds: Math.round(duration || 30),
-          completed: duration > 0 ? currentTime / duration >= 0.85 : w >= 12,
-        })
-        .catch(() => {});
+      recordWatchedSuppression(activeShort.id, activeShort.youtubeId);
+      if (api.getToken()) {
+        api
+          .recordWatchProgress({
+            videoId: activeShort.id,
+            youtubeId: activeShort.youtubeId,
+            videoType: 'short',
+            source: activeShort.source,
+            title: activeShort.title,
+            thumbnailUrl: activeShort.thumbnailUrl,
+            channelTitle: activeShort.creator.name,
+            watchSeconds: Math.round(w),
+            durationSeconds: Math.round(duration || 30),
+            completed: duration > 0 ? currentTime / duration >= 0.85 : w >= 12,
+          })
+          .catch(() => {});
+      }
     };
     const tick = window.setInterval(() => {
       if (isPlaying) {
         watchedSecondsRef.current += 1;
-        if (watchedSecondsRef.current >= 5) flushShort();
+        if (watchedSecondsRef.current >= 4) flushShort();
       }
     }, 1000);
     return () => {
@@ -179,6 +183,16 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
       flushShort();
     };
   }, [isOpen, currentIndex, isPlaying, items, duration, currentTime]);
+
+  // Preload next Short thumbnail so switching feels instant
+  useEffect(() => {
+    if (!isOpen) return;
+    const nextItem = items[currentIndex + 1];
+    if (nextItem?.thumbnailUrl) {
+      const img = new Image();
+      img.src = nextItem.thumbnailUrl;
+    }
+  }, [isOpen, currentIndex, items]);
 
   const currentShort = items[currentIndex] || items[0];
   const isYouTube = Boolean(currentShort?.source === 'youtube' && currentShort?.youtubeId);
@@ -227,13 +241,9 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
 
   const goNext = useCallback(() => {
     if (currentIndex < items.length - 1) {
-      setIsTransitioning(true);
-      setDragOffsetY(-140);
-      setTimeout(() => {
-        setCurrentIndex((i) => Math.min(items.length - 1, i + 1));
-        setDragOffsetY(0);
-        setIsTransitioning(false);
-      }, 130);
+      setCurrentIndex((i) => Math.min(items.length - 1, i + 1));
+      setDragOffsetY(0);
+      setIsTransitioning(false);
     } else if (hasMoreShorts && onLoadMore && !isLoadingMore) {
       onLoadMore();
     }
@@ -241,13 +251,9 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
 
   const goPrev = useCallback(() => {
     if (currentIndex > 0) {
-      setIsTransitioning(true);
-      setDragOffsetY(140);
-      setTimeout(() => {
-        setCurrentIndex((i) => Math.max(0, i - 1));
-        setDragOffsetY(0);
-        setIsTransitioning(false);
-      }, 130);
+      setCurrentIndex((i) => Math.max(0, i - 1));
+      setDragOffsetY(0);
+      setIsTransitioning(false);
     }
   }, [currentIndex]);
 
@@ -580,8 +586,16 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           </div>
         </div>
 
-        {/* Single Active Video Playback Layer (Only 1 Video Ever Plays) */}
+        {/* Single Active Video Playback Layer (Only 1 Video Ever Plays, Instant Poster Backdrop) */}
         <div className="relative w-full h-full flex items-center justify-center bg-black">
+          {currentShort.thumbnailUrl && (
+            <img
+              src={currentShort.thumbnailUrl}
+              alt=""
+              aria-hidden="true"
+              className="absolute inset-0 w-full h-full object-cover opacity-80 pointer-events-none"
+            />
+          )}
           {isYouTube && currentShort.youtubeId ? (
             <iframe
               ref={ytIframeRef}
@@ -596,7 +610,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
               title={currentShort.title}
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               allowFullScreen
-              className="w-full h-full border-0 pointer-events-none"
+              className="relative z-[1] w-full h-full border-0 pointer-events-none"
             />
           ) : (
             <video

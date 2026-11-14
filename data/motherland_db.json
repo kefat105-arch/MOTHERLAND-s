@@ -37,7 +37,9 @@
         "instagram": "https://instagram.com/motherland"
       },
       "createdAt": "2026-10-13T06:08:54.689Z",
-      "updatedAt": "2026-11-12T06:08:54.689Z"
+      "updatedAt": "2026-11-12T06:08:54.689Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_nadia_02",
@@ -70,7 +72,9 @@
         "showContactInfo": false
       },
       "createdAt": "2026-10-18T06:08:54.689Z",
-      "updatedAt": "2026-11-12T06:08:54.689Z"
+      "updatedAt": "2026-11-12T06:08:54.689Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_tariq_03",
@@ -101,7 +105,9 @@
         "showContactInfo": true
       },
       "createdAt": "2026-10-23T06:08:54.689Z",
-      "updatedAt": "2026-11-12T06:08:54.689Z"
+      "updatedAt": "2026-11-12T06:08:54.689Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_ayesha_04",
@@ -132,7 +138,9 @@
         "showContactInfo": true
       },
       "createdAt": "2026-10-28T06:08:54.689Z",
-      "updatedAt": "2026-11-12T06:08:54.689Z"
+      "updatedAt": "2026-11-12T06:08:54.689Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_1794463858734_ca1d",
@@ -159,7 +167,9 @@
         "showContactInfo": true
       },
       "createdAt": "2026-11-12T06:10:58.734Z",
-      "updatedAt": "2026-11-12T06:10:58.734Z"
+      "updatedAt": "2026-11-12T06:10:58.734Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_1794463874663_x562",
@@ -186,7 +196,9 @@
         "showContactInfo": true
       },
       "createdAt": "2026-11-12T06:11:14.663Z",
-      "updatedAt": "2026-11-12T06:11:14.663Z"
+      "updatedAt": "2026-11-12T06:11:14.663Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_1794463874674_7hff",
@@ -213,7 +225,9 @@
         "showContactInfo": true
       },
       "createdAt": "2026-11-12T06:11:14.674Z",
-      "updatedAt": "2026-11-12T06:11:14.674Z"
+      "updatedAt": "2026-11-12T06:11:14.674Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_1794463929027_7q47",
@@ -240,7 +254,9 @@
         "showContactInfo": true
       },
       "createdAt": "2026-11-12T06:12:09.027Z",
-      "updatedAt": "2026-11-12T06:12:09.089Z"
+      "updatedAt": "2026-11-12T06:12:09.089Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     },
     {
       "id": "usr_1794463929044_f6s7",
@@ -267,7 +283,9 @@
         "showContactInfo": true
       },
       "createdAt": "2026-11-12T06:12:09.044Z",
-      "updatedAt": "2026-11-12T06:12:09.044Z"
+      "updatedAt": "2026-11-12T06:12:09.044Z",
+      "authProvider": "password",
+      "passwordIterations": 1000
     }
   ],
   "sessions": [
@@ -275,37 +293,67 @@
       "token": "ml_4a14acfea3fe20fa97b23f57058c797554bba2895d58e52d56ef2aa16bd392e1",
       "userId": "usr_1794463858734_ca1d",
       "createdAt": "2026-11-12T06:10:58.735Z",
-      "expiresAt": "2026-12-12T06:10:58.735Z"
+      "expiresAt": "2026-12-12T06:10:58.735Z",
+      "id": "sess_ed380c2e4a3591a4",
+      "tokenHash": "e5165f7f1f7368db140bf33950611e8d74667b34c6d3c37bb3dd5d516b5c623e",
+      "deviceName": "Unknown Device",
+      "lastUsedAt": "2026-11-12T06:10:58.735Z",
+      "authMethod": "legacy"
     },
     {
       "token": "ml_82900808d92421cb1c8ecab2b5a65a2bb51ba54b68838927235ece402716693d",
       "userId": "usr_1794463874663_x562",
       "createdAt": "2026-11-12T06:11:14.664Z",
-      "expiresAt": "2026-12-12T06:11:14.664Z"
+      "expiresAt": "2026-12-12T06:11:14.664Z",
+      "id": "sess_2737b3fdcd6242e8",
+      "tokenHash": "1fdebc1fd6e5f47246362deb0519c91487803418d8527854acb0c832b22cbdfa",
+      "deviceName": "Unknown Device",
+      "lastUsedAt": "2026-11-12T06:11:14.664Z",
+      "authMethod": "legacy"
     },
     {
       "token": "ml_4270863fbc7a2987715780f9456df5b8d4d1fbacff1b8f7db9dd39a7648eb09d",
       "userId": "usr_1794463874674_7hff",
       "createdAt": "2026-11-12T06:11:14.675Z",
-      "expiresAt": "2026-12-12T06:11:14.675Z"
+      "expiresAt": "2026-12-12T06:11:14.675Z",
+      "id": "sess_de5fb86ab89f053b",
+      "tokenHash": "1a557209bd16464d2d398627a54b28e4846c1ec06bcf4b26d3e3e717ff08a9ca",
+      "deviceName": "Unknown Device",
+      "lastUsedAt": "2026-11-12T06:11:14.675Z",
+      "authMethod": "legacy"
     },
     {
       "token": "ml_20ae7620095f9051d49017c2cc7be4a893049ad1f09019ec9924e8243e66a1df",
       "userId": "usr_1794463929027_7q47",
       "createdAt": "2026-11-12T06:12:09.028Z",
-      "expiresAt": "2026-12-12T06:12:09.028Z"
+      "expiresAt": "2026-12-12T06:12:09.028Z",
+      "id": "sess_b5f5c6a525c96b19",
+      "tokenHash": "939416ee92aad2ffa66e694eb660c8e6abed660615e3e62c0fd452264e668b90",
+      "deviceName": "Unknown Device",
+      "lastUsedAt": "2026-11-12T06:12:09.028Z",
+      "authMethod": "legacy"
     },
     {
       "token": "ml_04b999a9436c62d1458cb51f285718afe3ad78bc5ff8da0ffcdaca5c00c2e4cb",
       "userId": "usr_1794463929044_f6s7",
       "createdAt": "2026-11-12T06:12:09.044Z",
-      "expiresAt": "2026-12-12T06:12:09.044Z"
+      "expiresAt": "2026-12-12T06:12:09.044Z",
+      "id": "sess_855630f1c957703e",
+      "tokenHash": "e363a160ecba9d36fb7d8fa6bfb23b43242b0fc10a989368c6d1b90cc887cb10",
+      "deviceName": "Unknown Device",
+      "lastUsedAt": "2026-11-12T06:12:09.044Z",
+      "authMethod": "legacy"
     },
     {
       "token": "ml_6841ec9cc4bc23b9e4efc81bd8905d61d737ff13f5edee642517586c5752ee32",
       "userId": "usr_1794463929027_7q47",
       "createdAt": "2026-11-12T06:12:09.089Z",
-      "expiresAt": "2026-12-12T06:12:09.089Z"
+      "expiresAt": "2026-12-12T06:12:09.089Z",
+      "id": "sess_40ae53782e475a95",
+      "tokenHash": "551fcd53a7f8480f1280c5ffd22b9ee8ebdc1c70651e71af7afc1a6b724dfc70",
+      "deviceName": "Unknown Device",
+      "lastUsedAt": "2026-11-12T06:12:09.089Z",
+      "authMethod": "legacy"
     }
   ],
   "posts": [
@@ -522,113 +570,8 @@
       }
     ]
   },
-  "stories": [
-    {
-      "id": "story_01",
-      "userId": "usr_kefat_01",
-      "userDisplayName": "Kefat Ahmed",
-      "userUsername": "kefatahmed",
-      "userAvatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
-      "isUserVerified": true,
-      "source": "motherland",
-      "mediaUrl": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80",
-      "mediaType": "image",
-      "caption": "Testing 24h ephemeral story nodes 🇧🇩⚡",
-      "createdAt": "2026-11-12T04:08:54.689Z",
-      "expiresAt": "2026-11-13T04:08:54.689Z",
-      "viewersCount": 420
-    },
-    {
-      "id": "story_02",
-      "userId": "usr_nadia_02",
-      "userDisplayName": "Nadia Hossain",
-      "userUsername": "nadia_creative",
-      "userAvatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
-      "isUserVerified": true,
-      "source": "motherland",
-      "mediaUrl": "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=800&auto=format&fit=crop&q=80",
-      "mediaType": "image",
-      "caption": "Grading fresh 4K footage for documentary 🎬✨",
-      "createdAt": "2026-11-12T04:08:54.689Z",
-      "expiresAt": "2026-11-13T03:08:54.690Z",
-      "viewersCount": 310
-    },
-    {
-      "id": "story_03",
-      "userId": "usr_tariq_03",
-      "userDisplayName": "Tariqul Islam",
-      "userUsername": "tariq_nature",
-      "userAvatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
-      "isUserVerified": true,
-      "source": "motherland",
-      "mediaUrl": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80",
-      "mediaType": "image",
-      "caption": "Sunset over Kaptai Lake waterways 🚤🌅",
-      "createdAt": "2026-11-12T02:08:54.690Z",
-      "expiresAt": "2026-11-13T01:08:54.690Z",
-      "viewersCount": 680
-    }
-  ],
-  "shortVideos": [
-    {
-      "id": "short_01",
-      "source": "motherland",
-      "videoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=600&auto=format&fit=crop&q=80",
-      "title": "Breathtaking Sajek Clouds Floating",
-      "caption": "Early morning above the clouds in Sajek Valley. No filter needed for this natural wonder! ☁️✨",
-      "hashtags": [
-        "Sajek",
-        "MotherlandShorts",
-        "Nature",
-        "Travel"
-      ],
-      "creator": {
-        "id": "usr_nadia_02",
-        "name": "Nadia Hossain",
-        "username": "nadia_creative",
-        "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80",
-        "isVerified": true,
-        "isFollowing": true
-      },
-      "stats": {
-        "likes": 12400,
-        "comments": 630,
-        "shares": 1100,
-        "views": 89000
-      },
-      "createdAt": "2026-11-12T01:08:54.690Z"
-    },
-    {
-      "id": "short_02",
-      "source": "motherland",
-      "videoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=600&auto=format&fit=crop&q=80",
-      "title": "Golden Sunset at Inani Beach",
-      "caption": "Corals and golden waters along Inani Beach, Cox’s Bazar. Pure tranquility. 🌊🌅",
-      "hashtags": [
-        "InaniBeach",
-        "SunsetVibes",
-        "CoxsBazar",
-        "Shorts"
-      ],
-      "creator": {
-        "id": "usr_tariq_03",
-        "name": "Tariqul Islam",
-        "username": "tariq_nature",
-        "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
-        "isVerified": true,
-        "isFollowing": false
-      },
-      "stats": {
-        "likes": 8750,
-        "comments": 420,
-        "shares": 530,
-        "views": 64200
-      },
-      "createdAt": "2026-11-11T18:08:54.690Z"
-    }
-  ],
+  "stories": [],
+  "shortVideos": [],
   "longVideos": [
     {
       "id": "long_01",
@@ -775,5 +718,59 @@
   "conversations": [],
   "conversationMessages": {},
   "otpCodes": [],
-  "youtubeOAuth": {}
+  "youtubeOAuth": {},
+  "calls": [],
+  "drafts": [],
+  "savedVideos": [],
+  "watchHistory": [],
+  "reports": [],
+  "mediaAssets": [],
+  "expiredStoriesArchive": [
+    {
+      "id": "story_03",
+      "userId": "usr_tariq_03",
+      "mediaUrl": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80",
+      "createdAt": "2026-11-12T02:08:54.690Z",
+      "expiresAt": "2026-11-13T01:08:54.690Z",
+      "expiredAtUtc": "2026-11-14T10:47:26.608Z"
+    },
+    {
+      "id": "story_02",
+      "userId": "usr_nadia_02",
+      "mediaUrl": "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=800&auto=format&fit=crop&q=80",
+      "createdAt": "2026-11-12T04:08:54.689Z",
+      "expiresAt": "2026-11-13T03:08:54.690Z",
+      "expiredAtUtc": "2026-11-14T10:47:26.608Z"
+    },
+    {
+      "id": "story_01",
+      "userId": "usr_kefat_01",
+      "mediaUrl": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80",
+      "createdAt": "2026-11-12T04:08:54.689Z",
+      "expiresAt": "2026-11-13T04:08:54.689Z",
+      "expiredAtUtc": "2026-11-14T10:47:26.608Z"
+    }
+  ],
+  "migrationsApplied": [
+    {
+      "version": 1,
+      "name": "v1_collections_and_user_defaults",
+      "appliedAt": "2026-11-14T10:47:26.314Z",
+      "backupFile": "backup_pre_migration_v0_to_v3_2026-11-14T10-47-26-312Z_651e96.json"
+    },
+    {
+      "version": 2,
+      "name": "v2_persistent_multi_device_sessions",
+      "appliedAt": "2026-11-14T10:47:26.314Z",
+      "backupFile": "backup_pre_migration_v0_to_v3_2026-11-14T10-47-26-312Z_651e96.json"
+    },
+    {
+      "version": 3,
+      "name": "v3_media_asset_metadata_registry",
+      "appliedAt": "2026-11-14T10:47:26.314Z",
+      "backupFile": "backup_pre_migration_v0_to_v3_2026-11-14T10-47-26-312Z_651e96.json"
+    }
+  ],
+  "schemaVersion": 3,
+  "lastBackupAt": "2026-11-14T10:53:01.637Z"
 }

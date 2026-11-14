@@ -178,9 +178,12 @@ export const MenuView: React.FC<MenuViewProps> = ({
         <button
           type="button"
           onClick={onToggleTheme}
-          className="min-h-[44px] px-4 py-2 rounded-xl bg-[var(--accent-primary-soft)] hover:bg-[var(--accent-primary)] text-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--accent-primary-border)] text-xs font-bold transition-colors"
+          data-testid="theme-toggle-btn"
+          aria-label={theme === 'dark' ? 'Switch to Light theme' : 'Switch to Dark theme'}
+          className="min-h-[44px] px-4 py-2 rounded-xl bg-[var(--accent-primary-soft)] hover:bg-[var(--accent-primary)] text-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--accent-primary-border)] text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
         >
-          Switch to {theme === 'dark' ? 'Light' : 'Dark'}
+          {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+          <span>{theme === 'dark' ? 'Light (সাদা)' : 'Dark (কালো)'}</span>
         </button>
       </div>
 

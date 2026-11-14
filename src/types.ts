@@ -235,6 +235,9 @@ export interface YouTubeOAuthChannel {
 
 export interface YouTubeOAuthStatus {
   oauthConfigured: boolean;
+  clientOAuthReady?: boolean;
+  googleClientId?: string | null;
+  redirectUri?: string;
   missingEnvVars?: string[];
   callbackUrl: string;
   connected: boolean;
@@ -485,7 +488,34 @@ export interface LoginPayload {
 export interface AuthResult {
   token: string;
   user: UserProfile;
+  sessionId?: string;
   message?: string;
+}
+
+export interface DeviceSessionInfo {
+  id: string;
+  deviceName: string;
+  userAgent?: string;
+  ipAddress?: string;
+  authMethod?: 'password' | 'google' | 'register' | 'switch' | 'legacy';
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+  isCurrent: boolean;
+}
+
+export interface MediaAssetRecord {
+  id: string;
+  ownerId: string;
+  originalFilename: string;
+  storedFilename: string;
+  url: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  storageProvider: 'local_persistent' | 'external_object_storage';
+  createdAt: string;
+  updatedAt: string;
 }
 
 

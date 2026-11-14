@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { Conversation, UserProfile } from '../types';
+import {
+  unlockSoundEngine,
+  startCallRingtoneLoop,
+  stopCallRingtones,
+  playCallConnectedChime,
+  playCallEndedChime,
+} from '../utils/motherlandSoundEngine';
 
 export type CallPhase =
   | 'idle'
@@ -53,6 +60,7 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
   const timerRef = useRef<number | null>(null);
   const ringTimeoutRef = useRef<number | null>(null);
   const endClearTimerRef = useRef<number | null>(null);
+  const prevPhaseRef = useRef<CallPhase>('idle');
 
   callRef.current = call;
 
@@ -327,6 +335,8 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
     async (conv: Conversation, callType: 'audio' | 'video') => {
       if (!currentUser) return;
       if (callRef.current) return;
+      // Synchronously unlock Web Audio on caller's button tap so outgoing ringback plays immediately
+      void unlockSoundEngine();
 
       const peer = conv.participants.find((p) => p.id !== currentUser.id);
       if (!peer) {
@@ -416,7 +426,8 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
         let sent = sendWsEvent('call:signal', signalPayload);
         for (let attempt = 0; !sent && attempt < 8; attempt++) {
           await new Promise((r) => window.setTimeout(r, 300));
-          if (!callRef.current || callRef.current.callId !== callId) return;
+          const latestCall = callRef.current as ActiveCallSession | null;
+          if (!latestCall || latestCall.callId !== callId) return;
           sent = sendWsEvent('call:signal', signalPayload);
         }
 
@@ -450,6 +461,8 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
     const pending = pendingOfferRef.current;
     if (!cur || cur.phase !== 'incoming' || !pending) return;
 
+    void unlockSoundEngine();
+    stopCallRingtones();
     setCall((prev) => (prev ? { ...prev, phase: 'connecting', statusNote: 'Connecting media...' } : prev));
     try {
       const { stream, actualVideo, actualAudio, fallbackNote } = await acquireUserMedia(
@@ -765,8 +778,34 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
     [finishCallUI, sendWsEvent]
   );
 
+  // Automatic ringtone & call chime lifecycle synced cleanly to call.phase
+  useEffect(() => {
+    const currentPhase: CallPhase = call?.phase || 'idle';
+    const prevPhase = prevPhaseRef.current;
+    prevPhaseRef.current = currentPhase;
+
+    if (currentPhase === 'outgoing') {
+      startCallRingtoneLoop('outgoing');
+    } else if (currentPhase === 'incoming') {
+      startCallRingtoneLoop('incoming');
+    } else {
+      stopCallRingtones();
+      if (currentPhase === 'connected' && prevPhase !== 'connected' && prevPhase !== 'reconnecting') {
+        playCallConnectedChime();
+      } else if (
+        (currentPhase === 'ended' || currentPhase === 'failed') &&
+        prevPhase !== 'idle' &&
+        prevPhase !== 'ended' &&
+        prevPhase !== 'failed'
+      ) {
+        playCallEndedChime();
+      }
+    }
+  }, [call?.phase]);
+
   useEffect(() => {
     return () => {
+      stopCallRingtones();
       cleanupPeerAndMedia();
       if (endClearTimerRef.current) window.clearTimeout(endClearTimerRef.current);
     };

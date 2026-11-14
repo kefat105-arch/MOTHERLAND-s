@@ -11,9 +11,19 @@ import {
   Minimize2,
   PictureInPicture2,
   ShieldAlert,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import type { ActiveCallSession } from '../../hooks/useWebRTC';
 import { WaveLogo } from './WaveLogo';
+import {
+  isCallAudioBlocked,
+  isCallRingTemporarilyMuted,
+  isGlobalSoundMuted,
+  subscribeSoundState,
+  toggleCallRingTemporarilyMuted,
+  unlockSoundEngine,
+} from '../../utils/motherlandSoundEngine';
 
 interface CallOverlayProps {
   call: ActiveCallSession | null;
@@ -51,6 +61,19 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [ringMuted, setRingMuted] = useState<boolean>(
+    () => isCallRingTemporarilyMuted() || isGlobalSoundMuted()
+  );
+  const [audioBlocked, setAudioBlocked] = useState<boolean>(() => isCallAudioBlocked());
+
+  useEffect(() => {
+    const sync = () => {
+      setRingMuted(isCallRingTemporarilyMuted() || isGlobalSoundMuted());
+      setAudioBlocked(isCallAudioBlocked());
+    };
+    sync();
+    return subscribeSoundState(sync);
+  }, [call?.phase, call?.callId]);
 
   useEffect(() => {
     if (localVideoRef.current) {
@@ -106,9 +129,30 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         <div className="pointer-events-auto w-full max-w-md rounded-2xl bg-[#0D1E31]/95 backdrop-blur-xl border border-[#C9A25B]/40 shadow-2xl p-4 text-white animate-in fade-in slide-in-from-top-4">
           <div className="flex items-center justify-between gap-3 mb-3">
             <WaveLogo size={24} showWordmark compact />
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#E6C987]">
-              Incoming {call.callType === 'video' ? 'Video' : 'Voice'} Call
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[#E6C987]">
+                Incoming {call.callType === 'video' ? 'Video' : 'Voice'} Call
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (audioBlocked) {
+                    void unlockSoundEngine();
+                  } else {
+                    toggleCallRingTemporarilyMuted();
+                  }
+                }}
+                aria-label={ringMuted ? 'Unmute ringtone' : 'Silence ringtone'}
+                title={ringMuted ? 'Unmute ringtone' : 'Silence ringtone'}
+                className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition cursor-pointer shrink-0"
+              >
+                {ringMuted || audioBlocked ? (
+                  <VolumeX className="w-4 h-4 text-slate-300" />
+                ) : (
+                  <Volume2 className="w-4 h-4 text-[#E6C987]" />
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="flex items-center gap-3.5 mb-4">
@@ -128,6 +172,15 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
               <p className="text-xs text-slate-300">
                 {call.isGroupCall ? 'Wave Group P2P Call' : 'Direct WebRTC Encrypted Media'}
               </p>
+              {audioBlocked && (
+                <button
+                  type="button"
+                  onClick={() => void unlockSoundEngine()}
+                  className="mt-1.5 text-[11px] font-semibold text-[#E6C987] underline cursor-pointer"
+                >
+                  Tap to enable ringtone sound
+                </button>
+              )}
             </div>
           </div>
 
@@ -186,6 +239,27 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {call.phase === 'outgoing' && (
+            <button
+              type="button"
+              onClick={() => {
+                if (audioBlocked) {
+                  void unlockSoundEngine();
+                } else {
+                  toggleCallRingTemporarilyMuted();
+                }
+              }}
+              title={ringMuted || audioBlocked ? 'Enable ringback tone' : 'Mute ringback tone'}
+              aria-label={ringMuted || audioBlocked ? 'Enable ringback tone' : 'Mute ringback tone'}
+              className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition cursor-pointer"
+            >
+              {ringMuted || audioBlocked ? (
+                <VolumeX className="w-4 h-4 text-slate-300" />
+              ) : (
+                <Volume2 className="w-4 h-4 text-[#E6C987]" />
+              )}
+            </button>
+          )}
           {call.callType === 'video' && hasRemoteVideo && (
             <button
               type="button"

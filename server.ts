@@ -20,20 +20,134 @@ import type {
   PlatformAdapterInfo,
   PublishingJob,
 } from './src/types';
-import { db, hashPassword, verifyPassword, UserAccount, YouTubeOAuthRecord } from './src/server/db.ts';
+import {
+  db,
+  hashPassword,
+  verifyPassword,
+  needsPasswordUpgrade,
+  DEFAULT_PBKDF2_ITERATIONS,
+  UserAccount,
+  YouTubeOAuthRecord,
+} from './src/server/db.ts';
+import {
+  atomicWriteBufferSync,
+  computeSha256,
+  ensureDirExists,
+} from './src/server/persistence.ts';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads');
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-}
+const UPLOADS_DIR = db.getPaths().uploadsDir;
+ensureDirExists(UPLOADS_DIR);
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
+
+const AUTH_COOKIE_NAME = 'ml_session';
+const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 30; // 30 days
+
+function parseCookies(cookieHeader?: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    try {
+      out[key] = decodeURIComponent(val);
+    } catch {
+      out[key] = val;
+    }
+  }
+  return out;
+}
+
+function isHttpsRequest(req: Request): boolean {
+  const xfProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+  return req.secure || xfProto.includes('https');
+}
+
+function setAuthCookie(res: Response, req: Request, token: string): void {
+  const parts = [
+    `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${SESSION_MAX_AGE_SEC}`,
+  ];
+  if (isHttpsRequest(req)) {
+    parts.push('Secure');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
+function clearAuthCookie(res: Response, req: Request): void {
+  const parts = [
+    `${AUTH_COOKIE_NAME}=`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0',
+  ];
+  if (isHttpsRequest(req)) {
+    parts.push('Secure');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
+function sanitizeSafeUrl(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.startsWith('javascript:') ||
+    lower.startsWith('vbscript:') ||
+    lower.startsWith('data:text/html')
+  ) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+// Sliding-Window Rate Limiter (protects auth, OTP, password reset, and privilege endpoints)
+const rateLimitBuckets = new Map<string, number[]>();
+function createRateLimiter(options: { windowMs: number; maxAttempts: number; keyPrefix: string }) {
+  return (req: Request, res: Response, next: () => void) => {
+    const ip = String(req.ip || req.socket.remoteAddress || 'unknown');
+    const identifier = String(req.body?.identifier || req.body?.email || '').trim().toLowerCase().slice(0, 64);
+    const key = `${options.keyPrefix}:${ip}:${identifier || '_'}`;
+    const now = Date.now();
+    const cutoff = now - options.windowMs;
+    const recent = (rateLimitBuckets.get(key) || []).filter((ts) => ts > cutoff);
+    if (recent.length >= options.maxAttempts) {
+      const retrySec = Math.max(1, Math.ceil((recent[0] + options.windowMs - now) / 1000));
+      res.setHeader('Retry-After', String(retrySec));
+      return res.status(429).json({
+        error: 'RATE_LIMIT_EXCEEDED',
+        message: `Too many requests. Please try again in ${retrySec} seconds.`,
+      });
+    }
+    recent.push(now);
+    rateLimitBuckets.set(key, recent);
+    if (rateLimitBuckets.size > 5000) {
+      for (const [k, list] of rateLimitBuckets.entries()) {
+        if (list.every((ts) => ts <= cutoff)) rateLimitBuckets.delete(k);
+      }
+    }
+    next();
+  };
+}
+
+const loginRateLimiter = createRateLimiter({ windowMs: 60 * 1000, maxAttempts: 25, keyPrefix: 'login' });
+const registerRateLimiter = createRateLimiter({ windowMs: 60 * 1000, maxAttempts: 15, keyPrefix: 'register' });
+const otpRateLimiter = createRateLimiter({ windowMs: 60 * 1000, maxAttempts: 10, keyPrefix: 'otp' });
+const sensitiveAuthRateLimiter = createRateLimiter({ windowMs: 60 * 1000, maxAttempts: 15, keyPrefix: 'sensitive_auth' });
 
 app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d' }));
 app.use(express.json({ limit: '50mb' }));
@@ -81,9 +195,33 @@ function notifyUserFriendsPresence(userId: string, isOnline: boolean) {
   }
 }
 
-const WATCH_SUPPRESSION_DAYS = Math.max(1, Number(process.env.WATCH_SUPPRESSION_DAYS || 7));
+const WATCH_SUPPRESSION_DAYS = Math.max(1, Number(process.env.WATCH_SUPPRESSION_DAYS || 14));
 
-// Auth Extraction Middleware (Multi-User Token-Based Isolation - ZERO Shared Fallback)
+function normalizeSuppressToken(id: string): string {
+  return id.trim().replace(/^yt_feed_/, '').replace(/^yt_/, '');
+}
+
+function getSuppressedSetFromReq(req: Request): Set<string> {
+  if (req.query.includeWatched === '1') {
+    return new Set<string>();
+  }
+  const currentUserId = (req as any).userId as string | undefined;
+  const suppressed = db.getSuppressedVideoIds(currentUserId, WATCH_SUPPRESSION_DAYS);
+  const headerRaw = String(req.headers['x-suppressed-ids'] || '');
+  if (headerRaw) {
+    for (const part of headerRaw.split(',')) {
+      const clean = part.trim();
+      if (clean) {
+        suppressed.add(clean);
+        const norm = normalizeSuppressToken(clean);
+        if (norm) suppressed.add(norm);
+      }
+    }
+  }
+  return suppressed;
+}
+
+// Auth Extraction Middleware (Multi-User Token + HttpOnly Cookie Isolation - ZERO Shared Fallback)
 app.use((req: Request, _res: Response, next) => {
   const authHeader = req.headers.authorization || (req.headers['x-auth-token'] as string);
   let token = '';
@@ -91,6 +229,13 @@ app.use((req: Request, _res: Response, next) => {
     token = authHeader.substring(7).trim();
   } else if (authHeader) {
     token = authHeader.trim();
+  }
+
+  if (!token && req.headers.cookie) {
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies[AUTH_COOKIE_NAME]) {
+      token = cookies[AUTH_COOKIE_NAME].trim();
+    }
   }
 
   if (token) {
@@ -102,6 +247,7 @@ app.use((req: Request, _res: Response, next) => {
         (req as any).user = user;
         (req as any).userId = user.id;
         (req as any).sessionToken = token;
+        (req as any).sessionId = session.id;
       }
     }
   }
@@ -136,8 +282,11 @@ const getActiveYouTubeKey = (): string => {
 // Database persistence is managed exclusively by ./src/server/db.ts (data/motherland_db.json)
 
 // ==========================================
-// YOUTUBE DATA API V3 SERVICE HELPER
+// YOUTUBE DATA API V3 SERVICE HELPER + IN-MEMORY CACHE
 // ==========================================
+
+const ytApiCache = new Map<string, { data: any; expiresAt: number }>();
+const YT_CACHE_TTL_MS = 120 * 1000;
 
 async function fetchFromYouTubeApi(endpoint: string, params: Record<string, string>): Promise<any> {
   const apiKey = getActiveYouTubeKey();
@@ -145,12 +294,19 @@ async function fetchFromYouTubeApi(endpoint: string, params: Record<string, stri
     throw new Error('NO_API_KEY');
   }
 
+  const sortedParams = Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .sort(([a], [b]) => a.localeCompare(b));
+  const cacheKey = `${endpoint}:${apiKey.slice(-6)}:${JSON.stringify(sortedParams)}`;
+  const cached = ytApiCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
+  }
+
   const url = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
   url.searchParams.set('key', apiKey);
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== '') {
-      url.searchParams.set(key, value);
-    }
+  for (const [key, value] of sortedParams) {
+    url.searchParams.set(key, value);
   }
 
   const response = await fetch(url.toString(), {
@@ -169,6 +325,12 @@ async function fetchFromYouTubeApi(endpoint: string, params: Record<string, stri
     err.youtubeError = data?.error;
     throw err;
   }
+
+  if (ytApiCache.size > 250) {
+    const firstKey = ytApiCache.keys().next().value;
+    if (firstKey) ytApiCache.delete(firstKey);
+  }
+  ytApiCache.set(cacheKey, { data, expiresAt: Date.now() + YT_CACHE_TTL_MS });
 
   return data;
 }
@@ -235,25 +397,30 @@ app.get('/api/status', (req: Request, res: Response) => {
   });
 });
 
-// YouTube API Configuration & Status
+let ytStatusCache: { key: string; payload: any; expiresAt: number } | null = null;
+
+// YouTube API Configuration & Status (5-min cached so boot is instant)
 app.get('/api/youtube/status', async (req: Request, res: Response) => {
   const apiKey = getActiveYouTubeKey();
   if (!apiKey) {
     return res.json({
       configured: false,
-      message: 'YouTube Data API v3 key is not yet set in this workspace environment. You can enter your existing fixed key in the Platform Settings modal or add YOUTUBE_API_KEY to AI Studio Secrets.',
+      message: 'YouTube Data API v3 key is not yet set in this workspace environment.',
     });
   }
 
+  if (ytStatusCache && ytStatusCache.key === apiKey && ytStatusCache.expiresAt > Date.now() && req.query.refresh !== '1') {
+    return res.json(ytStatusCache.payload);
+  }
+
   try {
-    // Perform a lightweight real verification test using videos.list on a standard test video
     const testData = await fetchFromYouTubeApi('videos', {
       part: 'snippet,statistics',
       id: 'dQw4w9WgXcQ',
     });
 
     const item = testData?.items?.[0];
-    res.json({
+    const payload = {
       configured: true,
       valid: true,
       testSuccess: true,
@@ -262,7 +429,9 @@ app.get('/api/youtube/status', async (req: Request, res: Response) => {
       viewCount: item?.statistics?.viewCount,
       likeCount: item?.statistics?.likeCount,
       message: 'YouTube Data API v3 is CONNECTED and verified successfully!',
-    });
+    };
+    ytStatusCache = { key: apiKey, payload, expiresAt: Date.now() + 5 * 60 * 1000 };
+    res.json(payload);
   } catch (err: any) {
     res.json({
       configured: true,
@@ -302,8 +471,13 @@ async function fetchFromYouTubeApiWithKey(apiKey: string, endpoint: string, para
   return data;
 }
 
-// Set or update YouTube API Key dynamically
+// Set or update YouTube API Key dynamically (Authorized Owner/Admin Only)
 app.post('/api/youtube/set-key', async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Only platform owners or admins can update the server YouTube API key.' });
+  }
   const { apiKey } = req.body;
   if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 10) {
     return res.status(400).json({ error: 'Invalid API key provided' });
@@ -685,18 +859,14 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
   }
 });
 
-// Progressive Non-Repeating YouTube & Shorts Feed (Real search pagination -> honest exhaustion + 7-day watch suppression)
+// Progressive Non-Repeating YouTube & Shorts Feed (Real search pagination -> honest exhaustion + 14-day watch suppression)
 app.get('/api/youtube/feed', async (req: Request, res: Response) => {
   const type = (req.query.type as string) || 'long'; // 'long' or 'shorts'
   const category = (req.query.category as string) || 'all';
   const rawToken = (req.query.pageToken as string) || '';
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(parseInt((req.query.pageSize as string) || '12', 10), 25);
-  const currentUserId = (req as any).userId as string | undefined;
-  const suppressedIds =
-    req.query.includeWatched === '1'
-      ? new Set<string>()
-      : db.getSuppressedVideoIds(currentUserId, WATCH_SUPPRESSION_DAYS);
+  const suppressedIds = getSuppressedSetFromReq(req);
   const fetchSize = suppressedIds.size > 0 ? Math.min(25, pageSize + 8) : pageSize;
 
   try {
@@ -1140,7 +1310,12 @@ function resolveAppBaseUrl(req?: Request): string {
 }
 
 function getYouTubeOAuthConfig(req?: Request) {
-  const clientId = (process.env.GOOGLE_CLIENT_ID || process.env.YOUTUBE_CLIENT_ID || '').trim();
+  const clientId = (
+    process.env.GOOGLE_CLIENT_ID ||
+    process.env.YOUTUBE_CLIENT_ID ||
+    process.env.VITE_GOOGLE_CLIENT_ID ||
+    ''
+  ).trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || process.env.YOUTUBE_CLIENT_SECRET || '').trim();
   const baseUrl = resolveAppBaseUrl(req);
   const callbackUrl = `${baseUrl}/api/youtube/oauth/callback`;
@@ -1150,10 +1325,45 @@ function getYouTubeOAuthConfig(req?: Request) {
   return {
     clientId,
     clientSecret,
+    baseUrl,
     callbackUrl,
+    clientOAuthReady: Boolean(clientId),
     oauthConfigured: Boolean(clientId && clientSecret),
     missingEnvVars,
   };
+}
+
+function extractHeaderGoogleToken(req: Request): string {
+  const h = req.headers['x-google-access-token'];
+  if (!h) return '';
+  return String(Array.isArray(h) ? h[0] : h).trim();
+}
+
+async function resolveYouTubeAccessToken(
+  req: Request,
+  userId?: string
+): Promise<{ accessToken: string; channel?: any; error?: string }> {
+  const headerToken = extractHeaderGoogleToken(req);
+  if (headerToken) {
+    return { accessToken: headerToken };
+  }
+  if (userId) {
+    const tokenResult = await ensureValidYouTubeAccessToken(userId, req);
+    if (tokenResult.record) {
+      return {
+        accessToken: tokenResult.record.accessToken,
+        channel: {
+          id: tokenResult.record.channelId,
+          title: tokenResult.record.channelTitle,
+          avatar: tokenResult.record.channelAvatar,
+          subscriberCount: tokenResult.record.subscriberCount,
+          customUrl: tokenResult.record.customUrl,
+        },
+      };
+    }
+    return { accessToken: '', error: tokenResult.error };
+  }
+  return { accessToken: '', error: 'Google/YouTube access token is missing. Please sign in with Google.' };
 }
 
 function toBase64Url(buf: Buffer): string {
@@ -1213,46 +1423,82 @@ async function ensureValidYouTubeAccessToken(
 app.get('/api/youtube/oauth/status', async (req: Request, res: Response) => {
   const user = getReqUser(req);
   const cfg = getYouTubeOAuthConfig(req);
+  const headerGoogleToken = extractHeaderGoogleToken(req);
+
+  if (headerGoogleToken) {
+    try {
+      const chRes = await fetch(
+        'https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true',
+        { headers: { Authorization: `Bearer ${headerGoogleToken}` } }
+      );
+      if (chRes.ok) {
+        const chData: any = await chRes.json();
+        const chItem = chData?.items?.[0];
+        if (chItem) {
+          return res.json({
+            oauthConfigured: true,
+            clientOAuthReady: true,
+            googleClientId: cfg.clientId || null,
+            redirectUri: cfg.baseUrl,
+            callbackUrl: cfg.callbackUrl,
+            connected: true,
+            status: 'connected',
+            channel: {
+              id: chItem.id,
+              title: chItem.snippet?.title || 'YouTube Channel',
+              avatar: chItem.snippet?.thumbnails?.medium?.url || chItem.snippet?.thumbnails?.default?.url || '',
+              subscriberCount: chItem.statistics?.hiddenSubscriberCount
+                ? 'Hidden'
+                : Number(chItem.statistics?.subscriberCount || 0).toLocaleString(),
+              customUrl: chItem.snippet?.customUrl || '',
+            },
+            message: `Connected to ${chItem.snippet?.title || 'YouTube Channel'}`,
+          });
+        }
+      }
+    } catch {
+      // Fallback cleanly to stored status
+    }
+  }
+
   if (!user) {
     return res.json({
       oauthConfigured: cfg.oauthConfigured,
+      clientOAuthReady: cfg.clientOAuthReady,
+      googleClientId: cfg.clientId || null,
       missingEnvVars: cfg.missingEnvVars,
+      redirectUri: cfg.baseUrl,
       callbackUrl: cfg.callbackUrl,
       connected: false,
-      status: cfg.oauthConfigured ? 'not_connected' : 'not_configured',
+      status: cfg.clientOAuthReady ? 'not_connected' : 'not_configured',
       channel: null,
-      message: 'Sign in to connect your YouTube account.',
+      message: 'Sign in with Google or your MOTHERLAND account to connect YouTube.',
     });
   }
   const existing = db.getYouTubeOAuth(user.id);
 
-  if (!cfg.oauthConfigured) {
-    return res.json({
-      oauthConfigured: false,
-      missingEnvVars: cfg.missingEnvVars,
-      callbackUrl: cfg.callbackUrl,
-      connected: false,
-      status: 'not_configured',
-      channel: null,
-      message: `Google OAuth credentials (${cfg.missingEnvVars.join(', ')}) must be configured on the server to authenticate user YouTube channels.`,
-    });
-  }
-
   if (!existing) {
     return res.json({
-      oauthConfigured: true,
+      oauthConfigured: cfg.oauthConfigured,
+      clientOAuthReady: cfg.clientOAuthReady,
+      googleClientId: cfg.clientId || null,
+      missingEnvVars: cfg.missingEnvVars,
+      redirectUri: cfg.baseUrl,
       callbackUrl: cfg.callbackUrl,
       connected: false,
-      status: 'not_connected',
+      status: cfg.clientOAuthReady ? 'not_connected' : 'not_configured',
       channel: null,
-      message: 'Connect your Google / YouTube account to upload videos directly to YouTube.',
+      message: 'Connect your Google / YouTube account to upload and manage videos directly on YouTube.',
     });
   }
 
   const refreshed = await ensureValidYouTubeAccessToken(user.id, req);
   if (!refreshed.record) {
     return res.json({
-      oauthConfigured: true,
+      oauthConfigured: cfg.oauthConfigured,
+      clientOAuthReady: cfg.clientOAuthReady,
+      googleClientId: cfg.clientId || null,
+      redirectUri: cfg.baseUrl,
       callbackUrl: cfg.callbackUrl,
       connected: false,
       status: 'expired',
@@ -1262,7 +1508,10 @@ app.get('/api/youtube/oauth/status', async (req: Request, res: Response) => {
   }
 
   res.json({
-    oauthConfigured: true,
+    oauthConfigured: cfg.oauthConfigured || true,
+    clientOAuthReady: cfg.clientOAuthReady || true,
+    googleClientId: cfg.clientId || null,
+    redirectUri: cfg.baseUrl,
     callbackUrl: cfg.callbackUrl,
     connected: true,
     status: 'connected',
@@ -1288,9 +1537,12 @@ app.get('/api/youtube/oauth/url', (req: Request, res: Response) => {
     return res.status(400).json({
       error: 'OAUTH_NOT_CONFIGURED',
       oauthConfigured: false,
+      clientOAuthReady: cfg.clientOAuthReady,
+      googleClientId: cfg.clientId || null,
       missingEnvVars: cfg.missingEnvVars,
+      redirectUri: cfg.baseUrl,
       callbackUrl: cfg.callbackUrl,
-      message: `Server missing ${cfg.missingEnvVars.join(' & ')}. Configure Web Application OAuth credentials in Google Cloud Console with Redirect URI: ${cfg.callbackUrl}`,
+      message: `Server missing ${cfg.missingEnvVars.join(' & ')}. Configure Web Application OAuth credentials in Google Cloud Console with Authorized JavaScript Origin: ${cfg.baseUrl} and Redirect URI: ${cfg.callbackUrl}`,
     });
   }
 
@@ -1317,7 +1569,7 @@ app.get('/api/youtube/oauth/url', (req: Request, res: Response) => {
   authUrl.searchParams.set('response_type', 'code');
   authUrl.searchParams.set(
     'scope',
-    'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly'
+    'https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile'
   );
   authUrl.searchParams.set('access_type', 'offline');
   authUrl.searchParams.set('prompt', 'consent select_account');
@@ -1518,19 +1770,12 @@ app.post('/api/youtube/oauth/disconnect', async (req: Request, res: Response) =>
 app.post('/api/youtube/upload/prepare', async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const cfg = getYouTubeOAuthConfig(req);
-  if (!cfg.oauthConfigured) {
-    return res.status(400).json({
-      error: 'OAUTH_NOT_CONFIGURED',
-      message: 'Google OAuth credentials are not configured on the server.',
-    });
-  }
 
-  const tokenResult = await ensureValidYouTubeAccessToken(user.id, req);
-  if (!tokenResult.record) {
+  const resolved = await resolveYouTubeAccessToken(req, user.id);
+  if (!resolved.accessToken) {
     return res.status(401).json({
       error: 'YOUTUBE_NOT_CONNECTED',
-      message: tokenResult.error || 'Please connect your YouTube account before uploading.',
+      message: resolved.error || 'Please sign in with Google / connect your YouTube account before uploading.',
     });
   }
 
@@ -1555,7 +1800,7 @@ app.post('/api/youtube/upload/prepare', async (req: Request, res: Response) => {
 
   try {
     const initHeaders: Record<string, string> = {
-      Authorization: `Bearer ${tokenResult.record.accessToken}`,
+      Authorization: `Bearer ${resolved.accessToken}`,
       'Content-Type': 'application/json; charset=UTF-8',
       'X-Upload-Content-Type': mimeType || 'video/mp4',
     };
@@ -1624,8 +1869,8 @@ app.put(
     }
     youtubeUploadSessions.delete(req.params.sessionId);
 
-    const tokenResult = await ensureValidYouTubeAccessToken(user.id, req);
-    if (!tokenResult.record) {
+    const resolved = await resolveYouTubeAccessToken(req, user.id);
+    if (!resolved.accessToken) {
       return res.status(401).json({ error: 'YOUTUBE_NOT_CONNECTED', message: 'YouTube authorization expired.' });
     }
 
@@ -1639,7 +1884,7 @@ app.put(
       const uploadRes = await fetch(session.youtubeUploadUrl, {
         method: 'PUT',
         headers: {
-          Authorization: `Bearer ${tokenResult.record.accessToken}`,
+          Authorization: `Bearer ${resolved.accessToken}`,
           'Content-Type': contentType,
           'Content-Length': String(bodyBuffer.length),
         },
@@ -1667,7 +1912,7 @@ app.put(
             {
               method: 'POST',
               headers: {
-                Authorization: `Bearer ${tokenResult.record.accessToken}`,
+                Authorization: `Bearer ${resolved.accessToken}`,
                 'Content-Type': session.thumbnailMimeType,
                 'Content-Length': String(thumbBuf.length),
               },
@@ -1680,19 +1925,20 @@ app.put(
         }
       }
 
+      const channelTitle = resolved.channel?.title || 'YouTube Channel';
       db.addNotification({
         id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         recipientId: user.id,
         category: 'youtube',
         type: 'platform_alert',
         sender: {
-          id: tokenResult.record.channelId,
-          displayName: tokenResult.record.channelTitle,
-          avatar: tokenResult.record.channelAvatar || '',
-          username: tokenResult.record.customUrl || tokenResult.record.channelId,
+          id: resolved.channel?.id || 'youtube_creator',
+          displayName: channelTitle,
+          avatar: resolved.channel?.avatar || '',
+          username: resolved.channel?.customUrl || 'youtube',
         },
         title: 'Uploaded to YouTube',
-        body: `"${session.title}" was uploaded to ${tokenResult.record.channelTitle} (${session.privacyStatus}).`,
+        body: `"${session.title}" was uploaded to ${channelTitle} (${session.privacyStatus}).`,
         isRead: false,
         createdAt: new Date().toISOString(),
       });
@@ -1714,6 +1960,235 @@ app.put(
     }
   }
 );
+
+// YouTube Creator Channel Video Management (List, Edit Metadata/Privacy, Delete)
+app.get('/api/youtube/my-videos', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const resolved = await resolveYouTubeAccessToken(req, user?.id);
+  if (!resolved.accessToken) {
+    return res.status(401).json({
+      error: 'YOUTUBE_NOT_CONNECTED',
+      message: resolved.error || 'Connect your Google / YouTube account to manage videos.',
+      videos: [],
+    });
+  }
+
+  try {
+    const chRes = await fetch(
+      'https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails,statistics&mine=true',
+      { headers: { Authorization: `Bearer ${resolved.accessToken}` } }
+    );
+    const chData: any = await chRes.json();
+    if (!chRes.ok) {
+      return res.status(chRes.status).json({
+        error: 'YOUTUBE_CHANNEL_ERROR',
+        message: chData?.error?.message || 'Unable to access your YouTube channel.',
+        videos: [],
+      });
+    }
+
+    const chItem = chData?.items?.[0];
+    if (!chItem) {
+      return res.json({ hasChannel: false, channel: null, videos: [] });
+    }
+
+    const channelSummary = {
+      id: chItem.id,
+      title: chItem.snippet?.title || 'YouTube Channel',
+      avatar: chItem.snippet?.thumbnails?.medium?.url || chItem.snippet?.thumbnails?.default?.url || '',
+      subscriberCount: chItem.statistics?.hiddenSubscriberCount
+        ? 'Hidden'
+        : Number(chItem.statistics?.subscriberCount || 0).toLocaleString(),
+      videoCount: chItem.statistics?.videoCount || '0',
+      viewCount: chItem.statistics?.viewCount || '0',
+      customUrl: chItem.snippet?.customUrl || '',
+    };
+
+    const uploadsPlaylistId = chItem.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploadsPlaylistId) {
+      return res.json({ hasChannel: true, channel: channelSummary, videos: [] });
+    }
+
+    const plRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&maxResults=25&playlistId=${encodeURIComponent(uploadsPlaylistId)}`,
+      { headers: { Authorization: `Bearer ${resolved.accessToken}` } }
+    );
+    const plData: any = await plRes.json();
+    if (!plRes.ok) {
+      return res.status(plRes.status).json({
+        error: 'YOUTUBE_PLAYLIST_ERROR',
+        message: plData?.error?.message || 'Unable to list uploaded YouTube videos.',
+        channel: channelSummary,
+        videos: [],
+      });
+    }
+
+    const videoIds = (plData.items || [])
+      .map((it: any) => it?.contentDetails?.videoId || it?.snippet?.resourceId?.videoId)
+      .filter(Boolean);
+
+    if (videoIds.length === 0) {
+      return res.json({ hasChannel: true, channel: channelSummary, videos: [] });
+    }
+
+    const vidRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,status,contentDetails&id=${encodeURIComponent(videoIds.join(','))}`,
+      { headers: { Authorization: `Bearer ${resolved.accessToken}` } }
+    );
+    const vidData: any = await vidRes.json();
+    const videos = (vidData.items || []).map((v: any) => ({
+      id: v.id,
+      youtubeId: v.id,
+      title: v.snippet?.title || 'Untitled Video',
+      description: v.snippet?.description || '',
+      thumbnailUrl:
+        v.snippet?.thumbnails?.maxres?.url ||
+        v.snippet?.thumbnails?.high?.url ||
+        v.snippet?.thumbnails?.medium?.url ||
+        `https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`,
+      publishedAt: v.snippet?.publishedAt || '',
+      privacyStatus: v.status?.privacyStatus || 'public',
+      madeForKids: Boolean(v.status?.madeForKids || v.status?.selfDeclaredMadeForKids),
+      categoryId: v.snippet?.categoryId || '22',
+      tags: Array.isArray(v.snippet?.tags) ? v.snippet.tags : [],
+      duration: formatIsoDuration(v.contentDetails?.duration || ''),
+      stats: {
+        views: Number(v.statistics?.viewCount || 0),
+        likes: Number(v.statistics?.likeCount || 0),
+        comments: Number(v.statistics?.commentCount || 0),
+      },
+      channel: channelSummary,
+    }));
+
+    res.json({ hasChannel: true, channel: channelSummary, videos });
+  } catch (err: any) {
+    res.status(500).json({
+      error: 'YOUTUBE_MY_VIDEOS_ERROR',
+      message: err.message || 'Failed to fetch YouTube channel videos.',
+      videos: [],
+    });
+  }
+});
+
+app.patch('/api/youtube/my-videos/:videoId', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const resolved = await resolveYouTubeAccessToken(req, user?.id);
+  if (!resolved.accessToken) {
+    return res.status(401).json({
+      error: 'YOUTUBE_NOT_CONNECTED',
+      message: resolved.error || 'Connect your Google / YouTube account to update videos.',
+    });
+  }
+
+  const videoId = String(req.params.videoId || '').trim();
+  const { title, description, privacyStatus, tags, categoryId } = req.body || {};
+  if (!videoId) {
+    return res.status(400).json({ error: 'Video ID required' });
+  }
+
+  try {
+    const curRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet,status&id=${encodeURIComponent(videoId)}`,
+      { headers: { Authorization: `Bearer ${resolved.accessToken}` } }
+    );
+    const curData: any = await curRes.json();
+    const current = curData?.items?.[0];
+    if (!curRes.ok || !current) {
+      return res.status(curRes.status || 404).json({
+        error: 'YOUTUBE_VIDEO_NOT_FOUND',
+        message: curData?.error?.message || 'Unable to find video or missing youtube write permission.',
+      });
+    }
+
+    const updatedSnippet = {
+      title: typeof title === 'string' && title.trim() ? title.trim().slice(0, 100) : current.snippet.title,
+      description: typeof description === 'string' ? description.slice(0, 5000) : current.snippet.description || '',
+      categoryId: String(categoryId || current.snippet.categoryId || '22'),
+      tags: Array.isArray(tags) ? tags : current.snippet.tags || [],
+    };
+    const allowedPrivacy = ['public', 'unlisted', 'private'].includes(privacyStatus)
+      ? privacyStatus
+      : current.status?.privacyStatus || 'private';
+
+    const putRes = await fetch(
+      'https://www.googleapis.com/youtube/v3/videos?part=snippet,status',
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${resolved.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: videoId,
+          snippet: updatedSnippet,
+          status: {
+            privacyStatus: allowedPrivacy,
+            selfDeclaredMadeForKids: Boolean(current.status?.selfDeclaredMadeForKids ?? current.status?.madeForKids ?? false),
+          },
+        }),
+      }
+    );
+
+    const putData: any = await putRes.json();
+    if (!putRes.ok) {
+      return res.status(putRes.status).json({
+        error: 'YOUTUBE_UPDATE_FAILED',
+        message: putData?.error?.message || 'YouTube rejected the video update (ensure full youtube scope is granted).',
+      });
+    }
+
+    res.json({
+      success: true,
+      video: {
+        id: putData.id || videoId,
+        title: putData.snippet?.title || updatedSnippet.title,
+        description: putData.snippet?.description || updatedSnippet.description,
+        privacyStatus: putData.status?.privacyStatus || allowedPrivacy,
+        tags: putData.snippet?.tags || updatedSnippet.tags,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'YOUTUBE_UPDATE_ERROR', message: err.message || 'Failed to update video.' });
+  }
+});
+
+app.delete('/api/youtube/my-videos/:videoId', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const resolved = await resolveYouTubeAccessToken(req, user?.id);
+  if (!resolved.accessToken) {
+    return res.status(401).json({
+      error: 'YOUTUBE_NOT_CONNECTED',
+      message: resolved.error || 'Connect your Google / YouTube account to delete videos.',
+    });
+  }
+
+  const videoId = String(req.params.videoId || '').trim();
+  if (!videoId) {
+    return res.status(400).json({ error: 'Video ID required' });
+  }
+
+  try {
+    const delRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?id=${encodeURIComponent(videoId)}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${resolved.accessToken}` },
+      }
+    );
+
+    if (!delRes.ok) {
+      const errData: any = await delRes.json().catch(() => ({}));
+      return res.status(delRes.status).json({
+        error: 'YOUTUBE_DELETE_FAILED',
+        message: errData?.error?.message || 'YouTube refused deletion (ensure full youtube scope is granted).',
+      });
+    }
+
+    res.json({ success: true, videoId });
+  } catch (err: any) {
+    res.status(500).json({ error: 'YOUTUBE_DELETE_ERROR', message: err.message || 'Failed to delete video.' });
+  }
+});
 
 // ==========================================
 // MOTHERLAND MEDIA UPLOAD STORAGE (/uploads)
@@ -1785,14 +2260,37 @@ app.post(
 
       const safeFilename = `ml_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${ext}`;
       const filePath = path.join(UPLOADS_DIR, safeFilename);
-      fs.writeFileSync(filePath, fileBuffer);
+      atomicWriteBufferSync(filePath, fileBuffer);
+
+      const sha256 = computeSha256(fileBuffer);
+      const storageProvider =
+        process.env.OBJECT_STORAGE_PROVIDER && process.env.OBJECT_STORAGE_PROVIDER.trim()
+          ? 'external_object_storage'
+          : 'local_persistent';
+      const nowIso = new Date().toISOString();
+      const assetRecord = db.registerMediaAsset({
+        id: `media_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+        ownerId: user.id,
+        originalFilename: originalName || safeFilename,
+        storedFilename: safeFilename,
+        url: `/uploads/${safeFilename}`,
+        mimeType,
+        sizeBytes: fileBuffer.length,
+        sha256,
+        storageProvider,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
 
       res.status(201).json({
-        url: `/uploads/${safeFilename}`,
+        id: assetRecord.id,
+        url: assetRecord.url,
         filename: originalName || safeFilename,
         storedFilename: safeFilename,
         size: fileBuffer.length,
         mimeType,
+        sha256,
+        storageProvider,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to store uploaded file.' });
@@ -1800,12 +2298,36 @@ app.post(
   }
 );
 
+app.get('/api/media/mine', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  res.json({ assets: db.getUserMediaAssets(user.id) });
+});
+
+app.delete('/api/media/:idOrFilename', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const result = db.deleteOwnedMediaAsset(req.params.idOrFilename, user.id, user.role);
+  if (!result.ok || !result.asset) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  const diskPath = path.join(UPLOADS_DIR, path.basename(result.asset.storedFilename));
+  if (fs.existsSync(diskPath)) {
+    try {
+      fs.unlinkSync(diskPath);
+    } catch {
+      // ignore disk cleanup error if already removed
+    }
+  }
+  res.json({ success: true, deletedId: result.asset.id, storedFilename: result.asset.storedFilename });
+});
+
 // ==========================================
 // MOTHERLAND CORE SOCIAL API
 // ==========================================
 
 // Current User & Auth Endpoints
-app.post('/api/auth/register', (req: Request, res: Response) => {
+app.post('/api/auth/register', registerRateLimiter, (req: Request, res: Response) => {
   const fullName = (req.body.fullName || req.body.displayName || '').trim();
   const {
     username,
@@ -1846,7 +2368,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'An account with this email or username already exists' });
   }
 
-  const { hash, salt } = hashPassword(password);
+  const { hash, salt, iterations } = hashPassword(password);
   const newId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const isFirstUser = db.getAllUsers().length === 0;
 
@@ -1856,11 +2378,15 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     email: email.trim().toLowerCase(),
     passwordHash: hash,
     passwordSalt: salt,
+    passwordIterations: iterations,
+    authProvider: 'password',
     displayName: fullName.trim(),
-    avatar: avatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${cleanUsername}`,
-    coverImage: coverImage || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80',
+    avatar: sanitizeSafeUrl(avatar) || `https://api.dicebear.com/7.x/identicon/svg?seed=${cleanUsername}`,
+    coverImage:
+      sanitizeSafeUrl(coverImage) ||
+      'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80',
     bio: bio || 'Proud citizen of MOTHERLAND.',
-    website: website || undefined,
+    website: sanitizeSafeUrl(website),
     phoneNumber: phoneNumber || undefined,
     dateOfBirth,
     gender: gender || undefined,
@@ -1883,17 +2409,22 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
   };
 
   db.createUser(newUserAccount);
-  const session = db.createSession(newId, req.headers['user-agent']);
+  const session = db.createSession(newId, req.headers['user-agent'], {
+    ipAddress: req.ip,
+    authMethod: 'register',
+  });
+  setAuthCookie(res, req, session.token);
   const publicProfile = db.toPublicProfile(newUserAccount, newId, getOnlineUserIds());
 
   res.status(201).json({
     token: session.token,
+    sessionId: session.id,
     user: publicProfile,
     message: 'Account created successfully',
   });
 });
 
-app.post('/api/auth/login', (req: Request, res: Response) => {
+app.post('/api/auth/login', loginRateLimiter, (req: Request, res: Response) => {
   const { identifier, password } = req.body;
   if (!identifier || !password) {
     return res.status(400).json({ error: 'Username/Email/Phone and password are required' });
@@ -1904,16 +2435,31 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Invalid credentials. User not found.' });
   }
 
-  const isValid = verifyPassword(password, user.passwordHash, user.passwordSalt);
+  const isValid = verifyPassword(password, user.passwordHash, user.passwordSalt, user.passwordIterations);
   if (!isValid) {
     return res.status(401).json({ error: 'Invalid credentials. Incorrect password.' });
   }
 
-  const session = db.createSession(user.id, req.headers['user-agent']);
+  // Transparently upgrade legacy 1000-iteration PBKDF2 hash to 120,000 iterations without changing user password
+  if (needsPasswordUpgrade(user)) {
+    const upgraded = hashPassword(password);
+    db.updateUser(user.id, {
+      passwordHash: upgraded.hash,
+      passwordSalt: upgraded.salt,
+      passwordIterations: upgraded.iterations,
+    });
+  }
+
+  const session = db.createSession(user.id, req.headers['user-agent'], {
+    ipAddress: req.ip,
+    authMethod: 'password',
+  });
+  setAuthCookie(res, req, session.token);
   const publicProfile = db.toPublicProfile(user, user.id, getOnlineUserIds());
 
   res.json({
     token: session.token,
+    sessionId: session.id,
     user: publicProfile,
     message: 'Login successful',
   });
@@ -1924,7 +2470,43 @@ app.post('/api/auth/logout', (req: Request, res: Response) => {
   if (token) {
     db.deleteSession(token);
   }
+  clearAuthCookie(res, req);
   res.json({ success: true, message: 'Logged out successfully' });
+});
+
+app.get('/api/auth/sessions', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const currentToken = (req as any).sessionToken as string | undefined;
+  res.json({ sessions: db.getUserSessions(user.id, currentToken) });
+});
+
+app.delete('/api/auth/sessions/:sessionId', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const currentSessionId = (req as any).sessionId as string | undefined;
+  const result = db.revokeSessionById(user.id, req.params.sessionId);
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  if (currentSessionId && currentSessionId === req.params.sessionId) {
+    clearAuthCookie(res, req);
+  }
+  res.json({ success: true, revokedSessionId: req.params.sessionId });
+});
+
+app.post('/api/auth/logout-all', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const keepCurrent = Boolean(req.body?.keepCurrent);
+  const currentToken = (req as any).sessionToken as string | undefined;
+  if (keepCurrent && currentToken) {
+    const removedCount = db.deleteUserSessionsExcept(user.id, currentToken);
+    return res.json({ success: true, removedCount, keptCurrent: true, message: 'Logged out of all other devices.' });
+  }
+  db.deleteUserSessions(user.id);
+  clearAuthCookie(res, req);
+  res.json({ success: true, keptCurrent: false, message: 'Logged out from all devices.' });
 });
 
 app.get('/api/auth/me', (req: Request, res: Response) => {
@@ -1932,6 +2514,7 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
   if (user) {
     return res.json({
       user: db.toPublicProfile(user, user.id, getOnlineUserIds()),
+      sessionId: (req as any).sessionId,
       isGuest: false,
     });
   }
@@ -1941,23 +2524,175 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/auth/send-otp', (req: Request, res: Response) => {
+// Verify Google Access Token directly against Google UserInfo + optional YouTube Channel link
+app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res: Response) => {
+  const accessToken = String(req.body?.accessToken || extractHeaderGoogleToken(req) || '').trim();
+  if (!accessToken || accessToken.length < 16) {
+    return res.status(400).json({ error: 'Valid Google accessToken is required' });
+  }
+
+  try {
+    const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!infoRes.ok) {
+      return res.status(401).json({ error: 'Invalid or expired Google access token' });
+    }
+    const gInfo: any = await infoRes.json();
+    const verifiedEmail = String(gInfo.email || '').trim().toLowerCase();
+    if (!verifiedEmail) {
+      return res.status(400).json({ error: 'Google account did not provide a verified email address' });
+    }
+
+    let user = db.findUserByEmailOrUsername(verifiedEmail);
+    const nowIso = new Date().toISOString();
+    if (!user) {
+      const baseHandle = verifiedEmail
+        .split('@')[0]
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '_')
+        .slice(0, 18) || 'creator';
+      let uniqueUsername = baseHandle;
+      let suffix = 1;
+      while (db.findUserByEmailOrUsername(uniqueUsername)) {
+        uniqueUsername = `${baseHandle.slice(0, 14)}_${suffix++}`;
+      }
+      const { hash, salt, iterations } = hashPassword(crypto.randomBytes(24).toString('hex'));
+      const newId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      user = {
+        id: newId,
+        username: uniqueUsername,
+        email: verifiedEmail,
+        passwordHash: hash,
+        passwordSalt: salt,
+        passwordIterations: iterations,
+        authProvider: 'google',
+        displayName: String(gInfo.name || uniqueUsername),
+        avatar: String(gInfo.picture || `https://api.dicebear.com/7.x/identicon/svg?seed=${uniqueUsername}`),
+        coverImage: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80',
+        bio: 'Verified Google & YouTube creator on MOTHERLAND.',
+        joinedDate: 'November 2026',
+        isVerified: true,
+        role: 'user',
+        isEmailVerified: Boolean(gInfo.email_verified ?? true),
+        isPhoneVerified: false,
+        twoFactorEnabled: false,
+        isPrivate: false,
+        privacy: {
+          profileVisibility: 'public',
+          showOnlineStatus: true,
+          allowDirectMessages: 'everyone',
+          showContactInfo: true,
+        },
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      db.createUser(user);
+    }
+
+    // Best-effort check for authenticated user's YouTube Channel
+    let linkedChannel: any = null;
+    try {
+      const chRes = await fetch(
+        'https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true',
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (chRes.ok) {
+        const chData: any = await chRes.json();
+        const chItem = chData?.items?.[0];
+        if (chItem) {
+          const record: YouTubeOAuthRecord = {
+            userId: user.id,
+            accessToken,
+            expiresAt: Date.now() + 3500 * 1000,
+            scope: 'https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly',
+            channelId: chItem.id,
+            channelTitle: chItem.snippet?.title || user.displayName,
+            channelAvatar:
+              chItem.snippet?.thumbnails?.medium?.url ||
+              chItem.snippet?.thumbnails?.default?.url ||
+              user.avatar,
+            subscriberCount: chItem.statistics?.hiddenSubscriberCount
+              ? 'Hidden'
+              : Number(chItem.statistics?.subscriberCount || 0).toLocaleString(),
+            customUrl: chItem.snippet?.customUrl || '',
+            connectedAt: nowIso,
+            updatedAt: nowIso,
+          };
+          db.setYouTubeOAuth(user.id, record);
+          linkedChannel = {
+            id: record.channelId,
+            title: record.channelTitle,
+            avatar: record.channelAvatar,
+            subscriberCount: record.subscriberCount,
+            customUrl: record.customUrl,
+          };
+        }
+      }
+    } catch {
+      // Account might not have a YouTube channel yet — still sign in cleanly
+    }
+
+    const session = db.createSession(user.id, req.headers['user-agent'], {
+      ipAddress: req.ip,
+      authMethod: 'google',
+    });
+    setAuthCookie(res, req, session.token);
+    const publicProfile = db.toPublicProfile(user, user.id, getOnlineUserIds());
+
+    res.json({
+      token: session.token,
+      sessionId: session.id,
+      user: publicProfile,
+      hasYouTubeChannel: Boolean(linkedChannel),
+      channel: linkedChannel,
+      message: linkedChannel
+        ? `Signed in with Google and linked YouTube channel "${linkedChannel.title}".`
+        : 'Signed in with Google account.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to verify Google authentication.' });
+  }
+});
+
+app.post('/api/auth/disconnect-youtube', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const accessToken = String(req.body?.accessToken || extractHeaderGoogleToken(req) || '').trim();
+  const targetToken = accessToken || (user ? db.getYouTubeOAuth(user.id)?.accessToken : '') || '';
+  if (targetToken) {
+    try {
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(targetToken)}`, {
+        method: 'POST',
+      });
+    } catch {
+      // Best-effort revocation
+    }
+  }
+  if (user) {
+    db.deleteYouTubeOAuth(user.id);
+  }
+  res.json({ success: true, connected: false, message: 'YouTube permissions disconnected. MOTHERLAND profile preserved.' });
+});
+
+app.post('/api/auth/send-otp', otpRateLimiter, (req: Request, res: Response) => {
   const { identifier, type } = req.body;
   if (!identifier) {
     return res.status(400).json({ error: 'Identifier (phone or email) is required' });
   }
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = String(crypto.randomInt(100000, 1000000));
   db.setOtp(identifier, code, type || 'register');
-  console.log(`[MOTHERLAND OTP] Code: ${code} for ${identifier}`);
 
-  res.json({
+  const payload: any = {
     success: true,
     message: `6-digit verification code sent to ${identifier}`,
-    debugOtp: code,
-  });
+  };
+  if (process.env.NODE_ENV !== 'production') {
+    payload.debugOtp = code;
+  }
+  res.json(payload);
 });
 
-app.post('/api/auth/verify-otp', (req: Request, res: Response) => {
+app.post('/api/auth/verify-otp', otpRateLimiter, (req: Request, res: Response) => {
   const { identifier, code, type } = req.body;
   if (!identifier || !code) {
     return res.status(400).json({ error: 'Identifier and OTP code are required' });
@@ -1969,26 +2704,35 @@ app.post('/api/auth/verify-otp', (req: Request, res: Response) => {
   res.json({ success: true, message: 'OTP verified successfully' });
 });
 
-app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
+app.post('/api/auth/forgot-password', otpRateLimiter, (req: Request, res: Response) => {
   const { identifier } = req.body;
+  if (!identifier) {
+    return res.status(400).json({ error: 'Identifier is required' });
+  }
   const user = db.findUserByEmailOrUsername(identifier);
   if (!user) {
     return res.status(404).json({ error: 'No account found matching this identifier' });
   }
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = String(crypto.randomInt(100000, 1000000));
   db.setOtp(identifier, code, 'forgot_password');
 
-  res.json({
+  const payload: any = {
     success: true,
     message: 'Password reset OTP sent to registered contact',
-    debugOtp: code,
-  });
+  };
+  if (process.env.NODE_ENV !== 'production') {
+    payload.debugOtp = code;
+  }
+  res.json(payload);
 });
 
-app.post('/api/auth/reset-password', (req: Request, res: Response) => {
+app.post('/api/auth/reset-password', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
   const { identifier, code, newPassword } = req.body;
   if (!identifier || !code || !newPassword) {
     return res.status(400).json({ error: 'Identifier, code, and new password are required' });
+  }
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
   }
   const isValid = db.verifyOtp(identifier, code, 'forgot_password');
   if (!isValid) {
@@ -1998,37 +2742,42 @@ app.post('/api/auth/reset-password', (req: Request, res: Response) => {
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
-  const { hash, salt } = hashPassword(newPassword);
-  db.updateUser(user.id, { passwordHash: hash, passwordSalt: salt });
+  const { hash, salt, iterations } = hashPassword(newPassword);
+  db.updateUser(user.id, { passwordHash: hash, passwordSalt: salt, passwordIterations: iterations });
   db.deleteUserSessions(user.id);
 
   res.json({ success: true, message: 'Password reset successfully. Please log in with your new password.' });
 });
 
-app.post('/api/auth/claim-owner', (req: Request, res: Response) => {
+app.post('/api/auth/claim-owner', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
 
-  const secret = req.body.secret || req.body.ownerSecret;
+  const secret = String(req.body.secret || req.body.ownerSecret || '');
   const OWNER_SECRET = process.env.OWNER_SECRET || 'MOTHERLAND_FOUNDER_2026';
 
-  if (secret !== OWNER_SECRET && secret !== 'motherland') {
+  if (secret !== OWNER_SECRET) {
     return res.status(403).json({ error: 'Invalid Owner Authorization Secret' });
   }
 
   db.updateUser(user.id, { role: 'owner', isVerified: true });
   const updatedUser = db.findUserById(user.id)!;
-  const session = db.createSession(updatedUser.id, req.headers['user-agent']);
+  const session = db.createSession(updatedUser.id, req.headers['user-agent'], {
+    ipAddress: req.ip,
+    authMethod: 'password',
+  });
+  setAuthCookie(res, req, session.token);
 
   res.json({
     success: true,
     token: session.token,
+    sessionId: session.id,
     user: db.toPublicProfile(updatedUser, user.id),
     message: 'Official FOUNDER & OWNER privileges activated successfully!',
   });
 });
 
-app.post('/api/auth/switch-account', (req: Request, res: Response) => {
+app.post('/api/auth/switch-account', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
   const { userId, password } = req.body;
   if (!userId || !password) {
     return res.status(400).json({ error: 'Target userId and password are required to switch accounts' });
@@ -2037,15 +2786,50 @@ app.post('/api/auth/switch-account', (req: Request, res: Response) => {
   if (!targetUser) {
     return res.status(404).json({ error: 'Target user account not found' });
   }
-  if (!verifyPassword(String(password), targetUser.passwordHash, targetUser.passwordSalt)) {
+  if (!verifyPassword(String(password), targetUser.passwordHash, targetUser.passwordSalt, targetUser.passwordIterations)) {
     return res.status(401).json({ error: 'Invalid account credentials' });
   }
-  const session = db.createSession(targetUser.id, req.headers['user-agent']);
+  if (needsPasswordUpgrade(targetUser)) {
+    const upgraded = hashPassword(String(password));
+    db.updateUser(targetUser.id, {
+      passwordHash: upgraded.hash,
+      passwordSalt: upgraded.salt,
+      passwordIterations: upgraded.iterations,
+    });
+  }
+  const session = db.createSession(targetUser.id, req.headers['user-agent'], {
+    ipAddress: req.ip,
+    authMethod: 'switch',
+  });
+  setAuthCookie(res, req, session.token);
   res.json({
     token: session.token,
+    sessionId: session.id,
     user: db.toPublicProfile(targetUser, targetUser.id),
     message: `Switched account to ${targetUser.displayName}`,
   });
+});
+
+// Explicit Account-Owner-Initiated Deletion (ONLY authorized self-deletion path)
+app.delete('/api/users/me', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const { password, confirmUsername } = req.body || {};
+
+  if (user.authProvider !== 'google') {
+    if (!password || !verifyPassword(String(password), user.passwordHash, user.passwordSalt, user.passwordIterations)) {
+      return res.status(403).json({ error: 'Password confirmation is required to permanently delete your account.' });
+    }
+  } else if (String(confirmUsername || '').trim().toLowerCase() !== user.username.toLowerCase()) {
+    return res.status(403).json({ error: 'Username confirmation is required to delete your Google-linked account.' });
+  }
+
+  const deleted = db.deleteUserAccount(user.id);
+  if (!deleted.ok) {
+    return res.status(404).json({ error: deleted.error || 'Account not found.' });
+  }
+  clearAuthCookie(res, req);
+  res.json({ success: true, message: 'Your MOTHERLAND account has been permanently deleted.' });
 });
 
 app.put('/api/users/profile', (req: Request, res: Response) => {
@@ -2187,13 +2971,48 @@ app.get('/api/users/:id', (req: Request, res: Response) => {
     return res.status(404).json({ error: 'User not found' });
   }
 
+  const isSelf = currentUserId === targetUser.id;
+  const isFriend = currentUserId ? db.isFriend(currentUserId, targetUser.id) : false;
+  const isFollowing = currentUserId ? db.isFollowing(currentUserId, targetUser.id) : false;
+
+  if (!isSelf && targetUser.privacy?.profileVisibility === 'private') {
+    const baseProfile = db.toPublicProfile(targetUser, currentUserId, getOnlineUserIds());
+    return res.json({
+      user: {
+        id: baseProfile.id,
+        username: baseProfile.username,
+        displayName: baseProfile.displayName,
+        avatar: baseProfile.avatar,
+        coverImage: '',
+        bio: 'This profile is private.',
+        joinedDate: baseProfile.joinedDate,
+        isVerified: baseProfile.isVerified,
+        role: baseProfile.role,
+        isPrivate: true,
+        friendsCount: 0,
+        followersCount: 0,
+        followingCount: 0,
+        privacy: {
+          profileVisibility: 'private',
+          showOnlineStatus: false,
+          allowDirectMessages: 'friends',
+          showContactInfo: false,
+        },
+        relationshipStatus: baseProfile.relationshipStatus,
+      },
+      posts: [],
+      hasMorePosts: false,
+      totalPosts: 0,
+      isFriend,
+      isFollowing,
+      isCurrentUser: false,
+    });
+  }
+
   const userPosts = db
     .getAllPosts()
     .filter((p) => p.author.id === targetUser.id && db.canViewerSeePost(currentUserId, p))
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  const isFriend = currentUserId ? db.isFriend(currentUserId, targetUser.id) : false;
-  const isFollowing = currentUserId ? db.isFollowing(currentUserId, targetUser.id) : false;
 
   res.json({
     user: db.toPublicProfile(targetUser, currentUserId, getOnlineUserIds()),
@@ -2202,7 +3021,7 @@ app.get('/api/users/:id', (req: Request, res: Response) => {
     totalPosts: userPosts.length,
     isFriend,
     isFollowing,
-    isCurrentUser: currentUserId === targetUser.id,
+    isCurrentUser: isSelf,
   });
 });
 
@@ -2266,14 +3085,14 @@ async function getUnifiedFeedYouTubePosts(
   }
 }
 
-// 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, For You Ranking, & 7-Day Suppression)
+// 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, For You Ranking, & 14-Day Suppression)
 app.get('/api/posts', async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
   const source = req.query.source as string;
   const feedType = (req.query.feedType as string) || 'all'; // 'all', 'for_you', 'motherland', 'saved'
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(30, Math.max(1, parseInt((req.query.pageSize as string) || '10', 10)));
-  const suppressedIds = db.getSuppressedVideoIds(currentUserId, WATCH_SUPPRESSION_DAYS);
+  const suppressedIds = getSuppressedSetFromReq(req);
 
   const rawPosts = db.getAllPosts();
 
@@ -2361,8 +3180,16 @@ app.post('/api/posts', (req: Request, res: Response) => {
   const author = requireAuth(req, res);
   if (!author) return;
   const { content, mediaType, mediaUrl, images, thumbnailUrl, mediaAspectRatio, hashtags, audience, platforms } = req.body;
-  const cleanImages = Array.isArray(images) ? images.filter(Boolean) : undefined;
-  const primaryMediaUrl = mediaUrl || (cleanImages && cleanImages.length > 0 ? cleanImages[0] : undefined);
+  const cleanImages = Array.isArray(images)
+    ? images.map((img) => sanitizeSafeUrl(img)).filter((u): u is string => Boolean(u))
+    : undefined;
+  const safeMediaUrl = sanitizeSafeUrl(mediaUrl);
+  const safeThumbUrl = sanitizeSafeUrl(thumbnailUrl);
+  const primaryMediaUrl = safeMediaUrl || (cleanImages && cleanImages.length > 0 ? cleanImages[0] : undefined);
+
+  if (mediaUrl && !safeMediaUrl) {
+    return res.status(400).json({ error: 'Unsafe or invalid media URL rejected.' });
+  }
 
   if (!content && !primaryMediaUrl) {
     return res.status(400).json({ error: 'Post must contain text content or media' });
@@ -2378,13 +3205,13 @@ app.post('/api/posts', (req: Request, res: Response) => {
       avatar: author.avatar,
       isVerified: author.isVerified || author.role === 'owner',
     },
-    content: content || '',
+    content: content ? String(content).slice(0, 10000) : '',
     mediaType: mediaType || (primaryMediaUrl ? 'image' : 'none'),
     mediaUrl: primaryMediaUrl,
     images: cleanImages,
-    thumbnailUrl: thumbnailUrl || undefined,
+    thumbnailUrl: safeThumbUrl,
     mediaAspectRatio: mediaAspectRatio || '16:9',
-    hashtags: Array.isArray(hashtags) ? hashtags : [],
+    hashtags: Array.isArray(hashtags) ? hashtags.map((h) => String(h).slice(0, 48)) : [],
     audience: audience || 'public',
     createdAt: new Date().toISOString(),
     stats: {
@@ -2649,12 +3476,21 @@ app.delete('/api/posts/:id', (req: Request, res: Response) => {
   res.json({ success: true, message: 'Post deleted successfully' });
 });
 
-// Stories System (Strict 24-Hour Expiration)
+// Stories System (Strict 24-Hour UTC Expiration — privacy-aware & server-UTC enforced)
 app.get('/api/stories', (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
   const activeStories = db
     .getActiveStories()
-    .filter((s) => !(currentUserId && db.isBlocked(currentUserId, s.userId)))
+    .filter((s) => {
+      if (currentUserId && db.isBlocked(currentUserId, s.userId)) return false;
+      if (currentUserId === s.userId) return true;
+      const authorAcc = db.findUserById(s.userId);
+      if (authorAcc?.privacy?.profileVisibility === 'private') return false;
+      if (authorAcc?.privacy?.profileVisibility === 'friends') {
+        return Boolean(currentUserId && db.isFriend(currentUserId, s.userId));
+      }
+      return true;
+    })
     .map((s) => ({
       ...s,
       isOwn: currentUserId === s.userId,
@@ -2666,13 +3502,16 @@ app.post('/api/stories', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { mediaUrl, mediaType, caption } = req.body;
+  const safeUrl = sanitizeSafeUrl(mediaUrl);
 
-  if (!mediaUrl) {
-    return res.status(400).json({ error: 'Story requires an image or video URL' });
+  if (!safeUrl) {
+    return res.status(400).json({ error: 'Story requires a valid image or video URL' });
   }
 
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000); // Strict 24h
+  // Strictly ignore any client timestamps; enforce server UTC createdAt + 24h UTC expiresAt
+  const nowUtcMs = Date.now();
+  const createdAtUtc = new Date(nowUtcMs).toISOString();
+  const expiresAtUtc = new Date(nowUtcMs + 24 * 60 * 60 * 1000).toISOString();
 
   const newStory: Story = {
     id: `story_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -2682,28 +3521,34 @@ app.post('/api/stories', (req: Request, res: Response) => {
     userAvatar: user.avatar,
     isUserVerified: user.isVerified || user.role === 'owner',
     source: 'motherland',
-    mediaUrl,
-    mediaType: mediaType || 'image',
-    caption: caption || '',
-    createdAt: now.toISOString(),
-    expiresAt: expiresAt.toISOString(),
+    mediaUrl: safeUrl,
+    mediaType: mediaType === 'video' ? 'video' : 'image',
+    caption: caption ? String(caption).slice(0, 500) : '',
+    createdAt: createdAtUtc,
+    expiresAt: expiresAtUtc,
     viewersCount: 0,
     isViewed: false,
     isOwn: true,
   };
 
-  db.addStory(newStory);
-  res.status(201).json({ story: newStory });
+  const savedStory = db.addStory(newStory);
+  res.status(201).json({ story: savedStory });
 });
 
 app.post('/api/stories/:id/view', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
   const storiesList = db.getActiveStories();
   const story = storiesList.find((s) => s.id === req.params.id);
-  if (story) {
-    story.isViewed = true;
-    story.viewersCount += 1;
-    db.save();
+  if (!story) {
+    return res.status(404).json({ error: 'Story not found or expired' });
   }
+  if (db.isBlocked(user.id, story.userId)) {
+    return res.status(403).json({ error: 'Not authorized' });
+  }
+  story.isViewed = true;
+  story.viewersCount += 1;
+  db.save();
   res.json({ success: true });
 });
 
@@ -2721,17 +3566,62 @@ app.delete('/api/stories/:id', (req: Request, res: Response) => {
   res.json({ success: true, message: 'Story deleted' });
 });
 
-// 4. Videos (Shorts, 16:9 Long Videos, 7-Day Watch Tracking, Saved Videos & Drafts)
-app.get('/api/videos/shorts', (req: Request, res: Response) => {
-  const currentUserId = (req as any).userId as string | undefined;
-  const all = db.getShortVideos();
-  if (req.query.includeWatched === '1' || !currentUserId) {
-    return res.json({ shorts: all });
+// 4. Videos (Shorts, 16:9 Long Videos, 14-Day Watch Tracking, Saved Videos & Drafts)
+app.get('/api/videos/shorts', async (req: Request, res: Response) => {
+  const allLocal = db
+    .getShortVideos()
+    .filter((s) => s.id !== 'short_01' && s.id !== 'short_02');
+  const suppressed = getSuppressedSetFromReq(req);
+  const filteredLocal = allLocal.filter(
+    (s) => !suppressed.has(s.id) && !(s.youtubeId && suppressed.has(s.youtubeId))
+  );
+
+  // Immediately include fast cached YouTube Shorts so the Shorts strip/player starts instantly without slow seed MP4s
+  let ytShorts: ShortVideo[] = [];
+  try {
+    const relevant = getRelevantVideoIds('shorts', 1, 12);
+    const unseenIds = relevant.ids.filter((vid) => !suppressed.has(vid));
+    if (unseenIds.length > 0) {
+      const statsData = await fetchFromYouTubeApi('videos', {
+        part: 'snippet,contentDetails,statistics',
+        id: unseenIds.slice(0, 10).join(','),
+      });
+      ytShorts = (statsData.items || []).map((item: any) => ({
+        id: item.id,
+        source: 'youtube' as const,
+        youtubeId: item.id,
+        videoUrl: '',
+        thumbnailUrl:
+          item.snippet?.thumbnails?.maxres?.url ||
+          item.snippet?.thumbnails?.high?.url ||
+          item.snippet?.thumbnails?.medium?.url ||
+          `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+        title: item.snippet?.title || 'YouTube Short',
+        caption: item.snippet?.title || '',
+        hashtags: ['Shorts'],
+        creator: {
+          id: item.snippet?.channelId || 'yt',
+          name: item.snippet?.channelTitle || 'YouTube Creator',
+          username: (item.snippet?.channelTitle || 'creator').toLowerCase().replace(/\s+/g, ''),
+          avatar: `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(item.snippet?.channelTitle || item.id)}`,
+          isVerified: true,
+        },
+        stats: {
+          views: Number(item.statistics?.viewCount || 0),
+          likes: Number(item.statistics?.likeCount || 0),
+          comments: Number(item.statistics?.commentCount || 0),
+          shares: 0,
+        },
+        createdAt: item.snippet?.publishedAt || new Date().toISOString(),
+      }));
+    }
+  } catch {
+    // Graceful fallback if API key quota is limited
   }
-  const suppressed = db.getSuppressedVideoIds(currentUserId, WATCH_SUPPRESSION_DAYS);
-  res.json({
-    shorts: all.filter((s) => !suppressed.has(s.id) && !(s.youtubeId && suppressed.has(s.youtubeId))),
-  });
+
+  const seen = new Set(filteredLocal.map((s) => s.youtubeId || s.id));
+  const merged = [...filteredLocal, ...ytShorts.filter((s) => !seen.has(s.id))];
+  res.json({ shorts: merged });
 });
 
 app.post('/api/videos/shorts', (req: Request, res: Response) => {
@@ -2772,12 +3662,11 @@ app.post('/api/videos/shorts', (req: Request, res: Response) => {
 });
 
 app.get('/api/videos/long', (req: Request, res: Response) => {
-  const currentUserId = (req as any).userId as string | undefined;
   const all = db.getLongVideos();
-  if (req.query.includeWatched === '1' || !currentUserId) {
+  const suppressed = getSuppressedSetFromReq(req);
+  if (req.query.includeWatched === '1' || suppressed.size === 0) {
     return res.json({ videos: all });
   }
-  const suppressed = db.getSuppressedVideoIds(currentUserId, WATCH_SUPPRESSION_DAYS);
   res.json({
     videos: all.filter((v) => !suppressed.has(v.id) && !(v.youtubeId && suppressed.has(v.youtubeId))),
   });
@@ -3657,7 +4546,9 @@ app.get('/api/platforms/status', (req: Request, res: Response) => {
 });
 
 app.post('/api/platforms/publish', (req: Request, res: Response) => {
-  const { content, mediaUrl, mediaType, platforms: requestedPlatforms } = req.body;
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const { content, platforms: requestedPlatforms } = req.body;
   const ytKey = getActiveYouTubeKey();
 
   const jobResults = (requestedPlatforms || ['motherland']).map((p: string) => {
@@ -3685,6 +4576,51 @@ app.post('/api/platforms/publish', (req: Request, res: Response) => {
     content,
     platforms: jobResults,
     createdAt: new Date().toISOString(),
+  });
+});
+
+// ==========================================
+// SYSTEM PERSISTENCE, BACKUPS & MONITORING (OWNER/ADMIN ONLY)
+// ==========================================
+app.get('/api/system/persistence-status', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: owner or admin authorization required.' });
+  }
+  const health = db.getPersistenceHealth();
+  const backups = db.listBackups().slice(0, 15).map((b) => ({
+    filename: b.filename,
+    reason: b.reason,
+    createdAt: b.createdAt,
+    byteSize: b.byteSize,
+    sha256: b.sha256,
+    schemaVersion: b.schemaVersion,
+    counts: b.counts,
+    verified: b.verified,
+  }));
+  res.json({ health, backups });
+});
+
+app.post('/api/system/backup', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: owner or admin authorization required.' });
+  }
+  const reason = String(req.body?.reason || 'manual_api').slice(0, 24);
+  const backup = db.createBackup(reason);
+  res.status(201).json({
+    success: true,
+    backup: {
+      filename: backup.filename,
+      reason: backup.reason,
+      createdAt: backup.createdAt,
+      byteSize: backup.byteSize,
+      sha256: backup.sha256,
+      counts: backup.counts,
+      verified: backup.verified,
+    },
   });
 });
 
@@ -3908,7 +4844,9 @@ async function startServer() {
       }
       const tokenParam = reqUrl.searchParams.get('token') || '';
       const authHeader = request.headers.authorization || '';
-      const rawToken = tokenParam || (authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '');
+      const cookieToken = request.headers.cookie ? parseCookies(request.headers.cookie)[AUTH_COOKIE_NAME] || '' : '';
+      const rawToken =
+        tokenParam || (authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '') || cookieToken.trim();
       const session = rawToken ? db.findSessionByToken(rawToken) : undefined;
       if (!session) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -3949,6 +4887,46 @@ async function startServer() {
       });
     }
   }
+
+  // Run initial UTC story expiration sweep cleanly without touching accounts or posts
+  db.expireStoriesOlderThan24hUtc();
+
+  // Periodic background jobs:
+  // 1) Strict 24-hour UTC story expiration sweep every 5 minutes
+  const storyExpiryInterval = setInterval(() => {
+    try {
+      db.expireStoriesOlderThan24hUtc();
+    } catch (err) {
+      console.error('[MOTHERLAND] UTC story expiry check error:', err);
+    }
+  }, 5 * 60 * 1000);
+  storyExpiryInterval.unref?.();
+
+  // 2) Automated independent verified DB backup every 15 minutes
+  const backupInterval = setInterval(() => {
+    try {
+      db.createBackup('scheduled');
+    } catch (err) {
+      console.error('[MOTHERLAND] Scheduled backup error:', err);
+    }
+  }, 15 * 60 * 1000);
+  backupInterval.unref?.();
+
+  const handleGracefulShutdown = (signal: string) => {
+    console.log(`[MOTHERLAND] Received ${signal}. Flushing database & creating shutdown snapshot...`);
+    try {
+      clearInterval(storyExpiryInterval);
+      clearInterval(backupInterval);
+      db.save();
+    } catch (err) {
+      console.error('[MOTHERLAND] Shutdown save error:', err);
+    }
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2000).unref?.();
+  };
+
+  process.once('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+  process.once('SIGINT', () => handleGracefulShutdown('SIGINT'));
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[MOTHERLAND] Super App Engine (HTTP + WebSocket) running on http://0.0.0.0:${PORT}`);

@@ -1,6 +1,25 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import {
+  CURRENT_SCHEMA_VERSION,
+  MigrationRecord,
+  BackupMetadata,
+  ExpiredStoryArchiveEntry,
+  PersistencePaths,
+  resolvePersistencePaths,
+  ensureDirExists,
+  atomicWriteJsonSync,
+  getPersistentAuthSecret,
+  hashSessionToken,
+  createDatabaseBackup,
+  listDatabaseBackups,
+  verifyBackupFile,
+  loadDatabaseSafely,
+  computeSha256,
+  inferMimeFromFilename,
+  parseDeviceName,
+} from './persistence';
 import type {
   UserProfile,
   UserPrivacySettings,
@@ -23,6 +42,8 @@ import type {
   ReactionType,
   PlatformSource,
   RelationshipStatus,
+  DeviceSessionInfo,
+  MediaAssetRecord,
 } from '../types';
 
 export interface UserAccount {
@@ -31,6 +52,8 @@ export interface UserAccount {
   email: string;
   passwordHash: string;
   passwordSalt: string;
+  passwordIterations?: number;
+  authProvider?: 'password' | 'google';
   displayName: string;
   avatar: string;
   coverImage: string;
@@ -65,9 +88,15 @@ export interface UserAccount {
 }
 
 export interface Session {
-  token: string;
+  id?: string;
+  token?: string;
+  tokenHash?: string;
   userId: string;
+  deviceName?: string;
+  ipAddress?: string;
+  authMethod?: 'password' | 'google' | 'register' | 'switch' | 'legacy';
   createdAt: string;
+  lastUsedAt?: string;
   expiresAt: string;
   userAgent?: string;
 }
@@ -126,6 +155,9 @@ export interface YouTubeOAuthRecord {
 }
 
 export interface DatabaseSchema {
+  schemaVersion?: number;
+  migrationsApplied?: MigrationRecord[];
+  lastBackupAt?: string;
   users: UserAccount[];
   sessions: Session[];
   posts: Post[];
@@ -133,6 +165,8 @@ export interface DatabaseSchema {
   savedPosts: SavedPostRecord[];
   postComments: Record<string, any[]>;
   stories: Story[];
+  expiredStoriesArchive?: ExpiredStoryArchiveEntry[];
+  mediaAssets?: MediaAssetRecord[];
   shortVideos: ShortVideo[];
   longVideos: LongVideo[];
   friendships: FriendshipRecord[];
@@ -151,17 +185,51 @@ export interface DatabaseSchema {
   youtubeOAuth?: Record<string, YouTubeOAuthRecord>;
 }
 
-const DB_PATH = path.resolve(process.cwd(), 'data', 'motherland_db.json');
+export const DEFAULT_PBKDF2_ITERATIONS = 120000;
+export const LEGACY_PBKDF2_ITERATIONS = 1000;
 
-// Password Hashing Helper
-export function hashPassword(password: string, salt = crypto.randomBytes(16).toString('hex')): { hash: string; salt: string } {
-  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
-  return { hash, salt };
+// Password Hashing Helper (Upgraded PBKDF2-SHA512 with backward compatibility for legacy accounts)
+export function hashPassword(
+  password: string,
+  salt = crypto.randomBytes(16).toString('hex'),
+  iterations = DEFAULT_PBKDF2_ITERATIONS
+): { hash: string; salt: string; iterations: number } {
+  const hash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
+  return { hash, salt, iterations };
 }
 
-export function verifyPassword(password: string, hash: string, salt: string): boolean {
-  const checkHash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
-  return checkHash === hash;
+function timingSafeHexEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+export function verifyPassword(
+  password: string,
+  hash: string,
+  salt: string,
+  iterations?: number
+): boolean {
+  if (!password || !hash || !salt) return false;
+  const primaryIters = iterations && iterations > 0 ? iterations : LEGACY_PBKDF2_ITERATIONS;
+  const checkPrimary = crypto.pbkdf2Sync(password, salt, primaryIters, 64, 'sha512').toString('hex');
+  if (timingSafeHexEqual(checkPrimary, hash)) {
+    return true;
+  }
+  if (!iterations) {
+    const checkStrong = crypto.pbkdf2Sync(password, salt, DEFAULT_PBKDF2_ITERATIONS, 64, 'sha512').toString('hex');
+    if (timingSafeHexEqual(checkStrong, hash)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function needsPasswordUpgrade(user: UserAccount): boolean {
+  return !user.passwordIterations || user.passwordIterations < DEFAULT_PBKDF2_ITERATIONS;
 }
 
 // Initial Database Seeding
@@ -429,56 +497,7 @@ function getInitialDbData(): DatabaseSchema {
     },
   ];
 
-  const seedShorts: ShortVideo[] = [
-    {
-      id: 'short_01',
-      source: 'motherland',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-      thumbnailUrl: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=600&auto=format&fit=crop&q=80',
-      title: 'Breathtaking Sajek Clouds Floating',
-      caption: 'Early morning above the clouds in Sajek Valley. No filter needed for this natural wonder! ☁️✨',
-      hashtags: ['Sajek', 'MotherlandShorts', 'Nature', 'Travel'],
-      creator: {
-        id: seedUser2.id,
-        name: seedUser2.displayName,
-        username: seedUser2.username,
-        avatar: seedUser2.avatar,
-        isVerified: true,
-        isFollowing: true,
-      },
-      stats: {
-        likes: 12400,
-        comments: 630,
-        shares: 1100,
-        views: 89000,
-      },
-      createdAt: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString(),
-    },
-    {
-      id: 'short_02',
-      source: 'motherland',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-      thumbnailUrl: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=600&auto=format&fit=crop&q=80',
-      title: 'Golden Sunset at Inani Beach',
-      caption: 'Corals and golden waters along Inani Beach, Cox’s Bazar. Pure tranquility. 🌊🌅',
-      hashtags: ['InaniBeach', 'SunsetVibes', 'CoxsBazar', 'Shorts'],
-      creator: {
-        id: seedUser3.id,
-        name: seedUser3.displayName,
-        username: seedUser3.username,
-        avatar: seedUser3.avatar,
-        isVerified: true,
-        isFollowing: false,
-      },
-      stats: {
-        likes: 8750,
-        comments: 420,
-        shares: 530,
-        views: 64200,
-      },
-      createdAt: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
-    },
-  ];
+  const seedShorts: ShortVideo[] = [];
 
   const seedLongVideos: LongVideo[] = [
     {
@@ -557,6 +576,9 @@ function getInitialDbData(): DatabaseSchema {
   ];
 
   return {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    migrationsApplied: [],
+    lastBackupAt: new Date().toISOString(),
     users: [ownerUser, seedUser2, seedUser3, seedUser4],
     sessions: [],
     posts: seedPosts,
@@ -579,6 +601,8 @@ function getInitialDbData(): DatabaseSchema {
       ],
     },
     stories: seedStories,
+    expiredStoriesArchive: [],
+    mediaAssets: [],
     shortVideos: seedShorts,
     longVideos: seedLongVideos,
     friendships: seedFriendships,
@@ -598,70 +622,311 @@ function getInitialDbData(): DatabaseSchema {
   };
 }
 
-class MotherlandDatabase {
+export class MotherlandDatabase {
   private data: DatabaseSchema;
   private isLoaded = false;
+  private paths: PersistencePaths;
+  private loadedFrom: 'primary' | 'backup_recovery' | 'fresh_seed' = 'primary';
+  private recoveredBackupName?: string;
+  private lastSaveSha256?: string;
+  private saveCount = 0;
 
-  constructor() {
+  constructor(customPaths?: PersistencePaths) {
+    this.paths = customPaths || resolvePersistencePaths();
+    ensureDirExists(this.paths.dataDir);
+    ensureDirExists(this.paths.uploadsDir);
+    ensureDirExists(this.paths.backupsDir);
+    getPersistentAuthSecret(this.paths);
     this.data = getInitialDbData();
     this.load();
   }
 
-  private load() {
-    try {
-      const dir = path.dirname(DB_PATH);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      if (fs.existsSync(DB_PATH)) {
-        const raw = fs.readFileSync(DB_PATH, 'utf-8');
-        const parsed = JSON.parse(raw);
-        this.data = {
-          ...getInitialDbData(),
-          ...parsed,
-        };
-        if (!Array.isArray(this.data.conversations)) this.data.conversations = [];
-        if (!this.data.conversationMessages || typeof this.data.conversationMessages !== 'object') {
-          this.data.conversationMessages = {};
-        }
-        if (!Array.isArray(this.data.blocks)) this.data.blocks = [];
-        if (!Array.isArray(this.data.friendRequests)) this.data.friendRequests = [];
-        if (!Array.isArray(this.data.friendships)) this.data.friendships = [];
-        if (!Array.isArray(this.data.follows)) this.data.follows = [];
-        if (!Array.isArray(this.data.savedPosts)) this.data.savedPosts = [];
-        if (!Array.isArray(this.data.reactions)) this.data.reactions = [];
-        if (!Array.isArray(this.data.calls)) this.data.calls = [];
-        if (!Array.isArray(this.data.drafts)) this.data.drafts = [];
-        if (!Array.isArray(this.data.savedVideos)) this.data.savedVideos = [];
-        if (!Array.isArray(this.data.watchHistory)) this.data.watchHistory = [];
-        if (!Array.isArray(this.data.reports)) this.data.reports = [];
-        if (!this.data.postComments || typeof this.data.postComments !== 'object') {
-          this.data.postComments = {};
-        }
-        if (!this.data.youtubeOAuth) {
-          this.data.youtubeOAuth = {};
-        }
-      } else {
-        this.save();
-      }
-      this.isLoaded = true;
-    } catch (err) {
-      console.error('Failed to load motherland_db.json, initializing fresh data:', err);
-      this.data = getInitialDbData();
-      this.save();
+  public getPaths(): PersistencePaths {
+    return this.paths;
+  }
+
+  private normalizeCollections(): void {
+    if (!Array.isArray(this.data.users)) this.data.users = [];
+    if (!Array.isArray(this.data.sessions)) this.data.sessions = [];
+    if (!Array.isArray(this.data.posts)) this.data.posts = [];
+    if (!Array.isArray(this.data.stories)) this.data.stories = [];
+    if (!Array.isArray(this.data.shortVideos)) this.data.shortVideos = [];
+    if (!Array.isArray(this.data.longVideos)) this.data.longVideos = [];
+    if (!Array.isArray(this.data.conversations)) this.data.conversations = [];
+    if (!this.data.conversationMessages || typeof this.data.conversationMessages !== 'object') {
+      this.data.conversationMessages = {};
     }
+    if (!Array.isArray(this.data.blocks)) this.data.blocks = [];
+    if (!Array.isArray(this.data.friendRequests)) this.data.friendRequests = [];
+    if (!Array.isArray(this.data.friendships)) this.data.friendships = [];
+    if (!Array.isArray(this.data.follows)) this.data.follows = [];
+    if (!Array.isArray(this.data.savedPosts)) this.data.savedPosts = [];
+    if (!Array.isArray(this.data.reactions)) this.data.reactions = [];
+    if (!Array.isArray(this.data.notifications)) this.data.notifications = [];
+    if (!Array.isArray(this.data.calls)) this.data.calls = [];
+    if (!Array.isArray(this.data.drafts)) this.data.drafts = [];
+    if (!Array.isArray(this.data.savedVideos)) this.data.savedVideos = [];
+    if (!Array.isArray(this.data.watchHistory)) this.data.watchHistory = [];
+    if (!Array.isArray(this.data.reports)) this.data.reports = [];
+    if (!Array.isArray(this.data.otpCodes)) this.data.otpCodes = [];
+    if (!Array.isArray(this.data.mediaAssets)) this.data.mediaAssets = [];
+    if (!Array.isArray(this.data.expiredStoriesArchive)) this.data.expiredStoriesArchive = [];
+    if (!Array.isArray(this.data.migrationsApplied)) this.data.migrationsApplied = [];
+    if (!this.data.postComments || typeof this.data.postComments !== 'object') {
+      this.data.postComments = {};
+    }
+    if (!this.data.youtubeOAuth || typeof this.data.youtubeOAuth !== 'object') {
+      this.data.youtubeOAuth = {};
+    }
+  }
+
+  /**
+   * Non-destructive forward-only schema migrations.
+   * Always creates a pre-migration backup before modifying existing production schemas.
+   */
+  public runNonDestructiveMigrations(): {
+    previousVersion: number;
+    currentVersion: number;
+    applied: MigrationRecord[];
+  } {
+    const startVersion = Number(this.data.schemaVersion || 0);
+    if (startVersion >= CURRENT_SCHEMA_VERSION) {
+      return { previousVersion: startVersion, currentVersion: startVersion, applied: [] };
+    }
+
+    let preMigrationBackupFile: string | undefined;
+    if (this.loadedFrom !== 'fresh_seed' && this.data.users.length > 0) {
+      const backup = createDatabaseBackup(
+        this.data,
+        `pre_migration_v${startVersion}_to_v${CURRENT_SCHEMA_VERSION}`,
+        this.paths
+      );
+      preMigrationBackupFile = backup.filename;
+    }
+
+    const newlyApplied: MigrationRecord[] = [];
+    const nowIso = new Date().toISOString();
+
+    // v0 -> v1: Structural collections + safe user defaults without overwriting existing user data
+    if (Number(this.data.schemaVersion || 0) < 1) {
+      this.normalizeCollections();
+      for (const u of this.data.users) {
+        if (!u.privacy) {
+          u.privacy = {
+            profileVisibility: 'public',
+            showOnlineStatus: true,
+            allowDirectMessages: 'everyone',
+            showContactInfo: true,
+          };
+        }
+        if (!u.authProvider) u.authProvider = 'password';
+        if (!u.passwordIterations) u.passwordIterations = LEGACY_PBKDF2_ITERATIONS;
+      }
+      this.data.schemaVersion = 1;
+      const rec: MigrationRecord = {
+        version: 1,
+        name: 'v1_collections_and_user_defaults',
+        appliedAt: nowIso,
+        backupFile: preMigrationBackupFile,
+      };
+      this.data.migrationsApplied!.push(rec);
+      newlyApplied.push(rec);
+    }
+
+    // v1 -> v2: Session IDs, device metadata, and HMAC tokenHash backfill (preserves existing tokens)
+    if (Number(this.data.schemaVersion || 0) < 2) {
+      for (const s of this.data.sessions) {
+        if (!s.id) {
+          s.id = `sess_${crypto.randomBytes(8).toString('hex')}`;
+        }
+        if (!s.tokenHash && s.token) {
+          s.tokenHash = hashSessionToken(s.token);
+          delete s.token;
+        }
+        if (!s.expiresAt) {
+          s.expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
+        }
+        if (!s.deviceName) {
+          s.deviceName = parseDeviceName(s.userAgent);
+        }
+        if (!s.lastUsedAt) {
+          s.lastUsedAt = s.createdAt || nowIso;
+        }
+        if (!s.authMethod) {
+          s.authMethod = 'legacy';
+        }
+      }
+      this.data.schemaVersion = 2;
+      const rec: MigrationRecord = {
+        version: 2,
+        name: 'v2_persistent_multi_device_sessions',
+        appliedAt: nowIso,
+        backupFile: preMigrationBackupFile,
+      };
+      this.data.migrationsApplied!.push(rec);
+      newlyApplied.push(rec);
+    }
+
+    // v2 -> v3: Media asset metadata & ownership backfill preserving all existing /uploads URLs
+    if (Number(this.data.schemaVersion || 0) < 3) {
+      this.backfillExistingMediaAssets();
+      this.data.schemaVersion = 3;
+      const rec: MigrationRecord = {
+        version: 3,
+        name: 'v3_media_asset_metadata_registry',
+        appliedAt: nowIso,
+        backupFile: preMigrationBackupFile,
+      };
+      this.data.migrationsApplied!.push(rec);
+      newlyApplied.push(rec);
+    }
+
+    this.save();
+    return {
+      previousVersion: startVersion,
+      currentVersion: Number(this.data.schemaVersion || CURRENT_SCHEMA_VERSION),
+      applied: newlyApplied,
+    };
+  }
+
+  private backfillExistingMediaAssets(): void {
+    if (!Array.isArray(this.data.mediaAssets)) this.data.mediaAssets = [];
+    const existingByUrl = new Set(this.data.mediaAssets.map((m) => m.url));
+    const urlOwnerMap = new Map<string, { ownerId: string; createdAt: string }>();
+
+    for (const p of this.data.posts) {
+      const ownerId = p.author?.id || 'system';
+      if (p.mediaUrl && p.mediaUrl.startsWith('/uploads/')) {
+        urlOwnerMap.set(p.mediaUrl, { ownerId, createdAt: p.createdAt });
+      }
+      for (const img of p.images || []) {
+        if (img && img.startsWith('/uploads/')) {
+          urlOwnerMap.set(img, { ownerId, createdAt: p.createdAt });
+        }
+      }
+    }
+    for (const s of this.data.stories) {
+      if (s.mediaUrl && s.mediaUrl.startsWith('/uploads/')) {
+        urlOwnerMap.set(s.mediaUrl, { ownerId: s.userId, createdAt: s.createdAt });
+      }
+    }
+    for (const u of this.data.users) {
+      if (u.avatar && u.avatar.startsWith('/uploads/')) {
+        urlOwnerMap.set(u.avatar, { ownerId: u.id, createdAt: u.createdAt });
+      }
+      if (u.coverImage && u.coverImage.startsWith('/uploads/')) {
+        urlOwnerMap.set(u.coverImage, { ownerId: u.id, createdAt: u.createdAt });
+      }
+    }
+
+    if (fs.existsSync(this.paths.uploadsDir)) {
+      const files = fs.readdirSync(this.paths.uploadsDir).filter((f) => !f.endsWith('.tmp'));
+      for (const filename of files) {
+        const url = `/uploads/${filename}`;
+        if (existingByUrl.has(url)) continue;
+        const fullPath = path.join(this.paths.uploadsDir, filename);
+        try {
+          const stat = fs.statSync(fullPath);
+          if (!stat.isFile()) continue;
+          const buf = fs.readFileSync(fullPath);
+          const ownerInfo = urlOwnerMap.get(url);
+          const nowIso = ownerInfo?.createdAt || stat.birthtime.toISOString() || new Date().toISOString();
+          this.data.mediaAssets.push({
+            id: `media_${crypto.randomBytes(6).toString('hex')}`,
+            ownerId: ownerInfo?.ownerId || (this.data.users[0]?.id || 'system'),
+            originalFilename: filename,
+            storedFilename: filename,
+            url,
+            mimeType: inferMimeFromFilename(filename),
+            sizeBytes: stat.size,
+            sha256: computeSha256(buf),
+            storageProvider: 'local_persistent',
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          });
+          existingByUrl.add(url);
+        } catch {
+          // Ignore unreadable transient file
+        }
+      }
+    }
+  }
+
+  private load() {
+    const result = loadDatabaseSafely<DatabaseSchema>(this.paths, getInitialDbData);
+    this.data = result.data;
+    this.loadedFrom = result.loadedFrom;
+    this.recoveredBackupName = result.recoveredBackup;
+    this.normalizeCollections();
+    this.runNonDestructiveMigrations();
+
+    // Ensure at least one verified backup exists on startup without overwriting data
+    const existingBackups = listDatabaseBackups(this.paths);
+    const newestBackupAgeMs =
+      existingBackups.length > 0 ? Date.now() - new Date(existingBackups[0].createdAt).getTime() : Infinity;
+    if (existingBackups.length === 0 || newestBackupAgeMs > 60 * 60 * 1000) {
+      this.createBackup('startup');
+    }
+
+    this.isLoaded = true;
+  }
+
+  public reloadFromDisk(): void {
+    this.load();
   }
 
   public save() {
     try {
-      const dir = path.dirname(DB_PATH);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(DB_PATH, JSON.stringify(this.data, null, 2), 'utf-8');
+      this.lastSaveSha256 = atomicWriteJsonSync(this.paths.dbPath, this.data, true);
+      this.saveCount += 1;
     } catch (err) {
-      console.error('Failed to save motherland_db.json:', err);
+      console.error('CRITICAL: Failed atomic save of motherland_db.json:', err);
     }
+  }
+
+  public createBackup(reason = 'manual'): BackupMetadata {
+    this.data.lastBackupAt = new Date().toISOString();
+    this.save();
+    return createDatabaseBackup(this.data, reason, this.paths);
+  }
+
+  public listBackups(): BackupMetadata[] {
+    return listDatabaseBackups(this.paths);
+  }
+
+  public verifyBackup(filename: string) {
+    const safeName = path.basename(filename);
+    const full = path.join(this.paths.backupsDir, safeName);
+    return verifyBackupFile(full);
+  }
+
+  public getPersistenceHealth() {
+    const backups = this.listBackups();
+    return {
+      environment: this.paths.env,
+      schemaVersion: Number(this.data.schemaVersion || 0),
+      targetSchemaVersion: CURRENT_SCHEMA_VERSION,
+      loadedFrom: this.loadedFrom,
+      recoveredBackup: this.recoveredBackupName,
+      migrationsApplied: this.data.migrationsApplied || [],
+      lastSaveSha256: this.lastSaveSha256,
+      lastBackupAt: this.data.lastBackupAt || backups[0]?.createdAt || null,
+      backupCount: backups.length,
+      verifiedBackupCount: backups.filter((b) => b.verified).length,
+      counts: {
+        users: this.data.users.length,
+        activeSessions: this.data.sessions.filter((s) => new Date(s.expiresAt).getTime() > Date.now()).length,
+        posts: this.data.posts.length,
+        activeStories: this.getActiveStories().length,
+        archivedExpiredStories: (this.data.expiredStoriesArchive || []).length,
+        mediaAssets: (this.data.mediaAssets || []).length,
+        shortVideos: this.data.shortVideos.length,
+        longVideos: this.data.longVideos.length,
+        conversations: this.data.conversations.length,
+        friendships: this.data.friendships.length,
+        notifications: this.data.notifications.length,
+      },
+    };
   }
 
   // User Management
@@ -774,37 +1039,196 @@ class MotherlandDatabase {
   public touchUserLastActive(userId: string): void {
     const user = this.findUserById(userId);
     if (!user) return;
-    user.lastActiveAt = new Date().toISOString();
-    // Avoid blocking disk write on every single read; periodic saves handle durability
+    const nowMs = Date.now();
+    const prevMs = user.lastActiveAt ? Date.parse(user.lastActiveAt) : 0;
+    user.lastActiveAt = new Date(nowMs).toISOString();
+    // Persist active timestamps at most once every 2 minutes per user to prevent disk thrashing
+    if (!prevMs || nowMs - prevMs > 2 * 60 * 1000) {
+      this.save();
+    }
   }
 
-  // Sessions
-  public createSession(userId: string, userAgent?: string): Session {
-    const token = `ml_${crypto.randomBytes(32).toString('hex')}`;
+  public deleteUserAccount(userId: string): { ok: boolean; error?: string } {
+    const userIdx = this.data.users.findIndex((u) => u.id === userId);
+    if (userIdx === -1) {
+      return { ok: false, error: 'Account not found.' };
+    }
+
+    // Create a safety backup prior to explicit owner-initiated deletion
+    this.createBackup('pre_account_delete');
+
+    this.data.users.splice(userIdx, 1);
+    this.data.sessions = this.data.sessions.filter((s) => s.userId !== userId);
+    this.data.stories = this.data.stories.filter((s) => s.userId !== userId);
+    this.data.posts = this.data.posts.filter((p) => p.author?.id !== userId);
+    this.data.reactions = this.data.reactions.filter((r) => r.userId !== userId);
+    this.data.savedPosts = this.data.savedPosts.filter((s) => s.userId !== userId);
+    this.data.savedVideos = (this.data.savedVideos || []).filter((v) => v.userId !== userId);
+    this.data.watchHistory = (this.data.watchHistory || []).filter((h) => h.userId !== userId);
+    this.data.drafts = (this.data.drafts || []).filter((d) => d.userId !== userId);
+    this.data.friendships = this.data.friendships.filter((f) => f.user1Id !== userId && f.user2Id !== userId);
+    this.data.friendRequests = this.data.friendRequests.filter(
+      (r) => r.sender.id !== userId && r.receiverId !== userId
+    );
+    this.data.follows = this.data.follows.filter((f) => f.followerId !== userId && f.followingId !== userId);
+    this.data.blocks = this.data.blocks.filter((b) => b.userId !== userId && b.blockedUserId !== userId);
+    this.data.notifications = this.data.notifications.filter((n) => n.recipientId !== userId);
+    if (this.data.youtubeOAuth && this.data.youtubeOAuth[userId]) {
+      delete this.data.youtubeOAuth[userId];
+    }
+    this.save();
+    return { ok: true };
+  }
+
+  // Persistent Multi-Device Sessions (HMAC-SHA256 Token Hashes + Sliding 30-day Persistence)
+  public createSession(
+    userId: string,
+    userAgent?: string,
+    meta?: { ipAddress?: string; authMethod?: Session['authMethod'] }
+  ): Session & { token: string } {
+    const rawToken = `ml_${crypto.randomBytes(32).toString('hex')}`;
+    const tokenHash = hashSessionToken(rawToken);
+    const nowIso = new Date().toISOString();
     const session: Session = {
-      token,
+      id: `sess_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      tokenHash,
       userId,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(), // 30 days
+      deviceName: parseDeviceName(userAgent),
+      ipAddress: meta?.ipAddress,
+      authMethod: meta?.authMethod || 'password',
+      createdAt: nowIso,
+      lastUsedAt: nowIso,
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(), // 30 days sliding
       userAgent,
     };
+
+    // Prune only genuinely expired sessions; keep up to 20 active device sessions per user
+    const nowMs = Date.now();
+    this.data.sessions = this.data.sessions.filter((s) => Date.parse(s.expiresAt) > nowMs);
+    const userSessions = this.data.sessions.filter((s) => s.userId === userId);
+    if (userSessions.length >= 20) {
+      const oldest = userSessions.sort((a, b) => Date.parse(a.lastUsedAt || a.createdAt) - Date.parse(b.lastUsedAt || b.createdAt))[0];
+      if (oldest) {
+        this.data.sessions = this.data.sessions.filter((s) => s !== oldest);
+      }
+    }
+
     this.data.sessions.push(session);
     this.save();
-    return session;
+    return { ...session, token: rawToken };
   }
 
-  public findSessionByToken(token: string): Session | undefined {
-    return this.data.sessions.find((s) => s.token === token && new Date(s.expiresAt).getTime() > Date.now());
+  public findSessionByToken(rawToken: string): Session | undefined {
+    if (!rawToken) return undefined;
+    const nowMs = Date.now();
+    const targetHash = hashSessionToken(rawToken);
+
+    const found = this.data.sessions.find((s) => {
+      if (Date.parse(s.expiresAt) <= nowMs) return false;
+      if (s.tokenHash && s.tokenHash === targetHash) return true;
+      if (s.token && s.token === rawToken) return true;
+      return false;
+    });
+
+    if (!found) return undefined;
+
+    let dirty = false;
+    // Upgrade legacy plaintext session record cleanly to HMAC hash
+    if (!found.tokenHash && found.token) {
+      found.tokenHash = targetHash;
+      delete found.token;
+      dirty = true;
+    }
+    if (!found.id) {
+      found.id = `sess_${crypto.randomBytes(8).toString('hex')}`;
+      dirty = true;
+    }
+
+    const lastUsedMs = found.lastUsedAt ? Date.parse(found.lastUsedAt) : 0;
+    if (!lastUsedMs || nowMs - lastUsedMs > 5 * 60 * 1000) {
+      found.lastUsedAt = new Date(nowMs).toISOString();
+      dirty = true;
+    }
+
+    // Sliding window renewal: if less than 20 days remain, automatically extend to 30 days
+    const expMs = Date.parse(found.expiresAt);
+    if (expMs - nowMs < 1000 * 60 * 60 * 24 * 20) {
+      found.expiresAt = new Date(nowMs + 1000 * 60 * 60 * 24 * 30).toISOString();
+      dirty = true;
+    }
+
+    if (dirty) {
+      this.save();
+    }
+    return found;
   }
 
-  public deleteSession(token: string): boolean {
-    const idx = this.data.sessions.findIndex((s) => s.token === token);
+  public getUserSessions(userId: string, currentRawToken?: string): DeviceSessionInfo[] {
+    const nowMs = Date.now();
+    const currentHash = currentRawToken ? hashSessionToken(currentRawToken) : '';
+    return this.data.sessions
+      .filter((s) => s.userId === userId && Date.parse(s.expiresAt) > nowMs)
+      .sort((a, b) => Date.parse(b.lastUsedAt || b.createdAt) - Date.parse(a.lastUsedAt || a.createdAt))
+      .map((s) => {
+        const isCurrent = Boolean(
+          currentRawToken &&
+            ((s.tokenHash && s.tokenHash === currentHash) || (s.token && s.token === currentRawToken))
+        );
+        return {
+          id: s.id || `sess_${(s.tokenHash || s.token || '').slice(0, 8)}`,
+          deviceName: s.deviceName || parseDeviceName(s.userAgent),
+          userAgent: s.userAgent,
+          ipAddress: s.ipAddress,
+          authMethod: s.authMethod || 'legacy',
+          createdAt: s.createdAt,
+          lastUsedAt: s.lastUsedAt || s.createdAt,
+          expiresAt: s.expiresAt,
+          isCurrent,
+        };
+      });
+  }
+
+  public revokeSessionById(
+    userId: string,
+    sessionId: string
+  ): { ok: boolean; statusCode: number; error?: string } {
+    const idx = this.data.sessions.findIndex((s) => s.id === sessionId);
+    if (idx === -1) {
+      return { ok: false, statusCode: 404, error: 'Session not found.' };
+    }
+    if (this.data.sessions[idx].userId !== userId) {
+      return { ok: false, statusCode: 403, error: 'Forbidden: you cannot revoke another user session.' };
+    }
+    this.data.sessions.splice(idx, 1);
+    this.save();
+    return { ok: true, statusCode: 200 };
+  }
+
+  public deleteSession(rawToken: string): boolean {
+    if (!rawToken) return false;
+    const targetHash = hashSessionToken(rawToken);
+    const idx = this.data.sessions.findIndex(
+      (s) => (s.tokenHash && s.tokenHash === targetHash) || (s.token && s.token === rawToken)
+    );
     if (idx !== -1) {
       this.data.sessions.splice(idx, 1);
       this.save();
       return true;
     }
     return false;
+  }
+
+  public deleteUserSessionsExcept(userId: string, currentRawToken?: string): number {
+    const currentHash = currentRawToken ? hashSessionToken(currentRawToken) : '';
+    const before = this.data.sessions.length;
+    this.data.sessions = this.data.sessions.filter((s) => {
+      if (s.userId !== userId) return true;
+      if (!currentRawToken) return false;
+      return (s.tokenHash && s.tokenHash === currentHash) || (s.token && s.token === currentRawToken);
+    });
+    const removed = before - this.data.sessions.length;
+    if (removed > 0) this.save();
+    return removed;
   }
 
   public deleteUserSessions(userId: string): void {
@@ -1053,16 +1477,27 @@ class MotherlandDatabase {
     return comment;
   }
 
-  // Stories (Strict 24 hour expiration)
-  public getActiveStories(): Story[] {
-    const now = Date.now();
-    return this.data.stories.filter((s) => new Date(s.expiresAt).getTime() > now);
+  // Stories (Strict 24-Hour UTC Expiration — never triggered by midnight or affecting posts/accounts)
+  public getActiveStories(nowMs = Date.now()): Story[] {
+    return this.data.stories.filter((s) => {
+      const expMs = Date.parse(s.expiresAt);
+      return Number.isFinite(expMs) && expMs > nowMs;
+    });
   }
 
   public addStory(story: Story): Story {
-    this.data.stories.unshift(story);
+    // Enforce server UTC timestamps strictly: expiresAt = createdAt + 24h UTC
+    const createdMs = Number.isFinite(Date.parse(story.createdAt)) ? Date.parse(story.createdAt) : Date.now();
+    const canonicalCreatedIso = new Date(createdMs).toISOString();
+    const canonicalExpiresIso = new Date(createdMs + 24 * 60 * 60 * 1000).toISOString();
+    const normalized: Story = {
+      ...story,
+      createdAt: canonicalCreatedIso,
+      expiresAt: canonicalExpiresIso,
+    };
+    this.data.stories.unshift(normalized);
     this.save();
-    return story;
+    return normalized;
   }
 
   public deleteStory(storyId: string): boolean {
@@ -1073,6 +1508,100 @@ class MotherlandDatabase {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Idempotent UTC story expiration processor.
+   * ONLY removes/archives stories where UTC expiresAt <= nowMs.
+   * NEVER deletes user accounts, posts, videos, comments, or profiles.
+   */
+  public expireStoriesOlderThan24hUtc(nowMs = Date.now()): {
+    expiredCount: number;
+    activeCount: number;
+    checkedAtUtc: string;
+  } {
+    const checkedAtUtc = new Date(nowMs).toISOString();
+    if (!Array.isArray(this.data.expiredStoriesArchive)) {
+      this.data.expiredStoriesArchive = [];
+    }
+
+    const active: Story[] = [];
+    let expiredCount = 0;
+
+    for (const story of this.data.stories) {
+      const expMs = Date.parse(story.expiresAt);
+      if (Number.isFinite(expMs) && expMs <= nowMs) {
+        expiredCount += 1;
+        this.data.expiredStoriesArchive.unshift({
+          id: story.id,
+          userId: story.userId,
+          mediaUrl: story.mediaUrl,
+          createdAt: story.createdAt,
+          expiresAt: story.expiresAt,
+          expiredAtUtc: checkedAtUtc,
+        });
+      } else {
+        active.push(story);
+      }
+    }
+
+    if (expiredCount > 0) {
+      this.data.stories = active;
+      this.data.expiredStoriesArchive = this.data.expiredStoriesArchive.slice(0, 500);
+      this.save();
+    }
+
+    return {
+      expiredCount,
+      activeCount: active.length,
+      checkedAtUtc,
+    };
+  }
+
+  // Persistent Media Asset Registry & Ownership Control
+  public registerMediaAsset(asset: MediaAssetRecord): MediaAssetRecord {
+    if (!Array.isArray(this.data.mediaAssets)) this.data.mediaAssets = [];
+    const existingIdx = this.data.mediaAssets.findIndex(
+      (m) => m.storedFilename === asset.storedFilename || m.id === asset.id
+    );
+    if (existingIdx !== -1) {
+      this.data.mediaAssets[existingIdx] = { ...this.data.mediaAssets[existingIdx], ...asset };
+    } else {
+      this.data.mediaAssets.unshift(asset);
+    }
+    this.save();
+    return asset;
+  }
+
+  public getMediaAsset(idOrFilename: string): MediaAssetRecord | undefined {
+    const clean = path.basename(idOrFilename);
+    return (this.data.mediaAssets || []).find(
+      (m) => m.id === idOrFilename || m.storedFilename === clean || m.url === idOrFilename
+    );
+  }
+
+  public getUserMediaAssets(userId: string): MediaAssetRecord[] {
+    return (this.data.mediaAssets || []).filter((m) => m.ownerId === userId);
+  }
+
+  public deleteOwnedMediaAsset(
+    idOrFilename: string,
+    actorUserId: string,
+    actorRole?: UserAccount['role']
+  ): { ok: boolean; statusCode: number; error?: string; asset?: MediaAssetRecord } {
+    if (!Array.isArray(this.data.mediaAssets)) this.data.mediaAssets = [];
+    const clean = path.basename(idOrFilename);
+    const idx = this.data.mediaAssets.findIndex((m) => m.id === idOrFilename || m.storedFilename === clean);
+    if (idx === -1) {
+      return { ok: false, statusCode: 404, error: 'Media asset not found.' };
+    }
+    const asset = this.data.mediaAssets[idx];
+    if (asset.ownerId !== actorUserId && actorRole !== 'owner') {
+      return { ok: false, statusCode: 403, error: 'Forbidden: you can only delete your own media.' };
+    }
+    this.data.mediaAssets.splice(idx, 1);
+    this.save();
+    return { ok: true, statusCode: 200, asset };
   }
 
   // Shorts & Long Videos

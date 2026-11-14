@@ -56,6 +56,55 @@ import {
   subscribeEdgeSwipeProgress,
 } from './hooks/useBackNavigation';
 import { useRealtime, RealtimeEvent } from './hooks/useRealtime';
+import { filterUnsuppressed, WATCH_SUPPRESSED_EVENT } from './services/watchSuppression';
+import { parseGoogleOAuthHashRedirect } from './services/youtubeAuthService';
+import { playNotificationChime, playMessageChime } from './utils/motherlandSoundEngine';
+
+const INSTANT_FEED_CACHE_KEY = 'motherland_instant_cache_v1';
+
+interface InstantFeedCache {
+  posts: Post[];
+  stories: Story[];
+  shorts: ShortVideo[];
+  longVideos: LongVideo[];
+}
+
+function readInstantFeedCache(): InstantFeedCache {
+  if (typeof window === 'undefined') {
+    return { posts: [], stories: [], shorts: [], longVideos: [] };
+  }
+  try {
+    const raw = localStorage.getItem(INSTANT_FEED_CACHE_KEY);
+    if (!raw) return { posts: [], stories: [], shorts: [], longVideos: [] };
+    const parsed = JSON.parse(raw);
+    return {
+      posts: Array.isArray(parsed?.posts) ? filterUnsuppressed(parsed.posts, true) : [],
+      stories: Array.isArray(parsed?.stories) ? parsed.stories : [],
+      shorts: Array.isArray(parsed?.shorts) ? filterUnsuppressed(parsed.shorts) : [],
+      longVideos: Array.isArray(parsed?.longVideos) ? filterUnsuppressed(parsed.longVideos) : [],
+    };
+  } catch {
+    return { posts: [], stories: [], shorts: [], longVideos: [] };
+  }
+}
+
+function writeInstantFeedCache(cache: InstantFeedCache): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(
+      INSTANT_FEED_CACHE_KEY,
+      JSON.stringify({
+        savedAt: Date.now(),
+        posts: cache.posts.slice(0, 15),
+        stories: cache.stories.slice(0, 20),
+        shorts: cache.shorts.slice(0, 20),
+        longVideos: cache.longVideos.slice(0, 20),
+      })
+    );
+  } catch {
+    // ignore storage quota
+  }
+}
 
 export default function App() {
   // Navigation & Theme
@@ -84,26 +133,29 @@ export default function App() {
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
-  // Core Data
+  // Core Data (hydrated instantaneously from cache for zero startup lag)
+  const initialCachedRef = useRef<InstantFeedCache>(readInstantFeedCache());
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [authToken, setAuthToken] = useState<string>(() => api.getToken() || '');
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [stories, setStories] = useState<Story[]>([]);
-  const [shorts, setShorts] = useState<ShortVideo[]>([]);
+  const [posts, setPosts] = useState<Post[]>(initialCachedRef.current.posts);
+  const [stories, setStories] = useState<Story[]>(initialCachedRef.current.stories);
+  const [shorts, setShorts] = useState<ShortVideo[]>(initialCachedRef.current.shorts);
   const [shortsPage, setShortsPage] = useState(1);
   const [shortsNextPageToken, setShortsNextPageToken] = useState<string | null>(null);
   const [shortsHasMore, setShortsHasMore] = useState(true);
   const [shortsExhaustedNotice, setShortsExhaustedNotice] = useState('');
   const [isLoadingMoreShorts, setIsLoadingMoreShorts] = useState(false);
 
-  const [longVideos, setLongVideos] = useState<LongVideo[]>([]);
+  const [longVideos, setLongVideos] = useState<LongVideo[]>(initialCachedRef.current.longVideos);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [adapters, setAdapters] = useState<PlatformAdapterInfo[]>([]);
   const [youtubeStatus, setYoutubeStatus] = useState<any>({ configured: false });
 
-  // Realtime State
+  // Realtime & Section Refresh Signals
   const [friendsRefreshSignal, setFriendsRefreshSignal] = useState(0);
+  const [videoRefreshSignal, setVideoRefreshSignal] = useState(0);
+  const [ytRefreshSignal, setYtRefreshSignal] = useState(0);
   const [messagesRealtimeSignal, setMessagesRealtimeSignal] = useState(0);
   const [incomingRealtimeMessage, setIncomingRealtimeMessage] = useState<{
     conversationId: string;
@@ -115,13 +167,21 @@ export default function App() {
   >({});
   const [chatTargetUserId, setChatTargetUserId] = useState<string | null>(null);
   const handleCallSignalRef = useRef<(payload: Record<string, any>) => void>(() => {});
+  const currentUserRef = useRef<UserProfile | null>(null);
+  const seenNotifIdsRef = useRef<Set<string>>(new Set());
+  const activeCallPhaseRef = useRef<string>('idle');
+  currentUserRef.current = currentUser;
 
-  // Loading States
-  const [isLoadingFeed, setIsLoadingFeed] = useState(true);
+  // Loading States (Never block initial render with a slow splash wall)
+  const [isLoadingFeed, setIsLoadingFeed] = useState(false);
+  const [isFetchingInitialPosts, setIsFetchingInitialPosts] = useState(
+    initialCachedRef.current.posts.length === 0
+  );
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [homeFeedPage, setHomeFeedPage] = useState(1);
   const [isLoadingMorePosts, setIsLoadingMorePosts] = useState(false);
   const [hasMorePosts, setHasMorePosts] = useState(true);
+  const lastAutoRefreshRef = useRef<number>(Date.now());
   const homeSentinelRef = useRef<HTMLDivElement | null>(null);
   const savedScrollRef = useRef<number>(0);
 
@@ -189,7 +249,7 @@ export default function App() {
   }, [currentUser]);
 
   const refreshUnreadMessages = useCallback(async () => {
-    if (!api.getToken()) {
+    if (!api.getToken() && !currentUserRef.current) {
       setUnreadMessagesCount(0);
       return;
     }
@@ -202,13 +262,15 @@ export default function App() {
   }, []);
 
   const refreshNotifications = useCallback(async () => {
-    if (!api.getToken()) {
+    if (!api.getToken() && !currentUserRef.current) {
       setNotifications([]);
       return;
     }
     try {
       const notifData = await api.getNotifications();
-      setNotifications(notifData.notifications || []);
+      const items = notifData.notifications || [];
+      items.forEach((n) => seenNotifIdsRef.current.add(n.id));
+      setNotifications(items);
     } catch (err) {
       console.error('Refresh notifications error:', err);
     }
@@ -224,6 +286,15 @@ export default function App() {
         });
         setMessagesRealtimeSignal((s) => s + 1);
         refreshUnreadMessages();
+        const me = currentUserRef.current;
+        if (
+          me &&
+          evt.message.senderId !== me.id &&
+          me.notificationPrefs?.messages !== false &&
+          activeCallPhaseRef.current === 'idle'
+        ) {
+          playMessageChime();
+        }
       } else if (
         evt.type === 'chat:read' ||
         evt.type === 'chat:message_update' ||
@@ -260,10 +331,16 @@ export default function App() {
           if (r.user) setCurrentUser(r.user);
         }).catch(() => {});
       } else if (evt.type === 'notification:new' && evt.notification) {
+        const incomingId = String(evt.notification.id || '');
+        const alreadySeen = incomingId ? seenNotifIdsRef.current.has(incomingId) : false;
+        if (incomingId) seenNotifIdsRef.current.add(incomingId);
         setNotifications((prev) => {
           if (prev.some((n) => n.id === evt.notification.id)) return prev;
           return [evt.notification, ...prev];
         });
+        if (!alreadySeen && activeCallPhaseRef.current !== 'connected') {
+          void playNotificationChime();
+        }
       } else if (evt.type === 'presence:update' && evt.userId) {
         setOnlineUsersMap((prev) => ({
           ...prev,
@@ -275,7 +352,7 @@ export default function App() {
   );
 
   const { sendEvent: sendWsEvent } = useRealtime(
-    currentUser ? authToken : '',
+    currentUser ? (authToken || '__cookie__') : '',
     handleRealtimeEvent
   );
 
@@ -298,45 +375,103 @@ export default function App() {
     onCallEnded: () => setMessagesRealtimeSignal((s) => s + 1),
   });
   handleCallSignalRef.current = handleCallSignal;
+  activeCallPhaseRef.current = activeCall?.phase || 'idle';
 
-  // Initial Data Bootstrap
+  // Initial Data Bootstrap (runs in parallel with OAuth hash completion, zero startup splash block)
   useEffect(() => {
+    parseGoogleOAuthHashRedirect()
+      .then((gAuth) => {
+        if (gAuth) {
+          bootstrapApp();
+        }
+      })
+      .catch(() => {});
     bootstrapApp();
+  }, []);
+
+  // Live 14-day watched suppression pruning across all feeds & shorts list
+  useEffect(() => {
+    const onSuppressed = () => {
+      setPosts((prev) => filterUnsuppressed(prev, true));
+      setShorts((prev) => filterUnsuppressed(prev));
+      setLongVideos((prev) => filterUnsuppressed(prev));
+    };
+    window.addEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
+    return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
   }, []);
 
   const bootstrapApp = async () => {
     try {
       setAuthToken(api.getToken() || '');
-      const [userData, ytData, adaptData, notifData, storiesData, shortsData, longData, convData] =
-        await Promise.all([
-          api.getCurrentUser().catch(() => ({ user: null })),
-          api.getYouTubeStatus().catch(() => ({ configured: false })),
-          api.getPlatformAdapters().catch(() => ({ adapters: [] })),
-          api.getToken() ? api.getNotifications().catch(() => ({ notifications: [] })) : Promise.resolve({ notifications: [] }),
-          api.getStories().catch(() => ({ stories: [] })),
-          api.getShorts().catch(() => ({ shorts: [] })),
-          api.getLongVideos().catch(() => ({ videos: [] })),
-          api.getToken() ? api.getConversations().catch(() => ({ totalUnread: 0 })) : Promise.resolve({ totalUnread: 0 }),
-        ]);
+      const [
+        userData,
+        ytData,
+        adaptData,
+        notifData,
+        storiesData,
+        shortsData,
+        longData,
+        convData,
+        postsData,
+      ] = await Promise.all([
+        api.getCurrentUser().catch(() => ({ user: null })),
+        api.getYouTubeStatus().catch(() => ({ configured: false })),
+        api.getPlatformAdapters().catch(() => ({ adapters: [] })),
+        api.getToken() ? api.getNotifications().catch(() => ({ notifications: [] })) : Promise.resolve({ notifications: [] }),
+        api.getStories().catch(() => ({ stories: [] })),
+        api.getShorts().catch(() => ({ shorts: [] })),
+        api.getLongVideos().catch(() => ({ videos: [] })),
+        api.getToken() ? api.getConversations().catch(() => ({ totalUnread: 0 })) : Promise.resolve({ totalUnread: 0 }),
+        api.getPosts(feedFilter, 'all', 1, 10).catch(() => ({ posts: [], hasMore: false })),
+      ]);
 
-      setCurrentUser(userData.user || null);
+      const nextStories = storiesData.stories || [];
+      const nextShorts = filterUnsuppressed(shortsData.shorts || []);
+      const nextLongVideos = filterUnsuppressed(longData.videos || []);
+      const nextPosts = filterUnsuppressed(postsData.posts || [], true);
+
+      const resolvedUser = userData.user || null;
+      let resolvedNotifs = notifData.notifications || [];
+      let resolvedUnread = (convData as any).totalUnread || 0;
+
+      // If authenticated via HttpOnly session cookie (e.g., localStorage cleared), load user notifications & chats too
+      if (resolvedUser && !api.getToken()) {
+        const [cookieNotifs, cookieConvs] = await Promise.all([
+          api.getNotifications().catch(() => ({ notifications: [] })),
+          api.getConversations().catch(() => ({ totalUnread: 0 })),
+        ]);
+        resolvedNotifs = cookieNotifs.notifications || [];
+        resolvedUnread = (cookieConvs as any).totalUnread || 0;
+      }
+
+      setCurrentUser(resolvedUser);
       setYoutubeStatus(ytData);
       setAdapters(adaptData.adapters || []);
-      setNotifications(notifData.notifications || []);
-      setStories(storiesData.stories || []);
-      setShorts(shortsData.shorts || []);
+      setNotifications(resolvedNotifs);
+      setStories(nextStories);
+      setShorts(nextShorts);
       setShortsPage(1);
       setShortsNextPageToken(null);
       setShortsHasMore(true);
       setShortsExhaustedNotice('');
-      setLongVideos(longData.videos || []);
-      setUnreadMessagesCount((convData as any).totalUnread || 0);
+      setLongVideos(nextLongVideos);
+      setUnreadMessagesCount(resolvedUnread);
+      setHomeFeedPage(1);
+      setPosts(nextPosts);
+      setHasMorePosts((postsData as any).hasMore !== false);
+      lastAutoRefreshRef.current = Date.now();
 
-      await loadPosts(feedFilter, true);
+      writeInstantFeedCache({
+        posts: nextPosts,
+        stories: nextStories,
+        shorts: nextShorts,
+        longVideos: nextLongVideos,
+      });
     } catch (err) {
       console.error('Bootstrap error:', err);
     } finally {
       setIsLoadingFeed(false);
+      setIsFetchingInitialPosts(false);
     }
   };
 
@@ -345,7 +480,8 @@ export default function App() {
       if (reset) {
         setHomeFeedPage(1);
         const data = await api.getPosts(type, 'all', 1, 10);
-        setPosts(data.posts || []);
+        const filtered = filterUnsuppressed(data.posts || [], true);
+        setPosts(filtered);
         setHasMorePosts(data.hasMore !== false);
       }
     } catch (err) {
@@ -360,9 +496,10 @@ export default function App() {
       const nextPage = homeFeedPage + 1;
       const data = await api.getPosts(feedFilter, 'all', nextPage, 10);
       if (data.posts && data.posts.length > 0) {
+        const filtered = filterUnsuppressed(data.posts, true);
         setPosts((prev) => {
           const seen = new Set(prev.map((p) => p.id));
-          return [...prev, ...data.posts.filter((p) => !seen.has(p.id))];
+          return [...prev, ...filtered.filter((p) => !seen.has(p.id))];
         });
         setHomeFeedPage(nextPage);
       }
@@ -395,29 +532,31 @@ export default function App() {
         return;
       }
 
-      const fetched: ShortVideo[] = (res.items || []).map((item: any) => ({
-        id: item.id,
-        source: 'youtube',
-        youtubeId: item.youtubeId || item.id,
-        videoUrl: '',
-        thumbnailUrl: item.thumbnailUrl,
-        title: item.title,
-        caption: item.title || '',
-        createdAt: item.publishedAt || new Date().toISOString(),
-        creator: {
-          id: item.channel?.id || 'yt',
-          name: item.channel?.title || 'YouTube Creator',
-          username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, ''),
-          avatar: item.channel?.avatar || '',
-        },
-        stats: {
-          views: item.stats?.views || 0,
-          likes: item.stats?.likes || 0,
-          comments: item.stats?.comments || 0,
-          shares: 0,
-        },
-        hashtags: [],
-      }));
+      const fetched: ShortVideo[] = filterUnsuppressed(
+        (res.items || []).map((item: any) => ({
+          id: item.id,
+          source: 'youtube' as const,
+          youtubeId: item.youtubeId || item.id,
+          videoUrl: '',
+          thumbnailUrl: item.thumbnailUrl,
+          title: item.title,
+          caption: item.title || '',
+          createdAt: item.publishedAt || new Date().toISOString(),
+          creator: {
+            id: item.channel?.id || 'yt',
+            name: item.channel?.title || 'YouTube Creator',
+            username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, ''),
+            avatar: item.channel?.avatar || '',
+          },
+          stats: {
+            views: item.stats?.views || 0,
+            likes: item.stats?.likes || 0,
+            comments: item.stats?.comments || 0,
+            shares: 0,
+          },
+          hashtags: [],
+        }))
+      );
 
       if (fetched.length > 0) {
         setShorts((prev) => {
@@ -442,6 +581,51 @@ export default function App() {
       setIsLoadingMoreShorts(false);
     }
   };
+
+  // Automatic Background Auto-Refresh (on focus/visibility + every 90s when not actively watching)
+  useEffect(() => {
+    const runSilentAutoRefresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (shortsPlayerState.isOpen || (activeWatchVideo && !isWatchMinimized)) return;
+      lastAutoRefreshRef.current = Date.now();
+      loadPosts(feedFilter, true);
+      api
+        .getStories()
+        .then((s) => setStories(s.stories || []))
+        .catch(() => {});
+      api
+        .getShorts()
+        .then((s) => setShorts(filterUnsuppressed(s.shorts || [])))
+        .catch(() => {});
+      if (activeNav === 'video') {
+        setVideoRefreshSignal((s) => s + 1);
+      } else if (activeNav === 'youtube') {
+        setYtRefreshSignal((s) => s + 1);
+      } else if (activeNav === 'friends') {
+        setFriendsRefreshSignal((s) => s + 1);
+      }
+    };
+
+    const onFocusOrVisibility = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastAutoRefreshRef.current > 45000) {
+        runSilentAutoRefresh();
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (Date.now() - lastAutoRefreshRef.current >= 90000) {
+        runSilentAutoRefresh();
+      }
+    }, 30000);
+
+    document.addEventListener('visibilitychange', onFocusOrVisibility);
+    window.addEventListener('focus', onFocusOrVisibility);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onFocusOrVisibility);
+      window.removeEventListener('focus', onFocusOrVisibility);
+    };
+  }, [activeNav, feedFilter, shortsPlayerState.isOpen, activeWatchVideo, isWatchMinimized]);
 
   // IntersectionObserver for Home Feed infinite scroll
   useEffect(() => {
@@ -598,6 +782,15 @@ export default function App() {
     }
   };
 
+  const handleAccountDeleted = async () => {
+    setCurrentUser(null);
+    setAuthToken('');
+    setNotifications([]);
+    setUnreadMessagesCount(0);
+    setActiveNav('home');
+    await bootstrapApp();
+  };
+
   const handleSwitchAccount = async (account: UserProfile) => {
     setCurrentUser(account);
     setAuthToken(api.getToken() || '');
@@ -704,22 +897,37 @@ export default function App() {
           currentUser={currentUser}
           unreadNotifications={unreadNotificationsCount}
           unreadMessages={unreadMessagesCount}
-          theme={theme}
           isYouTubeActive={false}
-          onToggleTheme={toggleTheme}
           onOpenNotifications={() => {
-            if (requireSignedIn()) setIsNotificationsOpen(true);
+            if (requireSignedIn()) {
+              refreshNotifications();
+              setIsNotificationsOpen(true);
+            }
           }}
           onOpenMessages={() => {
-            if (requireSignedIn()) setIsMessagesOpen(true);
+            if (requireSignedIn()) {
+              refreshUnreadMessages();
+              setIsMessagesOpen(true);
+            }
           }}
-          onOpenSearch={() => setActiveNav('video')}
-          onOpenProfile={() => setActiveNav('profile')}
+          onOpenSearch={() => {
+            setActiveNav('video');
+            setVideoRefreshSignal((s) => s + 1);
+          }}
+          onOpenProfile={() => {
+            setActiveNav('profile');
+            loadPosts(feedFilter, true);
+            api.getCurrentUser().then((r) => r.user && setCurrentUser(r.user)).catch(() => {});
+          }}
           onOpenAuth={() => setIsAuthOpen(true)}
-          onOpenYouTube={() => setActiveNav('youtube')}
+          onOpenYouTube={() => {
+            setActiveNav('youtube');
+            setYtRefreshSignal((s) => s + 1);
+          }}
           onLogoClick={() => {
             setActiveNav('home');
             window.scrollTo({ top: 0, behavior: 'smooth' });
+            refreshAll();
           }}
         />
       )}
@@ -869,7 +1077,23 @@ export default function App() {
               </div>
 
               {/* Feed Stream with Interspersed Shorts Discovery Carousels */}
-              {posts.length === 0 ? (
+              {isFetchingInitialPosts && posts.length === 0 ? (
+                <div className="space-y-4">
+                  {[0, 1].map((idx) => (
+                    <div key={idx} className="ml-glass rounded-2xl p-4 space-y-3 animate-pulse">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-[var(--bg-surface-alt)]" />
+                        <div className="space-y-1.5 flex-1">
+                          <div className="h-3 w-32 rounded bg-[var(--bg-surface-alt)]" />
+                          <div className="h-2.5 w-20 rounded bg-[var(--bg-surface-alt)]" />
+                        </div>
+                      </div>
+                      <div className="h-40 w-full rounded-xl bg-[var(--bg-surface-alt)]" />
+                    </div>
+                  ))}
+                  {renderHomeShortsStrip(0)}
+                </div>
+              ) : posts.length === 0 ? (
                 <>
                   <div className="py-14 text-center ml-glass rounded-2xl p-6 text-[var(--text-secondary)]">
                     <p className="text-sm font-semibold text-[var(--text-primary)]">
@@ -1138,6 +1362,7 @@ export default function App() {
                 setVideoPublishState({ isOpen: true, initialDestination: 'select' });
               }
             }}
+            refreshSignal={videoRefreshSignal}
           />
         </div>
 
@@ -1198,6 +1423,7 @@ export default function App() {
             onDeletePost={handleDeletePost}
             onOpenAuthModal={() => setIsAuthOpen(true)}
             onLogout={handleLogout}
+            onAccountDeleted={handleAccountDeleted}
             onSwitchAccount={handleSwitchAccount}
           />
         )}
@@ -1207,6 +1433,7 @@ export default function App() {
         {activeNav === 'youtube' && (
           <YouTubeFullExperience
             onBackToMotherland={() => setActiveNav('home')}
+            refreshSignal={ytRefreshSignal}
           />
         )}
       </main>
@@ -1236,7 +1463,24 @@ export default function App() {
           activeTab={shortsPlayerState.isOpen ? 'shorts' : activeNav}
           onTabChange={(tab) => {
             if (tab === 'shorts') {
-              openShortsPlayer(shorts, 0);
+              const latestUnsuppressed = filterUnsuppressed(shorts);
+              if (latestUnsuppressed.length > 0) {
+                openShortsPlayer(latestUnsuppressed, 0);
+              }
+              api
+                .getShorts()
+                .then((res) => {
+                  const fresh = filterUnsuppressed(res.shorts || []);
+                  if (fresh.length > 0) {
+                    setShorts(fresh);
+                    setShortsPlayerState((prev) =>
+                      prev.isOpen && prev.list.length > 0
+                        ? prev
+                        : { isOpen: true, list: fresh, initialIndex: 0 }
+                    );
+                  }
+                })
+                .catch(() => {});
               return;
             }
             if (tab === 'video' && activeNav === 'video' && activeWatchVideo && !isWatchMinimized) {
@@ -1244,7 +1488,20 @@ export default function App() {
               return;
             }
             setActiveNav(tab);
-            if (tab !== 'video') {
+            if (tab === 'home') {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+              loadPosts(feedFilter, true);
+              api.getStories().then((s) => setStories(s.stories || [])).catch(() => {});
+              api.getShorts().then((s) => setShorts(filterUnsuppressed(s.shorts || []))).catch(() => {});
+            } else if (tab === 'friends') {
+              setFriendsRefreshSignal((s) => s + 1);
+            } else if (tab === 'video') {
+              setVideoRefreshSignal((s) => s + 1);
+            } else if (tab === 'menu') {
+              refreshNotifications();
+              refreshUnreadMessages();
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            } else {
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }
           }}

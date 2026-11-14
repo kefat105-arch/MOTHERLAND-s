@@ -52,7 +52,10 @@ export function useRealtime(token: string, onEvent: (event: RealtimeEvent) => vo
     const connect = () => {
       if (stopped) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+      const url =
+        token === '__cookie__'
+          ? `${protocol}//${window.location.host}/ws`
+          : `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
       try {
         ws = new WebSocket(url);
         wsRef.current = ws;

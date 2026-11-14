@@ -30,6 +30,7 @@ import { api } from '../api';
 import type { ShortVideo, LongVideo, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import { FireLikeIcon } from './fire/MotherlandIcons';
+import { filterUnsuppressed, WATCH_SUPPRESSED_EVENT } from '../services/watchSuppression';
 
 interface VideoSectionProps {
   currentUser: UserProfile | null;
@@ -99,8 +100,8 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const [isLoadingMoreLive, setIsLoadingMoreLive] = useState(false);
 
   // Feeds State (Zero autoplay on homepage load)
-  const [shortsCarousel, setShortsCarousel] = useState<ShortVideo[]>(initialShorts);
-  const [longVideosList, setLongVideosList] = useState<LongVideo[]>(initialLongVideos);
+  const [shortsCarousel, setShortsCarousel] = useState<ShortVideo[]>(() => filterUnsuppressed(initialShorts));
+  const [longVideosList, setLongVideosList] = useState<LongVideo[]>(() => filterUnsuppressed(initialLongVideos));
   const [longPage, setLongPage] = useState(1);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -161,24 +162,44 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
 
   // Sync newly uploaded MOTHERLAND long videos
   useEffect(() => {
-    if (initialLongVideos.length > 0) {
+    const unsuppressed = filterUnsuppressed(initialLongVideos);
+    if (unsuppressed.length > 0) {
       setLongVideosList((prev) => {
         const existingIds = new Set(prev.map((v) => v.id));
-        const newLocal = initialLongVideos.filter((v) => !existingIds.has(v.id));
+        const newLocal = unsuppressed.filter((v) => !existingIds.has(v.id));
         return newLocal.length > 0 ? [...newLocal, ...prev] : prev;
       });
     }
   }, [initialLongVideos]);
 
   useEffect(() => {
-    if (initialShorts.length > 0) {
+    const unsuppressed = filterUnsuppressed(initialShorts);
+    if (unsuppressed.length > 0) {
       setShortsCarousel((prev) => {
         const existingIds = new Set(prev.map((s) => s.id));
-        const added = initialShorts.filter((s) => !existingIds.has(s.id));
+        const added = unsuppressed.filter((s) => !existingIds.has(s.id));
         return added.length > 0 ? [...added, ...prev] : prev;
       });
     }
   }, [initialShorts]);
+
+  // Live prune suppressed videos & shorts immediately for 14 days
+  useEffect(() => {
+    const onSuppressed = () => {
+      setShortsCarousel((prev) => filterUnsuppressed(prev));
+      setLongVideosList((prev) =>
+        filterUnsuppressed(prev).length === prev.length
+          ? prev
+          : prev.filter(
+              (v) =>
+                (watchingVideo && (v.id === watchingVideo.id || (v.youtubeId && v.youtubeId === watchingVideo.youtubeId))) ||
+                filterUnsuppressed([v]).length > 0
+            )
+      );
+    };
+    window.addEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
+    return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
+  }, [watchingVideo]);
 
   // Reset per-video UI toggles when switching watching video
   useEffect(() => {
@@ -205,7 +226,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           seen.add(key);
         }
       }
-      if (merged.length > 0) setLongVideosList(merged);
+      if (merged.length > 0) setLongVideosList(filterUnsuppressed(merged));
       if (Array.isArray(ytShorts.items) && ytShorts.items.length > 0) {
         const nextYtShorts: ShortVideo[] = ytShorts.items.map((item: any) => ({
           id: item.id,
@@ -232,9 +253,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           createdAt: item.publishedAt || 'Recently',
         }));
         setShortsCarousel((prev) => {
-          const localOnly = prev.filter((s) => s.source !== 'youtube');
+          const localOnly = filterUnsuppressed(prev.filter((s) => s.source !== 'youtube'));
           const sSeen = new Set(localOnly.map((s) => s.youtubeId || s.id));
-          return [...localOnly, ...nextYtShorts.filter((s) => !sSeen.has(s.youtubeId || s.id))];
+          return [...localOnly, ...filterUnsuppressed(nextYtShorts).filter((s) => !sSeen.has(s.youtubeId || s.id))];
         });
       }
     });
@@ -280,7 +301,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 seen.add(yt.youtubeId || yt.id);
               }
             }
-            setLongVideosList(combined);
+            setLongVideosList(filterUnsuppressed(combined));
             setNextPageToken(longRes.nextPageToken || null);
             setYoutubeFeedNotice('');
           } else {
@@ -330,7 +351,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
 
           setShortsCarousel((prev) => {
             const seen = new Set(prev.map((s) => s.youtubeId || s.id));
-            return [...prev, ...ytShorts.filter((s) => !seen.has(s.youtubeId || s.id))];
+            return [...filterUnsuppressed(prev), ...filterUnsuppressed(ytShorts).filter((s) => !seen.has(s.youtubeId || s.id))];
           });
         }
       } catch {
@@ -430,11 +451,13 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
       });
 
       if (feedRes.items && feedRes.items.length > 0) {
-        setLongVideosList(cat.id === 'all' ? [...initialLongVideos, ...feedRes.items] : feedRes.items);
+        setLongVideosList(
+          filterUnsuppressed(cat.id === 'all' ? [...initialLongVideos, ...feedRes.items] : feedRes.items)
+        );
         setNextPageToken(feedRes.nextPageToken || null);
         setLongPage(1);
       } else if (cat.id === 'all') {
-        setLongVideosList(initialLongVideos);
+        setLongVideosList(filterUnsuppressed(initialLongVideos));
       }
     } catch (err) {
       console.error('Category switch error:', err);
@@ -480,7 +503,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         if (feedRes.items && feedRes.items.length > 0) {
           setLongVideosList((prev) => {
             const seen = new Set(prev.map((x) => x.youtubeId || x.id));
-            return [...prev, ...feedRes.items.filter((x: LongVideo) => !seen.has(x.youtubeId || x.id))];
+            return [...prev, ...filterUnsuppressed(feedRes.items).filter((x: LongVideo) => !seen.has(x.youtubeId || x.id))];
           });
           setNextPageToken(feedRes.nextPageToken || null);
           setLongPage(nextPage);

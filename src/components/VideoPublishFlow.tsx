@@ -23,6 +23,8 @@ import {
 import { api } from '../api';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import type { UserProfile, YouTubeOAuthStatus, YouTubeUploadResult } from '../types';
+import { getStoredGoogleAuth, type GoogleAuthUser } from '../services/youtubeAuthService';
+import { YouTubeAccountModal } from './video/YouTubeAccountModal';
 
 interface VideoPublishFlowProps {
   isOpen: boolean;
@@ -81,7 +83,9 @@ export const VideoPublishFlow: React.FC<VideoPublishFlowProps> = ({
   const [ytStatusLoading, setYtStatusLoading] = useState(false);
   const [ytOAuthError, setYtOAuthError] = useState('');
   const [ytConnecting, setYtConnecting] = useState(false);
-  const [copiedCallback, setCopiedCallback] = useState(false);
+  const [copiedCallback, setCopiedCallback] = useState<'origin' | 'callback' | null>(null);
+  const [googleAuth, setGoogleAuth] = useState<GoogleAuthUser | null>(() => getStoredGoogleAuth());
+  const [ytAccountModalOpen, setYtAccountModalOpen] = useState(false);
 
   const [ytVideoFile, setYtVideoFile] = useState<File | null>(null);
   const [ytPreviewUrl, setYtPreviewUrl] = useState('');
@@ -728,52 +732,8 @@ export const VideoPublishFlow: React.FC<VideoPublishFlowProps> = ({
                   <Loader2 className="w-6 h-6 animate-spin text-[#FF0000]" />
                   <span>Checking official YouTube authorization...</span>
                 </div>
-              ) : ytStatus && !ytStatus.oauthConfigured ? (
-                /* Honest Diagnostic State when server lacks Google OAuth Client Credentials */
-                <div className="p-4 rounded-2xl border border-[var(--accent-gold-border)] bg-[var(--accent-gold-soft)] space-y-3">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-[var(--accent-gold)] flex-shrink-0 mt-0.5" />
-                    <div className="space-y-1">
-                      <h3 className="font-bold text-sm text-[var(--text-primary)]">
-                        Google OAuth Credentials Required on Server
-                      </h3>
-                      <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                        {ytStatus.message}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[11px] space-y-2">
-                    <div className="font-semibold text-[var(--text-primary)]">
-                      Required Environment Secrets:
-                    </div>
-                    <div className="font-mono text-[var(--accent-gold)]">
-                      GOOGLE_CLIENT_ID &amp; GOOGLE_CLIENT_SECRET
-                    </div>
-                    <div className="font-semibold text-[var(--text-primary)] pt-1">
-                      Authorized Redirect URI for Google Cloud Console:
-                    </div>
-                    <div className="flex items-center justify-between gap-2 bg-[var(--bg-surface-alt)] px-2.5 py-1.5 rounded-lg">
-                      <span className="font-mono text-[10px] text-[var(--text-secondary)] break-all">
-                        {ytStatus.callbackUrl}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard?.writeText(ytStatus.callbackUrl);
-                          setCopiedCallback(true);
-                          setTimeout(() => setCopiedCallback(false), 1800);
-                        }}
-                        className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--accent-primary)] flex-shrink-0"
-                        title="Copy Callback URI"
-                      >
-                        {copiedCallback ? <Check className="w-3.5 h-3.5 text-[var(--accent-primary)]" /> : <Copy className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : !ytStatus?.connected ? (
-                /* Connect Your YouTube Account Screen (Official Google Consent Flow) */
+              ) : !ytStatus?.connected && !googleAuth?.accessToken ? (
+                /* Connect Your YouTube Account Screen (Official Google Consent Flow + Client OAuth Modal) */
                 <div className="p-5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface-alt)] text-center space-y-4">
                   <div className="w-14 h-14 rounded-2xl bg-red-500/15 text-[#FF0000] mx-auto flex items-center justify-center">
                     <Youtube className="w-8 h-8" />
@@ -783,14 +743,14 @@ export const VideoPublishFlow: React.FC<VideoPublishFlowProps> = ({
                       Connect Your YouTube Account
                     </h3>
                     <p className="text-xs text-[var(--text-secondary)] max-w-sm mx-auto leading-relaxed">
-                      Authorize MOTHERLAND via Google&apos;s official OAuth 2.0 screen to upload videos directly to your YouTube channel. Your Google password is never shared with MOTHERLAND.
+                      Authorize MOTHERLAND with your Google account to upload, edit, and manage videos directly on your YouTube channel.
                     </p>
                   </div>
 
                   <div className="text-left p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[11px] text-[var(--text-secondary)] space-y-1">
                     <div className="font-semibold text-[var(--text-primary)]">Permissions Requested:</div>
-                    <div>• View your YouTube channel profile (`youtube.readonly`)</div>
-                    <div>• Upload videos to your YouTube channel (`youtube.upload`)</div>
+                    <div>• View &amp; manage your YouTube channel (`youtube`)</div>
+                    <div>• Upload videos directly to YouTube (`youtube.upload`)</div>
                   </div>
 
                   {ytOAuthError && (
@@ -800,19 +760,81 @@ export const VideoPublishFlow: React.FC<VideoPublishFlowProps> = ({
                     </div>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={handleOpenGoogleOAuth}
-                    disabled={ytConnecting}
-                    className="w-full min-h-[44px] py-3 px-4 rounded-xl bg-[var(--text-primary)] text-[var(--bg-surface)] font-bold text-xs flex items-center justify-center gap-2.5 hover:opacity-90 disabled:opacity-50 transition-opacity shadow-md"
-                  >
-                    {ytConnecting ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Youtube className="w-4 h-4 text-[#FF0000]" />
+                  <div className="space-y-2">
+                    {ytStatus?.oauthConfigured && (
+                      <button
+                        type="button"
+                        onClick={handleOpenGoogleOAuth}
+                        disabled={ytConnecting}
+                        className="w-full min-h-[44px] py-3 px-4 rounded-xl bg-[var(--text-primary)] text-[var(--bg-surface)] font-bold text-xs flex items-center justify-center gap-2.5 hover:opacity-90 disabled:opacity-50 transition-opacity shadow-md"
+                      >
+                        {ytConnecting ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Youtube className="w-4 h-4 text-[#FF0000]" />
+                        )}
+                        <span>{ytConnecting ? 'Waiting for Google Consent...' : 'Continue with Google (Server OAuth)'}</span>
+                      </button>
                     )}
-                    <span>{ytConnecting ? 'Waiting for Google Consent...' : 'Continue with Google'}</span>
-                  </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setYtAccountModalOpen(true)}
+                      className="w-full min-h-[44px] py-3 px-4 rounded-xl bg-[#FF0000] hover:bg-red-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-colors"
+                    >
+                      <Youtube className="w-4 h-4" />
+                      <span>Sign In with Google Account / Client OAuth</span>
+                    </button>
+                  </div>
+
+                  {ytStatus && !ytStatus.oauthConfigured && (
+                    <div className="p-3 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-left text-[11px] space-y-2">
+                      <div className="font-semibold text-[var(--text-primary)]">
+                        Google Cloud Console URLs for this App:
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-[var(--text-muted)]">Authorized JavaScript Origin:</div>
+                        <div className="flex items-center justify-between gap-2 bg-[var(--bg-surface-alt)] px-2.5 py-1.5 rounded-lg">
+                          <span className="font-mono text-[10px] text-[var(--text-secondary)] break-all">
+                            {typeof window !== 'undefined' ? window.location.origin : ''}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(window.location.origin);
+                              setCopiedCallback('origin');
+                              setTimeout(() => setCopiedCallback(null), 1800);
+                            }}
+                            className="p-1 text-[var(--text-secondary)] hover:text-[var(--accent-primary)] flex-shrink-0"
+                            title="Copy Origin URL"
+                          >
+                            {copiedCallback === 'origin' ? <Check className="w-3.5 h-3.5 text-[var(--accent-primary)]" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-[var(--text-muted)]">Authorized Redirect URI:</div>
+                        <div className="flex items-center justify-between gap-2 bg-[var(--bg-surface-alt)] px-2.5 py-1.5 rounded-lg">
+                          <span className="font-mono text-[10px] text-[var(--text-secondary)] break-all">
+                            {ytStatus.callbackUrl}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(ytStatus.callbackUrl);
+                              setCopiedCallback('callback');
+                              setTimeout(() => setCopiedCallback(null), 1800);
+                            }}
+                            className="p-1 text-[var(--text-secondary)] hover:text-[var(--accent-primary)] flex-shrink-0"
+                            title="Copy Callback URI"
+                          >
+                            {copiedCallback === 'callback' ? <Check className="w-3.5 h-3.5 text-[var(--accent-primary)]" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : ytUploadResult?.success ? (
                 /* Post-Upload Confirmation with Real Video ID & Link */
@@ -861,27 +883,29 @@ export const VideoPublishFlow: React.FC<VideoPublishFlowProps> = ({
                 /* Connected Channel + Official YouTube Upload Form */
                 <form onSubmit={handleYouTubeSubmit} className="space-y-4">
                   {/* Connected Channel Bar */}
-                  {ytStatus.channel && (
+                  {(ytStatus?.channel || googleAuth) && (
                     <div className="p-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface-alt)] flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5 min-w-0">
                         <img
-                          src={ytStatus.channel.avatar}
-                          alt={ytStatus.channel.title}
+                          src={ytStatus?.channel?.avatar || googleAuth?.avatarUrl || ''}
+                          alt={ytStatus?.channel?.title || googleAuth?.channelTitle || googleAuth?.name || 'YouTube'}
                           className="w-10 h-10 rounded-full object-cover border border-red-500/30"
                         />
                         <div className="min-w-0">
                           <div className="text-xs font-bold text-[var(--text-primary)] truncate">
-                            {ytStatus.channel.title}
+                            {ytStatus?.channel?.title || googleAuth?.channelTitle || googleAuth?.name || 'YouTube Channel'}
                           </div>
                           <div className="text-[11px] text-[var(--accent-primary)] font-medium">
-                            Connected · {ytStatus.channel.subscriberCount || 'YouTube'} subscribers
+                            Connected · {ytStatus?.channel?.subscriberCount || googleAuth?.subscriberCount || 'YouTube'} subscribers
                           </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 flex-shrink-0">
                         <button
                           type="button"
-                          onClick={handleOpenGoogleOAuth}
+                          onClick={() =>
+                            ytStatus?.oauthConfigured ? handleOpenGoogleOAuth() : setYtAccountModalOpen(true)
+                          }
                           className="min-h-[38px] px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-primary)] hover:border-[var(--border-strong)] flex items-center gap-1"
                           title="Switch Google Account"
                         >
@@ -1108,6 +1132,17 @@ export const VideoPublishFlow: React.FC<VideoPublishFlowProps> = ({
           )}
         </div>
       </div>
+
+      <YouTubeAccountModal
+        isOpen={ytAccountModalOpen}
+        onClose={() => setYtAccountModalOpen(false)}
+        currentAuth={googleAuth}
+        onAuthUpdated={(auth) => {
+          setGoogleAuth(auth);
+          loadYouTubeStatus();
+          onYouTubeConnectionChanged?.();
+        }}
+      />
     </div>
   );
 };

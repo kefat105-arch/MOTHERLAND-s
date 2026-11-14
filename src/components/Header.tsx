@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, Search, Sun, Moon, Crown, UserCheck, Youtube } from 'lucide-react';
+import { Bell, Search, Crown, UserCheck, Youtube } from 'lucide-react';
 import type { UserProfile } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 import { WaveLogo } from './wave/WaveLogo';
@@ -9,9 +9,7 @@ interface HeaderProps {
   currentUser: UserProfile | null;
   unreadNotifications: number;
   unreadMessages: number;
-  theme: 'dark' | 'light';
   isYouTubeActive?: boolean;
-  onToggleTheme: () => void;
   onOpenNotifications: () => void;
   onOpenMessages: () => void;
   onOpenSearch: () => void;
@@ -25,9 +23,7 @@ export const Header: React.FC<HeaderProps> = ({
   currentUser,
   unreadNotifications,
   unreadMessages,
-  theme,
   isYouTubeActive = false,
-  onToggleTheme,
   onOpenNotifications,
   onOpenMessages,
   onOpenSearch,
@@ -39,38 +35,15 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="sticky top-0 z-40 bg-[var(--bg-glass)] backdrop-blur-xl border-b border-[var(--border-subtle)] px-3 sm:px-4 py-1.5 transition-colors shadow-sm">
       <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
-        {/* MOTHERLAND Logo + YouTube Launcher */}
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-          <button
-            type="button"
-            onClick={onLogoClick}
-            className="flex items-center text-left min-h-[44px] focus:outline-none group flex-shrink-0"
-            aria-label="MOTHERLAND Home"
-          >
-            <MotherlandLogo size={38} showText={true} />
-          </button>
-
-          {/* Red YouTube Logo Button */}
-          <button
-            type="button"
-            onClick={onOpenYouTube}
-            data-testid="header-youtube-btn"
-            title="Open MOTHERLAND YouTube"
-            aria-label="Open YouTube"
-            className={`min-h-[38px] px-2.5 py-1.5 rounded-xl border flex items-center gap-1.5 transition-all active:scale-95 flex-shrink-0 ${
-              isYouTubeActive
-                ? 'bg-[#FF0000]/20 border-[#FF0000]/60 text-[var(--text-primary)] shadow-md'
-                : 'bg-[var(--bg-surface)] hover:bg-[#FF0000]/10 border-[var(--border-subtle)] hover:border-[#FF0000]/40 text-[var(--text-primary)]'
-            }`}
-          >
-            <span className="w-6 h-4 rounded-md bg-[#FF0000] flex items-center justify-center text-white shadow-sm">
-              <Youtube className="w-3.5 h-3.5 fill-current" />
-            </span>
-            <span className="text-xs font-extrabold tracking-tight hidden xs:inline sm:inline">
-              YouTube
-            </span>
-          </button>
-        </div>
+        {/* MOTHERLAND Logo */}
+        <button
+          type="button"
+          onClick={onLogoClick}
+          className="flex items-center text-left min-h-[44px] focus:outline-none group flex-shrink-0"
+          aria-label="MOTHERLAND Home"
+        >
+          <MotherlandLogo size={38} showText={true} />
+        </button>
 
         {/* Action Controls (Min 44px touch targets on mobile) */}
         <div className="flex items-center gap-1 sm:gap-2">
@@ -121,20 +94,22 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </button>
 
-          {/* Light / Dark Theme Toggle */}
+          {/* Red YouTube Logo Button (placed where Light/Dark theme button used to be) */}
           <button
             type="button"
-            onClick={onToggleTheme}
-            data-testid="theme-toggle-btn"
-            className="flex w-10 h-10 rounded-xl bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] items-center justify-center text-[var(--text-primary)] transition-colors"
-            title={theme === 'dark' ? 'Switch to Light Glass Theme' : 'Switch to Dark Glass Theme'}
-            aria-label="Toggle theme"
+            onClick={onOpenYouTube}
+            data-testid="header-youtube-btn"
+            title="Open MOTHERLAND YouTube"
+            aria-label="Open YouTube"
+            className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-all active:scale-95 flex-shrink-0 ${
+              isYouTubeActive
+                ? 'bg-[#FF0000]/20 border-[#FF0000]/60 text-[var(--text-primary)] shadow-md'
+                : 'bg-[var(--bg-surface)] hover:bg-[#FF0000]/10 border-[var(--border-subtle)] hover:border-[#FF0000]/40 text-[var(--text-primary)]'
+            }`}
           >
-            {theme === 'dark' ? (
-              <Sun className="w-4.5 h-4.5 text-[var(--accent-gold)]" />
-            ) : (
-              <Moon className="w-4.5 h-4.5 text-[var(--accent-royal)]" />
-            )}
+            <span className="w-6 h-4 rounded-md bg-[#FF0000] flex items-center justify-center text-white shadow-sm">
+              <Youtube className="w-3.5 h-3.5 fill-current" />
+            </span>
           </button>
 
           {/* PWA Install Button */}
