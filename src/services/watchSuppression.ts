@@ -1,12 +1,34 @@
 /**
- * Client-side 14-day Watched Video & Short Suppression Registry
+ * Client-side 7-day Watched Video & Short Suppression Registry (User-Scoped)
  * Ensures watched videos/shorts do not reappear in MOTHERLAND or YouTube feeds
- * for at least 14 days (for both guest and signed-in users), and broadcasts updates live.
+ * for 7 days (configurable), and tracks in-session recently shown IDs so
+ * Home / Video clicks & pull-to-refresh always deliver fresh unseen videos.
  */
 
-export const WATCH_SUPPRESSION_STORAGE_KEY = 'motherland_watched_suppress_v1';
-export const WATCH_SUPPRESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+export const WATCH_SUPPRESSION_BASE_KEY = 'motherland_watched_suppress_v2';
+export const WATCH_SUPPRESSION_LEGACY_KEY = 'motherland_watched_suppress_v1';
+export const WATCH_SUPPRESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const WATCH_SUPPRESSED_EVENT = 'motherland:watch-suppressed';
+
+let activeWatchUserId: string | null = null;
+
+// In-memory session-only tracker of recently displayed items (clears on app reload)
+const sessionShownFeedIds: Record<string, string[]> = {
+  home: [],
+  video: [],
+  shorts: [],
+  youtube: [],
+};
+
+export function setWatchSuppressionUserId(userId?: string | null): void {
+  activeWatchUserId = userId ? String(userId).trim() : null;
+}
+
+function getStorageKey(): string {
+  return activeWatchUserId
+    ? `${WATCH_SUPPRESSION_BASE_KEY}_${activeWatchUserId}`
+    : `${WATCH_SUPPRESSION_BASE_KEY}_guest`;
+}
 
 interface SuppressedMap {
   [videoId: string]: number; // watchedAt epoch ms
@@ -15,7 +37,15 @@ interface SuppressedMap {
 function readRawMap(): SuppressedMap {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(WATCH_SUPPRESSION_STORAGE_KEY);
+    const key = getStorageKey();
+    let raw = localStorage.getItem(key);
+    // Migrate legacy entries safely once for seamless continuity
+    if (!raw && activeWatchUserId) {
+      const legacyRaw = localStorage.getItem(WATCH_SUPPRESSION_LEGACY_KEY);
+      if (legacyRaw) {
+        raw = legacyRaw;
+      }
+    }
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return {};
@@ -31,7 +61,7 @@ function readRawMap(): SuppressedMap {
       }
     }
     if (changed) {
-      localStorage.setItem(WATCH_SUPPRESSION_STORAGE_KEY, JSON.stringify(cleaned));
+      localStorage.setItem(key, JSON.stringify(cleaned));
     }
     return cleaned;
   } catch {
@@ -42,7 +72,6 @@ function readRawMap(): SuppressedMap {
 function writeRawMap(map: SuppressedMap): void {
   if (typeof window === 'undefined') return;
   try {
-    // Keep up to 1500 most recent entries to stay compact
     const entries = Object.entries(map)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 1500);
@@ -50,7 +79,7 @@ function writeRawMap(map: SuppressedMap): void {
     for (const [k, v] of entries) {
       trimmed[k] = v;
     }
-    localStorage.setItem(WATCH_SUPPRESSION_STORAGE_KEY, JSON.stringify(trimmed));
+    localStorage.setItem(getStorageKey(), JSON.stringify(trimmed));
   } catch {
     // Ignore quota error
   }
@@ -114,6 +143,34 @@ export function getSuppressedIdsHeaderValue(limit = 200): string {
     .filter((v, idx, arr) => Boolean(v) && arr.indexOf(v) === idx)
     .slice(0, limit)
     .join(',');
+}
+
+export function recordShownFeedIds(
+  bucket: 'home' | 'video' | 'shorts' | 'youtube',
+  ids: Array<string | undefined | null>
+): void {
+  const clean = ids
+    .map((id) => normalizeSuppressId(id))
+    .filter((v): v is string => Boolean(v));
+  if (clean.length === 0) return;
+  const existing = sessionShownFeedIds[bucket] || [];
+  const merged = [...clean, ...existing.filter((x) => !clean.includes(x))].slice(0, 40);
+  sessionShownFeedIds[bucket] = merged;
+}
+
+export function getRecentlyShownIds(bucket: 'home' | 'video' | 'shorts' | 'youtube'): string[] {
+  return [...(sessionShownFeedIds[bucket] || [])];
+}
+
+export function clearRecentlyShownIds(bucket?: 'home' | 'video' | 'shorts' | 'youtube'): void {
+  if (bucket) {
+    sessionShownFeedIds[bucket] = [];
+    return;
+  }
+  sessionShownFeedIds.home = [];
+  sessionShownFeedIds.video = [];
+  sessionShownFeedIds.shorts = [];
+  sessionShownFeedIds.youtube = [];
 }
 
 export function isVideoSuppressed(

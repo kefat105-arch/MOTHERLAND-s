@@ -362,36 +362,36 @@ function playOutgoingCycleOnce(volume = 0.32) {
 }
 
 export function startCallRingtoneLoop(mode: 'incoming' | 'outgoing'): void {
-  if (currentCallLoopMode === mode && callLoopTimer !== null) return;
+  // Strictly ring ONLY the receiver's phone ('incoming'). Caller device stays completely silent.
+  if (mode !== 'incoming') {
+    stopCallRingtones();
+    return;
+  }
+  if (currentCallLoopMode === 'incoming' && callLoopTimer !== null) return;
   stopCallRingtones();
-  currentCallLoopMode = mode;
+  currentCallLoopMode = 'incoming';
   callRingTemporarilyMuted = false;
 
   const triggerCycle = () => {
-    if (currentCallLoopMode !== mode) return;
-    if (mode === 'incoming') {
-      playIncomingCycleOnce();
-      try {
-        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function' && !callRingTemporarilyMuted && !isGlobalSoundMuted()) {
-          navigator.vibrate([220, 110, 220]);
-        }
-      } catch {
-        // ignore vibration unsupported
+    if (currentCallLoopMode !== 'incoming') return;
+    playIncomingCycleOnce();
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function' && !callRingTemporarilyMuted && !isGlobalSoundMuted()) {
+        navigator.vibrate([220, 110, 220]);
       }
-    } else {
-      playOutgoingCycleOnce();
+    } catch {
+      // ignore vibration unsupported
     }
   };
 
   // Attempt immediate unlock & play
   unlockSoundEngine().finally(() => {
-    if (currentCallLoopMode === mode) {
+    if (currentCallLoopMode === 'incoming') {
       triggerCycle();
     }
   });
 
-  const intervalMs = mode === 'incoming' ? 3350 : 2850;
-  callLoopTimer = window.setInterval(triggerCycle, intervalMs);
+  callLoopTimer = window.setInterval(triggerCycle, 3350);
   notifyStateListeners();
 }
 
@@ -429,8 +429,6 @@ export function toggleCallRingTemporarilyMuted(): boolean {
     }
   } else if (currentCallLoopMode === 'incoming') {
     unlockSoundEngine().then(() => playIncomingCycleOnce());
-  } else if (currentCallLoopMode === 'outgoing') {
-    unlockSoundEngine().then(() => playOutgoingCycleOnce());
   }
   notifyStateListeners();
   return callRingTemporarilyMuted;

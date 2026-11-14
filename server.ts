@@ -195,7 +195,7 @@ function notifyUserFriendsPresence(userId: string, isOnline: boolean) {
   }
 }
 
-const WATCH_SUPPRESSION_DAYS = Math.max(1, Number(process.env.WATCH_SUPPRESSION_DAYS || 14));
+const WATCH_SUPPRESSION_DAYS = Math.max(1, Number(process.env.WATCH_SUPPRESSION_DAYS || 7));
 
 function normalizeSuppressToken(id: string): string {
   return id.trim().replace(/^yt_feed_/, '').replace(/^yt_/, '');
@@ -219,6 +219,71 @@ function getSuppressedSetFromReq(req: Request): Set<string> {
     }
   }
   return suppressed;
+}
+
+function getSeedFromReq(req: Request): string {
+  const raw = String(req.query.seed || req.headers['x-feed-seed'] || '').trim();
+  return raw || String(Math.floor(Date.now() / 60000));
+}
+
+function getExcludeSetFromReq(req: Request): Set<string> {
+  const set = new Set<string>();
+  const raw = [req.query.excludeIds, req.headers['x-exclude-ids']]
+    .filter(Boolean)
+    .map(String)
+    .join(',');
+  if (!raw) return set;
+  for (const part of raw.split(',')) {
+    const clean = part.trim();
+    if (clean) {
+      set.add(clean);
+      const norm = normalizeSuppressToken(clean);
+      if (norm) set.add(norm);
+    }
+  }
+  return set;
+}
+
+function hashSeedNumber(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function seededShuffle<T>(items: T[], seed: string): T[] {
+  if (items.length <= 1) return [...items];
+  const out = [...items];
+  let state = hashSeedNumber(seed) || 1;
+  for (let i = out.length - 1; i > 0; i--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const j = state % (i + 1);
+    const tmp = out[i];
+    out[i] = out[j];
+    out[j] = tmp;
+  }
+  return out;
+}
+
+function prioritizeFreshItems<T extends { id?: string; youtubeId?: string; externalId?: string }>(
+  items: T[],
+  excludeSet: Set<string>,
+  seed: string
+): T[] {
+  const fresh: T[] = [];
+  const recentlyShown: T[] = [];
+  for (const it of items) {
+    const rawId = String(it.youtubeId || it.externalId || it.id || '');
+    const norm = normalizeSuppressToken(rawId);
+    if (excludeSet.has(rawId) || (norm && excludeSet.has(norm))) {
+      recentlyShown.push(it);
+    } else {
+      fresh.push(it);
+    }
+  }
+  return [...seededShuffle(fresh, seed), ...seededShuffle(recentlyShown, `${seed}_old`)];
 }
 
 // Auth Extraction Middleware (Multi-User Token + HttpOnly Cookie Isolation - ZERO Shared Fallback)
@@ -651,19 +716,131 @@ const CATEGORY_DISCOVERY_QUERIES: Record<string, string[]> = {
   trending: ['viral science documentary', 'world travel cinema 4K'],
 };
 
+interface CachedChannelMeta {
+  avatar: string;
+  subscriberCount: string;
+  title?: string;
+  cachedAt: number;
+}
+
+const youtubeChannelMetaCache = new Map<string, CachedChannelMeta>();
+const CHANNEL_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function formatSubscriberLabel(rawCount?: string | number | null): string {
+  const n = Number(rawCount);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M subscribers`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}K subscribers`;
+  return `${n.toLocaleString()} subscribers`;
+}
+
+async function fetchChannelMetaMap(channelIds: string[]): Promise<Map<string, CachedChannelMeta>> {
+  const result = new Map<string, CachedChannelMeta>();
+  const now = Date.now();
+  const missing: string[] = [];
+
+  for (const rawId of channelIds) {
+    const cid = String(rawId || '').trim();
+    if (!cid || cid === 'yt' || cid === 'yt_live') continue;
+    const cached = youtubeChannelMetaCache.get(cid);
+    if (cached && now - cached.cachedAt < CHANNEL_CACHE_TTL_MS) {
+      result.set(cid, cached);
+    } else if (!missing.includes(cid)) {
+      missing.push(cid);
+    }
+  }
+
+  for (let i = 0; i < missing.length; i += 45) {
+    const batch = missing.slice(i, i + 45);
+    try {
+      const chData = await fetchFromYouTubeApi('channels', {
+        part: 'snippet,statistics',
+        id: batch.join(','),
+      });
+      for (const ch of chData.items || []) {
+        const avatar =
+          ch.snippet?.thumbnails?.medium?.url ||
+          ch.snippet?.thumbnails?.high?.url ||
+          ch.snippet?.thumbnails?.default?.url ||
+          '';
+        const subCount = ch.statistics?.hiddenSubscriberCount
+          ? ''
+          : formatSubscriberLabel(ch.statistics?.subscriberCount);
+        const entry: CachedChannelMeta = {
+          avatar,
+          subscriberCount: subCount,
+          title: ch.snippet?.title,
+          cachedAt: now,
+        };
+        youtubeChannelMetaCache.set(ch.id, entry);
+        result.set(ch.id, entry);
+      }
+    } catch {
+      // If channels quota or network fails, do not fabricate avatars
+    }
+  }
+  return result;
+}
+
+async function enrichVideoItemsWithChannelMeta<T extends { channel?: { id?: string; title?: string; avatar?: string; subscriberCount?: string; url?: string } }>(
+  items: T[]
+): Promise<T[]> {
+  if (!Array.isArray(items) || items.length === 0) return items;
+  const ids = items.map((it) => it.channel?.id || '').filter(Boolean);
+  const metaMap = await fetchChannelMetaMap(ids);
+  return items.map((it) => {
+    const cid = it.channel?.id;
+    const meta = cid ? metaMap.get(cid) : undefined;
+    if (!it.channel) return it;
+    return {
+      ...it,
+      channel: {
+        ...it.channel,
+        title: it.channel.title || meta?.title || 'Unavailable',
+        avatar: meta?.avatar || (it.channel.avatar && !it.channel.avatar.includes('dicebear.com') ? it.channel.avatar : ''),
+        subscriberCount: meta?.subscriberCount || it.channel.subscriberCount || '',
+        url: cid ? `https://www.youtube.com/channel/${cid}` : it.channel.url,
+      },
+    };
+  });
+}
+
+async function enrichPostsWithChannelMeta(posts: Post[]): Promise<Post[]> {
+  const ytIds = posts
+    .filter((p) => p.source === 'youtube' && p.author?.id)
+    .map((p) => p.author.id);
+  if (ytIds.length === 0) return posts;
+  const metaMap = await fetchChannelMetaMap(ytIds);
+  return posts.map((p) => {
+    if (p.source !== 'youtube') return p;
+    const meta = metaMap.get(p.author.id);
+    return {
+      ...p,
+      author: {
+        ...p.author,
+        displayName: p.author.displayName || meta?.title || 'Unavailable',
+        avatar: meta?.avatar || (p.author.avatar && !p.author.avatar.includes('dicebear.com') ? p.author.avatar : ''),
+      },
+    };
+  });
+}
+
 function mapYouTubeVideoDetailsToItem(item: any) {
+  const channelId = item.snippet?.channelId || '';
   return {
     id: item.id,
     source: 'youtube',
     youtubeId: item.id,
-    title: item.snippet?.title || 'YouTube Video',
+    title: item.snippet?.title || 'Unavailable',
     description: item.snippet?.description || '',
     publishedAt: item.snippet?.publishedAt,
     channel: {
-      id: item.snippet?.channelId,
-      title: item.snippet?.channelTitle || 'YouTube Channel',
-      avatar: `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(item.snippet?.channelTitle || item.id)}`,
-      isVerified: true,
+      id: channelId,
+      title: item.snippet?.channelTitle || 'Unavailable',
+      avatar: '',
+      subscriberCount: '',
+      url: channelId ? `https://www.youtube.com/channel/${channelId}` : undefined,
+      isVerified: Boolean(item.snippet?.channelTitle),
     },
     thumbnailUrl:
       item.snippet?.thumbnails?.maxres?.url ||
@@ -736,7 +913,7 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
         id: directId,
       });
 
-      const directItems = (statsData.items || []).map(mapYouTubeVideoDetailsToItem);
+      const directItems = await enrichVideoItemsWithChannelMeta((statsData.items || []).map(mapYouTubeVideoDetailsToItem));
       return res.json({
         items: directItems,
         nextPageToken: null,
@@ -794,17 +971,19 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
         const vId = item?.id?.videoId;
         const details = videoStatsMap[vId];
         if (details) return mapYouTubeVideoDetailsToItem(details);
+        const channelId = item?.snippet?.channelId || '';
         return {
           id: vId,
           source: 'youtube',
           youtubeId: vId,
-          title: item?.snippet?.title || 'Untitled Video',
+          title: item?.snippet?.title || 'Unavailable',
           description: item?.snippet?.description || '',
           publishedAt: item?.snippet?.publishedAt,
           channel: {
-            id: item?.snippet?.channelId,
-            title: item?.snippet?.channelTitle || 'YouTube Channel',
-            avatar: `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(item?.snippet?.channelTitle || 'channel')}`,
+            id: channelId,
+            title: item?.snippet?.channelTitle || 'Unavailable',
+            avatar: '',
+            url: channelId ? `https://www.youtube.com/channel/${channelId}` : undefined,
           },
           thumbnailUrl:
             item?.snippet?.thumbnails?.maxres?.url ||
@@ -833,6 +1012,8 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
       }
     }
 
+    items = await enrichVideoItemsWithChannelMeta(items);
+
     res.json({
       items,
       nextPageToken,
@@ -859,7 +1040,7 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
   }
 });
 
-// Progressive Non-Repeating YouTube & Shorts Feed (Real search pagination -> honest exhaustion + 14-day watch suppression)
+// Progressive Non-Repeating YouTube & Shorts Feed (Seeded fresh rotation + 7-day watch suppression)
 app.get('/api/youtube/feed', async (req: Request, res: Response) => {
   const type = (req.query.type as string) || 'long'; // 'long' or 'shorts'
   const category = (req.query.category as string) || 'all';
@@ -867,12 +1048,20 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(parseInt((req.query.pageSize as string) || '12', 10), 25);
   const suppressedIds = getSuppressedSetFromReq(req);
-  const fetchSize = suppressedIds.size > 0 ? Math.min(25, pageSize + 8) : pageSize;
+  const seed = getSeedFromReq(req);
+  const excludeIds = getExcludeSetFromReq(req);
+  const fetchSize = suppressedIds.size > 0 || excludeIds.size > 0 ? Math.min(25, pageSize + 10) : pageSize;
+
+  const queryList =
+    type === 'shorts'
+      ? SHORTS_DISCOVERY_QUERIES
+      : CATEGORY_DISCOVERY_QUERIES[category] || [`${category} 4K video`];
+  const initialQIdx = hashSeedNumber(`${seed}_${category}_${type}`) % queryList.length;
 
   try {
     let cursor: FeedCursor = decodeFeedCursor(rawToken) || {
       mode: 'api_search',
-      qIdx: 0,
+      qIdx: initialQIdx,
       pageToken: '',
       offset: 0,
     };
@@ -891,12 +1080,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     let quotaExceeded = false;
     let exhaustedReason: string | undefined;
 
-    const queryList =
-      type === 'shorts'
-        ? SHORTS_DISCOVERY_QUERIES
-        : CATEGORY_DISCOVERY_QUERIES[category] || [`${category} 4K video`];
-
-    // 1. Try YouTube Data API search.list with videoDuration=short for shorts (or multi-query rotation for long videos)
+    // 1. Try YouTube Data API search.list with videoDuration=short for shorts (or rotated multi-query discovery)
     if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
       try {
         const searchParams: Record<string, string> = {
@@ -942,12 +1126,11 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
         if (searchErr?.reason === 'quotaExceeded' || searchErr?.reason === 'dailyLimitExceeded' || searchErr?.status === 403) {
           quotaExceeded = true;
         }
-        // Fall through to videos.list chart=mostPopular cleanly
         cursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
       }
     }
 
-    // 2. Try YouTube chart=mostPopular pagination (videos.list — low quota cost!)
+    // 2. Try YouTube chart=mostPopular pagination
     if (items.length === 0 && cursor.mode === 'api_popular') {
       try {
         const popParams: Record<string, string> = {
@@ -985,12 +1168,26 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
       }
     }
 
-    // 3. Verified catalog videos slice (strictly deduplicated, filtered by 7-day suppression)
+    // 3. Verified catalog videos slice (rotated cleanly by seed + excludeIds + 7-day suppression)
     if (items.length === 0 && cursor.mode === 'catalog') {
       const poolKey = type === 'shorts' ? 'shorts' : category;
       const poolPageNum = Math.floor(cursor.offset / pageSize) + 1;
-      const relevant = getRelevantVideoIds(poolKey, poolPageNum, fetchSize);
-      const unseenIds = relevant.ids.filter((vid) => !suppressedIds.has(vid));
+      const basePool = seededShuffle(
+        Array.from(new Set(
+          poolKey === 'shorts'
+            ? REAL_YOUTUBE_CATALOG.shorts
+            : REAL_YOUTUBE_CATALOG[poolKey] || REAL_YOUTUBE_CATALOG.default
+        )).filter((vid) => !suppressedIds.has(vid)),
+        `${seed}_${poolKey}`
+      );
+      const deprioritized = [
+        ...basePool.filter((vid) => !excludeIds.has(vid)),
+        ...basePool.filter((vid) => excludeIds.has(vid)),
+      ];
+      const startIdx = (poolPageNum - 1) * fetchSize;
+      const unseenIds = deprioritized.slice(startIdx, startIdx + fetchSize);
+      const hasMoreCatalog = startIdx + unseenIds.length < deprioritized.length;
+
       if (unseenIds.length > 0) {
         try {
           const statsData = await fetchFromYouTubeApi('videos', {
@@ -1006,7 +1203,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
         }
       }
 
-      if (relevant.nextPageToken) {
+      if (hasMoreCatalog) {
         nextCursor = {
           mode: 'catalog',
           qIdx: 0,
@@ -1021,7 +1218,9 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
       }
     }
 
-    const finalItems = items.filter((it) => !suppressedIds.has(it.id) && !suppressedIds.has(it.youtubeId)).slice(0, pageSize);
+    const filteredItems = items.filter((it) => !suppressedIds.has(it.id) && !suppressedIds.has(it.youtubeId));
+    const rotatedItems = prioritizeFreshItems(filteredItems, excludeIds, `${seed}_${page}`).slice(0, pageSize);
+    const finalItems = await enrichVideoItemsWithChannelMeta(rotatedItems);
     const nextPageToken = nextCursor ? encodeFeedCursor(nextCursor) : null;
     res.json({
       items: finalItems,
@@ -1065,31 +1264,36 @@ app.get('/api/youtube/videos', async (req: Request, res: Response) => {
       id: ids,
     });
 
-    const items = (data.items || []).map((item: any) => ({
-      id: item.id,
-      source: 'youtube',
-      youtubeId: item.id,
-      title: item.snippet?.title,
-      description: item.snippet?.description,
-      publishedAt: item.snippet?.publishedAt,
-      tags: item.snippet?.tags || [],
-      channel: {
-        id: item.snippet?.channelId,
-        title: item.snippet?.channelTitle,
-        avatar: `https://api.dicebear.com/7.x/identicon/svg?seed=${item.snippet?.channelTitle || 'ch'}`,
-      },
-      thumbnailUrl:
-        item.snippet?.thumbnails?.maxres?.url ||
-        item.snippet?.thumbnails?.high?.url ||
-        item.snippet?.thumbnails?.medium?.url,
-      duration: formatIsoDuration(item.contentDetails?.duration),
-      stats: {
-        views: Number(item.statistics?.viewCount) || 0,
-        likes: Number(item.statistics?.likeCount) || 0,
-        comments: Number(item.statistics?.commentCount) || 0,
-      },
-    }));
+    const rawItems = (data.items || []).map((item: any) => {
+      const channelId = item.snippet?.channelId || '';
+      return {
+        id: item.id,
+        source: 'youtube',
+        youtubeId: item.id,
+        title: item.snippet?.title || 'Unavailable',
+        description: item.snippet?.description || '',
+        publishedAt: item.snippet?.publishedAt,
+        tags: item.snippet?.tags || [],
+        channel: {
+          id: channelId,
+          title: item.snippet?.channelTitle || 'Unavailable',
+          avatar: '',
+          url: channelId ? `https://www.youtube.com/channel/${channelId}` : undefined,
+        },
+        thumbnailUrl:
+          item.snippet?.thumbnails?.maxres?.url ||
+          item.snippet?.thumbnails?.high?.url ||
+          item.snippet?.thumbnails?.medium?.url,
+        duration: formatIsoDuration(item.contentDetails?.duration),
+        stats: {
+          views: Number(item.statistics?.viewCount) || 0,
+          likes: Number(item.statistics?.likeCount) || 0,
+          comments: Number(item.statistics?.commentCount) || 0,
+        },
+      };
+    });
 
+    const items = await enrichVideoItemsWithChannelMeta(rawItems);
     res.json({ items });
   } catch (err: any) {
     if (err.message === 'NO_API_KEY') {
@@ -1229,34 +1433,39 @@ app.get('/api/youtube/live', async (req: Request, res: Response) => {
       return broadcastState === 'live' && !hasEnded;
     });
 
-    const items = activeStreams.map((item: any) => ({
-      id: `live_${item.id}`,
-      source: 'youtube',
-      youtubeId: item.id,
-      isLive: true,
-      liveViewers: Number(item.liveStreamingDetails?.concurrentViewers || 0),
-      thumbnailUrl:
-        item.snippet?.thumbnails?.maxres?.url ||
-        item.snippet?.thumbnails?.high?.url ||
-        item.snippet?.thumbnails?.medium?.url ||
-        `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-      title: item.snippet?.title || 'YouTube Live Stream',
-      description: item.snippet?.description || '',
-      duration: 'LIVE',
-      channel: {
-        id: item.snippet?.channelId || 'yt_live',
-        title: item.snippet?.channelTitle || 'Live Channel',
-        avatar: `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(item.snippet?.channelTitle || item.id)}`,
-        isVerified: true,
-      },
-      stats: {
-        views: Number(item.liveStreamingDetails?.concurrentViewers || item.statistics?.viewCount || 0),
-        likes: Number(item.statistics?.likeCount || 0),
-        comments: Number(item.statistics?.commentCount || 0),
-      },
-      publishedAt: item.liveStreamingDetails?.actualStartTime || item.snippet?.publishedAt || 'Live Now',
-    }));
+    const rawItems = activeStreams.map((item: any) => {
+      const channelId = item.snippet?.channelId || '';
+      return {
+        id: `live_${item.id}`,
+        source: 'youtube',
+        youtubeId: item.id,
+        isLive: true,
+        liveViewers: Number(item.liveStreamingDetails?.concurrentViewers || 0),
+        thumbnailUrl:
+          item.snippet?.thumbnails?.maxres?.url ||
+          item.snippet?.thumbnails?.high?.url ||
+          item.snippet?.thumbnails?.medium?.url ||
+          `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+        title: item.snippet?.title || 'Unavailable',
+        description: item.snippet?.description || '',
+        duration: 'LIVE',
+        channel: {
+          id: channelId,
+          title: item.snippet?.channelTitle || 'Unavailable',
+          avatar: '',
+          url: channelId ? `https://www.youtube.com/channel/${channelId}` : undefined,
+          isVerified: Boolean(item.snippet?.channelTitle),
+        },
+        stats: {
+          views: Number(item.liveStreamingDetails?.concurrentViewers || item.statistics?.viewCount || 0),
+          likes: Number(item.statistics?.likeCount || 0),
+          comments: Number(item.statistics?.commentCount || 0),
+        },
+        publishedAt: item.liveStreamingDetails?.actualStartTime || item.snippet?.publishedAt || 'Live Now',
+      };
+    });
 
+    const items = await enrichVideoItemsWithChannelMeta(rawItems);
     res.json({
       items,
       nextPageToken: searchData.nextPageToken || null,
@@ -3029,16 +3238,27 @@ app.get('/api/users/:id', (req: Request, res: Response) => {
 async function getUnifiedFeedYouTubePosts(
   page: number,
   pageSize = 8,
-  suppressedIds: Set<string> = new Set()
+  suppressedIds: Set<string> = new Set(),
+  seed = '',
+  excludeIds: Set<string> = new Set()
 ): Promise<Post[]> {
   const uniquePool = Array.from(new Set(REAL_YOUTUBE_CATALOG.default)).filter(
     (vid) => !suppressedIds.has(vid)
   );
+  const rotatedPool = seed ? seededShuffle(uniquePool, `${seed}_unified`) : uniquePool;
+  const prioritizedPool =
+    excludeIds.size > 0
+      ? [
+          ...rotatedPool.filter((vid) => !excludeIds.has(vid)),
+          ...rotatedPool.filter((vid) => excludeIds.has(vid)),
+        ]
+      : rotatedPool;
+
   const start = (page - 1) * pageSize;
-  if (start >= uniquePool.length) {
+  if (start >= prioritizedPool.length) {
     return [];
   }
-  const ids = uniquePool.slice(start, start + pageSize);
+  const ids = prioritizedPool.slice(start, start + pageSize);
 
   try {
     const statsData = await fetchFromYouTubeApi('videos', {
@@ -3046,18 +3266,18 @@ async function getUnifiedFeedYouTubePosts(
       id: ids.join(','),
     });
 
-    return (statsData.items || []).map((item: any) => ({
+    const mappedPosts: Post[] = (statsData.items || []).map((item: any) => ({
       id: `yt_feed_${item.id}`,
       source: 'youtube' as const,
       externalId: item.id,
       author: {
         id: item.snippet?.channelId || `ch_${item.id}`,
-        username: (item.snippet?.channelTitle || 'youtube_creator').toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 24),
-        displayName: item.snippet?.channelTitle || 'YouTube Creator',
-        avatar: `https://api.dicebear.com/7.x/identicon/svg?seed=${item.snippet?.channelTitle || item.id}`,
-        isVerified: true,
+        username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 24),
+        displayName: item.snippet?.channelTitle || 'Unavailable',
+        avatar: '',
+        isVerified: Boolean(item.snippet?.channelTitle),
       },
-      content: `${item.snippet?.title || 'YouTube Video'}\n\n${(item.snippet?.description || '').slice(0, 240)}...`,
+      content: `${item.snippet?.title || 'Unavailable'}\n\n${(item.snippet?.description || '').slice(0, 240)}`,
       mediaType: 'video' as const,
       mediaUrl: '',
       thumbnailUrl:
@@ -3065,27 +3285,29 @@ async function getUnifiedFeedYouTubePosts(
         item.snippet?.thumbnails?.high?.url ||
         item.snippet?.thumbnails?.medium?.url,
       videoDuration: formatIsoDuration(item.contentDetails?.duration),
-      hashtags: ['YouTube', 'MOTHERLAND', 'GlobalMedia', 'VideoTheater'],
+      hashtags: ['YouTube', 'MOTHERLAND', 'VideoTheater'],
       audience: 'public' as const,
       createdAt: item.snippet?.publishedAt || new Date().toISOString(),
       stats: {
-        likes: Number(item.statistics?.likeCount) || 1200,
-        comments: Number(item.statistics?.commentCount) || 45,
-        shares: Math.floor((Number(item.statistics?.likeCount) || 1200) / 12),
-        views: Number(item.statistics?.viewCount) || 25000,
+        likes: Number(item.statistics?.likeCount) || 0,
+        comments: Number(item.statistics?.commentCount) || 0,
+        shares: 0,
+        views: Number(item.statistics?.viewCount) || 0,
       },
       userInteractions: {
         isLiked: false,
         isSaved: false,
       },
     }));
+
+    return await enrichPostsWithChannelMeta(mappedPosts);
   } catch (err) {
     console.warn('Failed to fetch YouTube posts for feed:', err);
     return [];
   }
 }
 
-// 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, For You Ranking, & 14-Day Suppression)
+// 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, Fresh Seed Rotation, & 7-Day Suppression)
 app.get('/api/posts', async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
   const source = req.query.source as string;
@@ -3093,6 +3315,8 @@ app.get('/api/posts', async (req: Request, res: Response) => {
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(30, Math.max(1, parseInt((req.query.pageSize as string) || '10', 10)));
   const suppressedIds = getSuppressedSetFromReq(req);
+  const seed = getSeedFromReq(req);
+  const excludeIds = getExcludeSetFromReq(req);
 
   const rawPosts = db.getAllPosts();
 
@@ -3113,7 +3337,10 @@ app.get('/api/posts', async (req: Request, res: Response) => {
       .filter((p) => !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId)))));
     const start = (page - 1) * pageSize;
     const mlSlice = scoredAll.slice(start, start + pageSize).map((p) => db.hydratePostForUser(p, currentUserId));
-    const ytExtra = mlSlice.length < pageSize ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds) : [];
+    const ytExtra =
+      mlSlice.length < pageSize
+        ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds, seed, excludeIds)
+        : [];
     const combined = [...mlSlice, ...ytExtra];
     return res.json({
       posts: combined,
@@ -3137,11 +3364,16 @@ app.get('/api/posts', async (req: Request, res: Response) => {
     });
   }
 
-  // Unified Feed: Visible Motherland posts + Non-Repeating Unwatched YouTube Video Posts
+  // Unified Feed: Visible Motherland posts + Fresh Rotated Unwatched YouTube Video Posts
   try {
-    const ytVideosResult = await getUnifiedFeedYouTubePosts(page, pageSize, suppressedIds);
+    const ytVideosResult = await getUnifiedFeedYouTubePosts(page, pageSize, suppressedIds, seed, excludeIds);
     const visibleMotherland = rawPosts
-      .filter((p) => p.source === 'motherland' && db.canViewerSeePost(currentUserId, p))
+      .filter(
+        (p) =>
+          p.source === 'motherland' &&
+          db.canViewerSeePost(currentUserId, p) &&
+          !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId))))
+      )
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const mlStart = (page - 1) * pageSize;
@@ -3153,8 +3385,8 @@ app.get('/api/posts', async (req: Request, res: Response) => {
     let mIdx = 0;
     let yIdx = 0;
     while (mIdx < hydratedMotherland.length || yIdx < ytVideosResult.length) {
-      if (mIdx < hydratedMotherland.length) unifiedPosts.push(hydratedMotherland[mIdx++]);
       if (yIdx < ytVideosResult.length) unifiedPosts.push(ytVideosResult[yIdx++]);
+      if (mIdx < hydratedMotherland.length) unifiedPosts.push(hydratedMotherland[mIdx++]);
       if (yIdx < ytVideosResult.length) unifiedPosts.push(ytVideosResult[yIdx++]);
     }
 
@@ -3566,54 +3798,71 @@ app.delete('/api/stories/:id', (req: Request, res: Response) => {
   res.json({ success: true, message: 'Story deleted' });
 });
 
-// 4. Videos (Shorts, 16:9 Long Videos, 14-Day Watch Tracking, Saved Videos & Drafts)
+// 4. Videos (Shorts, 16:9 Long Videos, 7-Day Watch Tracking, Saved Videos & Drafts)
 app.get('/api/videos/shorts', async (req: Request, res: Response) => {
   const allLocal = db
     .getShortVideos()
     .filter((s) => s.id !== 'short_01' && s.id !== 'short_02');
   const suppressed = getSuppressedSetFromReq(req);
-  const filteredLocal = allLocal.filter(
-    (s) => !suppressed.has(s.id) && !(s.youtubeId && suppressed.has(s.youtubeId))
+  const seed = getSeedFromReq(req);
+  const excludeIds = getExcludeSetFromReq(req);
+  const filteredLocal = prioritizeFreshItems(
+    allLocal.filter((s) => !suppressed.has(s.id) && !(s.youtubeId && suppressed.has(s.youtubeId))),
+    excludeIds,
+    `${seed}_local_shorts`
   );
 
-  // Immediately include fast cached YouTube Shorts so the Shorts strip/player starts instantly without slow seed MP4s
+  // Immediately include fast YouTube Shorts with authentic channel avatars & fresh rotation
   let ytShorts: ShortVideo[] = [];
   try {
-    const relevant = getRelevantVideoIds('shorts', 1, 12);
-    const unseenIds = relevant.ids.filter((vid) => !suppressed.has(vid));
-    if (unseenIds.length > 0) {
+    const unseenPool = seededShuffle(
+      Array.from(new Set(REAL_YOUTUBE_CATALOG.shorts)).filter((vid) => !suppressed.has(vid)),
+      `${seed}_yt_shorts`
+    );
+    const orderedIds = [
+      ...unseenPool.filter((vid) => !excludeIds.has(vid)),
+      ...unseenPool.filter((vid) => excludeIds.has(vid)),
+    ];
+    if (orderedIds.length > 0) {
       const statsData = await fetchFromYouTubeApi('videos', {
         part: 'snippet,contentDetails,statistics',
-        id: unseenIds.slice(0, 10).join(','),
+        id: orderedIds.slice(0, 12).join(','),
       });
-      ytShorts = (statsData.items || []).map((item: any) => ({
-        id: item.id,
-        source: 'youtube' as const,
-        youtubeId: item.id,
-        videoUrl: '',
-        thumbnailUrl:
-          item.snippet?.thumbnails?.maxres?.url ||
-          item.snippet?.thumbnails?.high?.url ||
-          item.snippet?.thumbnails?.medium?.url ||
-          `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-        title: item.snippet?.title || 'YouTube Short',
-        caption: item.snippet?.title || '',
-        hashtags: ['Shorts'],
-        creator: {
-          id: item.snippet?.channelId || 'yt',
-          name: item.snippet?.channelTitle || 'YouTube Creator',
-          username: (item.snippet?.channelTitle || 'creator').toLowerCase().replace(/\s+/g, ''),
-          avatar: `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(item.snippet?.channelTitle || item.id)}`,
-          isVerified: true,
-        },
-        stats: {
-          views: Number(item.statistics?.viewCount || 0),
-          likes: Number(item.statistics?.likeCount || 0),
-          comments: Number(item.statistics?.commentCount || 0),
-          shares: 0,
-        },
-        createdAt: item.snippet?.publishedAt || new Date().toISOString(),
-      }));
+      const channelMetaMap = await fetchChannelMetaMap(
+        (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
+      );
+      ytShorts = (statsData.items || []).map((item: any) => {
+        const channelId = item.snippet?.channelId || '';
+        const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
+        return {
+          id: item.id,
+          source: 'youtube' as const,
+          youtubeId: item.id,
+          videoUrl: '',
+          thumbnailUrl:
+            item.snippet?.thumbnails?.maxres?.url ||
+            item.snippet?.thumbnails?.high?.url ||
+            item.snippet?.thumbnails?.medium?.url ||
+            `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+          title: item.snippet?.title || 'Unavailable',
+          caption: item.snippet?.title || '',
+          hashtags: ['Shorts'],
+          creator: {
+            id: channelId,
+            name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
+            username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
+            avatar: chMeta?.avatar || '',
+            isVerified: Boolean(item.snippet?.channelTitle),
+          },
+          stats: {
+            views: Number(item.statistics?.viewCount || 0),
+            likes: Number(item.statistics?.likeCount || 0),
+            comments: Number(item.statistics?.commentCount || 0),
+            shares: 0,
+          },
+          createdAt: item.snippet?.publishedAt || new Date().toISOString(),
+        };
+      });
     }
   } catch {
     // Graceful fallback if API key quota is limited
@@ -3636,7 +3885,7 @@ app.post('/api/videos/shorts', (req: Request, res: Response) => {
     id: `short_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     source: 'motherland',
     videoUrl,
-    thumbnailUrl: thumbnailUrl || 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=600&auto=format&fit=crop&q=80',
+    thumbnailUrl: thumbnailUrl || '',
     title: title || 'Untitled Short',
     caption: caption || '',
     hashtags: Array.isArray(hashtags) ? hashtags : [],
@@ -3664,11 +3913,14 @@ app.post('/api/videos/shorts', (req: Request, res: Response) => {
 app.get('/api/videos/long', (req: Request, res: Response) => {
   const all = db.getLongVideos();
   const suppressed = getSuppressedSetFromReq(req);
-  if (req.query.includeWatched === '1' || suppressed.size === 0) {
-    return res.json({ videos: all });
-  }
+  const seed = getSeedFromReq(req);
+  const excludeIds = getExcludeSetFromReq(req);
+  const visible =
+    req.query.includeWatched === '1' || suppressed.size === 0
+      ? all
+      : all.filter((v) => !suppressed.has(v.id) && !(v.youtubeId && suppressed.has(v.youtubeId)));
   res.json({
-    videos: all.filter((v) => !suppressed.has(v.id) && !(v.youtubeId && suppressed.has(v.youtubeId))),
+    videos: prioritizeFreshItems(visible, excludeIds, `${seed}_long`),
   });
 });
 

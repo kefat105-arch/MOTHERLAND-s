@@ -678,6 +678,12 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
       const cur = callRef.current;
 
       if (signalType === 'offer') {
+        if (payload.fromUserId && currentUser?.id && String(payload.fromUserId) === currentUser.id) {
+          return;
+        }
+        if (cur && cur.callId === payload.callId) {
+          return;
+        }
         if (cur && cur.callId !== payload.callId) {
           // Already in another call -> respond busy
           sendWsEvent('call:signal', {
@@ -775,19 +781,20 @@ export function useWebRTC({ currentUser, sendWsEvent, onCallEnded }: UseWebRTCPa
         );
       }
     },
-    [finishCallUI, sendWsEvent]
+    [currentUser?.id, finishCallUI, sendWsEvent]
   );
 
   // Automatic ringtone & call chime lifecycle synced cleanly to call.phase
+  // Strictly ring ONLY receiver ('incoming'); caller device stays silent with visual "Calling..." UI
   useEffect(() => {
     const currentPhase: CallPhase = call?.phase || 'idle';
     const prevPhase = prevPhaseRef.current;
     prevPhaseRef.current = currentPhase;
 
-    if (currentPhase === 'outgoing') {
-      startCallRingtoneLoop('outgoing');
-    } else if (currentPhase === 'incoming') {
+    if (currentPhase === 'incoming') {
       startCallRingtoneLoop('incoming');
+    } else if (currentPhase === 'outgoing') {
+      stopCallRingtones();
     } else {
       stopCallRingtones();
       if (currentPhase === 'connected' && prevPhase !== 'connected' && prevPhase !== 'reconnecting') {

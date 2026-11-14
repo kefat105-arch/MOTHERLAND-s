@@ -239,27 +239,6 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {call.phase === 'outgoing' && (
-            <button
-              type="button"
-              onClick={() => {
-                if (audioBlocked) {
-                  void unlockSoundEngine();
-                } else {
-                  toggleCallRingTemporarilyMuted();
-                }
-              }}
-              title={ringMuted || audioBlocked ? 'Enable ringback tone' : 'Mute ringback tone'}
-              aria-label={ringMuted || audioBlocked ? 'Enable ringback tone' : 'Mute ringback tone'}
-              className="w-11 h-11 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition cursor-pointer"
-            >
-              {ringMuted || audioBlocked ? (
-                <VolumeX className="w-4 h-4 text-slate-300" />
-              ) : (
-                <Volume2 className="w-4 h-4 text-[#E6C987]" />
-              )}
-            </button>
-          )}
           {call.callType === 'video' && hasRemoteVideo && (
             <button
               type="button"
