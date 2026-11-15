@@ -417,6 +417,16 @@ function formatIsoDuration(isoDuration: string): string {
   return `${minutes}:${paddedSeconds}`;
 }
 
+function parseIsoDurationToSeconds(isoDuration: string): number {
+  if (!isoDuration) return 0;
+  const match = isoDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const hours = match[1] ? parseInt(match[1], 10) : 0;
+  const minutes = match[2] ? parseInt(match[2], 10) : 0;
+  const seconds = match[3] ? parseInt(match[3], 10) : 0;
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
 // ==========================================
 // BACKEND API ROUTES
 // ==========================================
@@ -848,6 +858,7 @@ function mapYouTubeVideoDetailsToItem(item: any) {
       item.snippet?.thumbnails?.medium?.url ||
       `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
     duration: formatIsoDuration(item.contentDetails?.duration),
+    durationSeconds: parseIsoDurationToSeconds(item.contentDetails?.duration),
     stats: {
       views: Number(item.statistics?.viewCount) || 0,
       likes: Number(item.statistics?.likeCount) || 0,
@@ -3826,43 +3837,45 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
     if (orderedIds.length > 0) {
       const statsData = await fetchFromYouTubeApi('videos', {
         part: 'snippet,contentDetails,statistics',
-        id: orderedIds.slice(0, 12).join(','),
+        id: orderedIds.slice(0, 15).join(','),
       });
       const channelMetaMap = await fetchChannelMetaMap(
         (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
       );
-      ytShorts = (statsData.items || []).map((item: any) => {
-        const channelId = item.snippet?.channelId || '';
-        const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
-        return {
-          id: item.id,
-          source: 'youtube' as const,
-          youtubeId: item.id,
-          videoUrl: '',
-          thumbnailUrl:
-            item.snippet?.thumbnails?.maxres?.url ||
-            item.snippet?.thumbnails?.high?.url ||
-            item.snippet?.thumbnails?.medium?.url ||
-            `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-          title: item.snippet?.title || 'Unavailable',
-          caption: item.snippet?.title || '',
-          hashtags: ['Shorts'],
-          creator: {
-            id: channelId,
-            name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
-            username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
-            avatar: chMeta?.avatar || '',
-            isVerified: Boolean(item.snippet?.channelTitle),
-          },
-          stats: {
-            views: Number(item.statistics?.viewCount || 0),
-            likes: Number(item.statistics?.likeCount || 0),
-            comments: Number(item.statistics?.commentCount || 0),
-            shares: 0,
-          },
-          createdAt: item.snippet?.publishedAt || new Date().toISOString(),
-        };
-      });
+      ytShorts = (statsData.items || [])
+        .filter((item: any) => parseIsoDurationToSeconds(item.contentDetails?.duration) <= 180)
+        .map((item: any) => {
+          const channelId = item.snippet?.channelId || '';
+          const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
+          return {
+            id: item.id,
+            source: 'youtube' as const,
+            youtubeId: item.id,
+            videoUrl: '',
+            thumbnailUrl:
+              item.snippet?.thumbnails?.maxres?.url ||
+              item.snippet?.thumbnails?.high?.url ||
+              item.snippet?.thumbnails?.medium?.url ||
+              `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+            title: item.snippet?.title || 'Unavailable',
+            caption: item.snippet?.title || '',
+            hashtags: ['Shorts'],
+            creator: {
+              id: channelId,
+              name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
+              username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
+              avatar: chMeta?.avatar || '',
+              isVerified: Boolean(item.snippet?.channelTitle),
+            },
+            stats: {
+              views: Number(item.statistics?.viewCount || 0),
+              likes: Number(item.statistics?.likeCount || 0),
+              comments: Number(item.statistics?.commentCount || 0),
+              shares: 0,
+            },
+            createdAt: item.snippet?.publishedAt || new Date().toISOString(),
+          };
+        });
     }
   } catch {
     // Graceful fallback if API key quota is limited
@@ -3876,9 +3889,12 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
 app.post('/api/videos/shorts', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const { videoUrl, thumbnailUrl, title, caption, hashtags } = req.body;
+  const { videoUrl, thumbnailUrl, title, caption, hashtags, durationSeconds } = req.body;
   if (!videoUrl) {
     return res.status(400).json({ error: 'Short video requires a valid video URL' });
+  }
+  if (durationSeconds && Number(durationSeconds) > 180) {
+    return res.status(400).json({ error: 'Short video must not exceed 3 minutes (180 seconds). Please upload as a regular video.' });
   }
 
   const newShort: ShortVideo = {

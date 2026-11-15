@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { X, Shield, Users, UserPlus, UserCheck, MessageSquare, Loader2, ExternalLink } from 'lucide-react';
-import { api } from '../../api';
-import type { Post, UserProfile } from '../../types';
-import { useBackHandler } from '../../hooks/useBackNavigation';
+import { api } from '../api';
+import type { Post, UserProfile } from '../types';
+import { useBackHandler } from '../hooks/useBackNavigation';
 
 export interface CreatorProfileTarget {
   userId?: string;
