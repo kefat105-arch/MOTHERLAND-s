@@ -537,10 +537,10 @@ export const PostCard: React.FC<PostCardProps> = ({
           </div>
         </div>
 
-        {/* Action Buttons */}
-        <div className="px-2 py-1 border-t border-[var(--border-subtle)] flex items-center justify-between relative">
+        {/* Action Buttons — Consistent Flame-Inspired Action Boxes */}
+        <div className="px-1.5 sm:px-2.5 py-1.5 border-t border-[var(--border-subtle)] grid grid-cols-4 gap-1 sm:gap-1.5 relative">
           {/* Fire Like & 8 Fire Reactions */}
-          <div className="relative flex items-center">
+          <div className="relative flex items-center min-w-0">
             <button
               type="button"
               onClick={() => onReact(post.id, isLiked ? currentReaction : 'like')}
@@ -549,22 +549,20 @@ export const PostCard: React.FC<PostCardProps> = ({
                 e.preventDefault();
                 setShowReactionsPicker((s) => !s);
               }}
-              className={`min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-colors ${
-                isLiked
-                  ? 'text-orange-400 font-bold bg-orange-500/10 border border-orange-500/25'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-alt)] hover:text-[var(--text-primary)]'
+              className={`min-h-[38px] w-full flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 rounded-xl text-[11px] sm:text-xs min-w-0 ${
+                isLiked ? 'ml-flame-box-active font-bold' : 'ml-flame-box font-semibold'
               }`}
             >
               {isLiked ? (
                 <img
                   src={activeReactionOption.assetUrl}
                   alt={activeReactionOption.label}
-                  className="w-4.5 h-4.5 object-contain drop-shadow-[0_0_6px_rgba(255,140,0,0.65)]"
+                  className="w-4 h-4 object-contain shrink-0 drop-shadow-[0_0_6px_rgba(255,140,0,0.65)]"
                 />
               ) : (
-                <FireLikeIcon size={18} active={false} />
+                <FireLikeIcon size={16} active={false} className="shrink-0" />
               )}
-              <span>{isLiked ? activeReactionOption.label : 'Like'}</span>
+              <span className="truncate">{isLiked ? activeReactionOption.label : 'Like'}</span>
             </button>
 
             <button
@@ -572,7 +570,7 @@ export const PostCard: React.FC<PostCardProps> = ({
               onClick={() => setShowReactionsPicker((s) => !s)}
               aria-label="Choose fire reaction"
               title="Choose Fire Reaction"
-              className="min-h-[40px] px-1.5 rounded-xl text-[var(--text-muted)] hover:text-orange-400 hover:bg-[var(--bg-surface-alt)] text-[10px] font-bold"
+              className="min-h-[38px] px-1 rounded-xl text-[var(--text-muted)] hover:text-orange-400 text-[10px] font-bold shrink-0"
             >
               ▾
             </button>
@@ -580,7 +578,7 @@ export const PostCard: React.FC<PostCardProps> = ({
             {showReactionsPicker && (
               <div
                 onMouseLeave={() => setShowReactionsPicker(false)}
-                className="absolute bottom-11 left-0 z-30 flex items-center gap-1 p-1.5 bg-[var(--bg-elevated)] border border-orange-500/30 rounded-2xl shadow-xl"
+                className="absolute bottom-11 left-0 z-30 flex items-center gap-1 p-1.5 bg-[var(--bg-elevated)] border border-orange-500/35 rounded-2xl shadow-xl max-w-[90vw] overflow-x-auto no-scrollbar"
               >
                 {FIRE_REACTIONS.map((r) => (
                   <button
@@ -591,7 +589,7 @@ export const PostCard: React.FC<PostCardProps> = ({
                       onReact(post.id, r.type);
                       setShowReactionsPicker(false);
                     }}
-                    className={`p-1 rounded-xl hover:scale-125 transition-transform flex flex-col items-center ${
+                    className={`p-1 rounded-xl hover:scale-125 transition-transform flex flex-col items-center shrink-0 ${
                       isLiked && currentReaction === r.type ? 'bg-orange-500/20 ring-1 ring-orange-400/50' : ''
                     }`}
                   >
@@ -602,29 +600,31 @@ export const PostCard: React.FC<PostCardProps> = ({
             )}
           </div>
 
-          {/* Comment */}
+          {/* Comment / Talk */}
           <button
             type="button"
             onClick={() => onOpenComments(post.id, post.source === 'youtube' ? post.externalId : undefined)}
-            className={`${FIRE_ACTION_BOX_CLASS} min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]`}
+            className="ml-flame-box min-h-[38px] w-full flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold min-w-0"
           >
-            <TalkIcon size={17} />
-            <span>Comment</span>
+            <TalkIcon size={16} className="shrink-0" />
+            <span className="truncate">Comment</span>
           </button>
 
-          {/* Share */}
-          <div className="relative">
+          {/* Share / Boost */}
+          <div className="relative min-w-0">
             <button
               type="button"
               onClick={() => setShareMenuOpen((s) => !s)}
-              className={`${FIRE_ACTION_BOX_CLASS} min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]`}
+              className={`min-h-[38px] w-full flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold min-w-0 ${
+                copiedLink || sharedFeedback ? 'ml-flame-box-active' : 'ml-flame-box'
+              }`}
             >
               {copiedLink || sharedFeedback ? (
-                <Check className="w-4 h-4 text-[var(--accent-primary)]" />
+                <Check className="w-4 h-4 text-orange-400 shrink-0" />
               ) : (
-                <BoostIcon size={17} />
+                <BoostIcon size={16} className="shrink-0" />
               )}
-              <span>{sharedFeedback ? 'Shared' : copiedLink ? 'Copied' : 'Share'}</span>
+              <span className="truncate">{sharedFeedback ? 'Shared' : copiedLink ? 'Copied' : 'Share'}</span>
             </button>
 
             {shareMenuOpen && (
@@ -651,18 +651,16 @@ export const PostCard: React.FC<PostCardProps> = ({
             )}
           </div>
 
-          {/* Save */}
+          {/* Save / Vault */}
           <button
             type="button"
             onClick={() => onToggleSave(post.id)}
-            className={`${FIRE_ACTION_BOX_CLASS} min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 text-xs ${
-              isSaved
-                ? 'text-[var(--accent-gold)] font-semibold border-amber-500/40 bg-amber-500/10'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            className={`min-h-[38px] w-full flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 rounded-xl text-[11px] sm:text-xs font-semibold min-w-0 ${
+              isSaved ? 'ml-flame-box-active font-bold' : 'ml-flame-box'
             }`}
           >
-            <VaultIcon size={17} active={Boolean(isSaved)} />
-            <span>{isSaved ? 'Saved' : 'Save'}</span>
+            <VaultIcon size={16} active={Boolean(isSaved)} className="shrink-0" />
+            <span className="truncate">{isSaved ? 'Saved' : 'Save'}</span>
           </button>
         </div>
       </article>

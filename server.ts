@@ -304,6 +304,7 @@ app.use((req: Request, _res: Response, next) => {
   }
 
   if (token) {
+    (req as any).hadAuthToken = true;
     const session = db.findSessionByToken(token);
     if (session) {
       const user = db.findUserById(session.userId);
@@ -1411,6 +1412,346 @@ app.get('/api/youtube/comments', async (req: Request, res: Response) => {
       commentsDisabled: false,
       items: [],
     });
+  }
+});
+
+// ==========================================
+// YOUTUBE REAL CREATOR CHANNEL PROFILE & SCOPE-VERIFIED OAUTH ACTIONS
+// ==========================================
+app.get('/api/youtube/channel/:channelId', async (req: Request, res: Response) => {
+  const channelId = String(req.params.channelId || '').trim();
+  const pageToken = String(req.query.pageToken || '').trim();
+  if (!channelId) {
+    return res.status(400).json({ error: 'Channel ID is required' });
+  }
+
+  try {
+    const chData = await fetchFromYouTubeApi('channels', {
+      part: 'snippet,statistics,contentDetails,brandingSettings',
+      id: channelId,
+    });
+    const chItem = chData?.items?.[0];
+    if (!chItem) {
+      return res.status(404).json({ error: 'YOUTUBE_CHANNEL_NOT_FOUND', message: 'YouTube channel not found.' });
+    }
+
+    const uploadsPlaylistId = chItem.contentDetails?.relatedPlaylists?.uploads || '';
+    const avatar =
+      chItem.snippet?.thumbnails?.high?.url ||
+      chItem.snippet?.thumbnails?.medium?.url ||
+      chItem.snippet?.thumbnails?.default?.url ||
+      '';
+    const bannerUrl = chItem.brandingSettings?.image?.bannerExternalUrl || '';
+    const subLabel = chItem.statistics?.hiddenSubscriberCount
+      ? 'Hidden'
+      : formatSubscriberLabel(chItem.statistics?.subscriberCount) || '0 subscribers';
+
+    const channelProfile = {
+      id: chItem.id,
+      source: 'youtube' as const,
+      title: chItem.snippet?.title || 'YouTube Channel',
+      description: chItem.snippet?.description || '',
+      customUrl: chItem.snippet?.customUrl || '',
+      avatar,
+      bannerUrl,
+      subscriberCount: subLabel,
+      rawSubscriberCount: chItem.statistics?.hiddenSubscriberCount ? null : Number(chItem.statistics?.subscriberCount || 0),
+      videoCount: Number(chItem.statistics?.videoCount || 0),
+      viewCount: Number(chItem.statistics?.viewCount || 0),
+      country: chItem.snippet?.country || '',
+      publishedAt: chItem.snippet?.publishedAt || '',
+      url: `https://www.youtube.com/channel/${chItem.id}`,
+    };
+
+    let videos: any[] = [];
+    let smallVideos: any[] = [];
+    let nextPageToken: string | null = null;
+
+    if (uploadsPlaylistId) {
+      const plParams: Record<string, string> = {
+        part: 'snippet,contentDetails',
+        playlistId: uploadsPlaylistId,
+        maxResults: '25',
+      };
+      if (pageToken) plParams.pageToken = pageToken;
+      const plData = await fetchFromYouTubeApi('playlistItems', plParams);
+      nextPageToken = plData.nextPageToken || null;
+
+      const videoIds = (plData.items || [])
+        .map((it: any) => it?.contentDetails?.videoId || it?.snippet?.resourceId?.videoId)
+        .filter(Boolean);
+
+      if (videoIds.length > 0) {
+        const vidData = await fetchFromYouTubeApi('videos', {
+          part: 'snippet,contentDetails,statistics',
+          id: videoIds.join(','),
+        });
+        const mapped = (vidData.items || []).map((v: any) => {
+          const item = mapYouTubeVideoDetailsToItem(v);
+          return {
+            ...item,
+            channel: {
+              ...item.channel,
+              avatar: avatar || item.channel.avatar,
+              subscriberCount: subLabel,
+            },
+            isShort: item.durationSeconds > 0 && item.durationSeconds <= 180,
+          };
+        });
+        videos = mapped;
+        smallVideos = mapped.filter((m: any) => m.isShort);
+      }
+    }
+
+    res.json({
+      channel: channelProfile,
+      videos,
+      smallVideos,
+      nextPageToken,
+    });
+  } catch (err: any) {
+    if (err.message === 'NO_API_KEY') {
+      return res.status(401).json({ error: 'NO_API_KEY', message: 'YouTube API key is not configured.' });
+    }
+    res.status(err.status || 500).json({
+      error: 'YOUTUBE_CHANNEL_FETCH_FAILED',
+      message: err.message || 'Unable to load YouTube channel details.',
+    });
+  }
+});
+
+app.get('/api/youtube/channel/:channelId/subscription-status', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const channelId = String(req.params.channelId || '').trim();
+  if (!channelId) return res.status(400).json({ error: 'Channel ID is required' });
+
+  const resolved = await resolveYouTubeAccessToken(req, user?.id);
+  if (!resolved.accessToken) {
+    return res.json({
+      connected: false,
+      hasScope: false,
+      subscribed: false,
+      subscriptionId: null,
+      requiresScope: 'https://www.googleapis.com/auth/youtube',
+    });
+  }
+
+  try {
+    const subRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/subscriptions?part=id&mine=true&forChannelId=${encodeURIComponent(channelId)}`,
+      { headers: { Authorization: `Bearer ${resolved.accessToken}`, Accept: 'application/json' } }
+    );
+    const subData: any = await subRes.json().catch(() => ({}));
+    if (!subRes.ok) {
+      return res.json({
+        connected: true,
+        hasScope: false,
+        subscribed: false,
+        subscriptionId: null,
+        requiresScope: 'https://www.googleapis.com/auth/youtube',
+        message: subData?.error?.message || 'YouTube permission missing.',
+      });
+    }
+    const existing = subData?.items?.[0];
+    return res.json({
+      connected: true,
+      hasScope: true,
+      subscribed: Boolean(existing?.id),
+      subscriptionId: existing?.id || null,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to check YouTube subscription status.' });
+  }
+});
+
+app.post('/api/youtube/channel/:channelId/subscribe', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const channelId = String(req.params.channelId || '').trim();
+  const action = req.body?.action === 'unsubscribe' ? 'unsubscribe' : 'subscribe';
+  if (!channelId) return res.status(400).json({ error: 'Channel ID is required' });
+
+  const resolved = await resolveYouTubeAccessToken(req, user?.id);
+  if (!resolved.accessToken) {
+    return res.status(403).json({
+      error: 'YOUTUBE_OAUTH_SCOPE_REQUIRED',
+      requiresScope: 'https://www.googleapis.com/auth/youtube',
+      message: 'Connect your Google account with YouTube permission to subscribe to channels on YouTube.',
+    });
+  }
+
+  try {
+    // Check existing subscription
+    const checkRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/subscriptions?part=id&mine=true&forChannelId=${encodeURIComponent(channelId)}`,
+      { headers: { Authorization: `Bearer ${resolved.accessToken}`, Accept: 'application/json' } }
+    );
+    const checkData: any = await checkRes.json().catch(() => ({}));
+    if (!checkRes.ok) {
+      const reason = checkData?.error?.errors?.[0]?.reason || '';
+      if (checkRes.status === 401 || checkRes.status === 403 || reason === 'insufficientPermissions') {
+        return res.status(403).json({
+          error: 'YOUTUBE_OAUTH_SCOPE_REQUIRED',
+          requiresScope: 'https://www.googleapis.com/auth/youtube',
+          message: checkData?.error?.message || 'YouTube write permission (youtube / youtube.force-ssl scope) is not granted on this token.',
+        });
+      }
+      return res.status(checkRes.status).json({ error: 'YOUTUBE_SUBSCRIBE_FAILED', message: checkData?.error?.message || 'YouTube API error.' });
+    }
+
+    const existingSub = checkData?.items?.[0];
+    if (action === 'unsubscribe') {
+      if (!existingSub?.id) {
+        return res.json({ success: true, subscribed: false, subscriptionId: null });
+      }
+      const delRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/subscriptions?id=${encodeURIComponent(existingSub.id)}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${resolved.accessToken}` } }
+      );
+      if (!delRes.ok) {
+        const delErr: any = await delRes.json().catch(() => ({}));
+        return res.status(delRes.status === 401 || delRes.status === 403 ? 403 : delRes.status).json({
+          error: delRes.status === 403 ? 'YOUTUBE_OAUTH_SCOPE_REQUIRED' : 'YOUTUBE_UNSUBSCRIBE_FAILED',
+          requiresScope: 'https://www.googleapis.com/auth/youtube',
+          message: delErr?.error?.message || 'YouTube refused to remove subscription.',
+        });
+      }
+      return res.json({ success: true, subscribed: false, subscriptionId: null });
+    }
+
+    if (existingSub?.id) {
+      return res.json({ success: true, subscribed: true, subscriptionId: existingSub.id });
+    }
+
+    const insertRes = await fetch('https://www.googleapis.com/youtube/v3/subscriptions?part=snippet', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resolved.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        snippet: {
+          resourceId: {
+            kind: 'youtube#channel',
+            channelId,
+          },
+        },
+      }),
+    });
+    const insertData: any = await insertRes.json().catch(() => ({}));
+    if (!insertRes.ok) {
+      return res.status(insertRes.status === 401 || insertRes.status === 403 ? 403 : insertRes.status).json({
+        error: insertRes.status === 403 ? 'YOUTUBE_OAUTH_SCOPE_REQUIRED' : 'YOUTUBE_SUBSCRIBE_FAILED',
+        requiresScope: 'https://www.googleapis.com/auth/youtube',
+        message: insertData?.error?.message || 'YouTube refused subscription request (requires granted youtube OAuth scope).',
+      });
+    }
+
+    return res.json({
+      success: true,
+      subscribed: true,
+      subscriptionId: insertData.id || null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'YOUTUBE_SUBSCRIBE_ERROR', message: err.message || 'YouTube subscribe failed.' });
+  }
+});
+
+app.post('/api/youtube/videos/:videoId/rate', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const videoId = String(req.params.videoId || '').trim();
+  const rating = req.body?.rating === 'none' || req.body?.rating === 'dislike' ? req.body.rating : 'like';
+  if (!videoId) return res.status(400).json({ error: 'Video ID is required' });
+
+  const resolved = await resolveYouTubeAccessToken(req, user?.id);
+  if (!resolved.accessToken) {
+    return res.status(403).json({
+      error: 'YOUTUBE_OAUTH_SCOPE_REQUIRED',
+      requiresScope: 'https://www.googleapis.com/auth/youtube',
+      message: 'Connect Google / YouTube with youtube permission to like YouTube videos.',
+    });
+  }
+
+  try {
+    const rateRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos/rate?id=${encodeURIComponent(videoId)}&rating=${encodeURIComponent(rating)}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${resolved.accessToken}` },
+      }
+    );
+    if (!rateRes.ok) {
+      const errData: any = await rateRes.json().catch(() => ({}));
+      return res.status(rateRes.status === 401 || rateRes.status === 403 ? 403 : rateRes.status).json({
+        error: rateRes.status === 403 ? 'YOUTUBE_OAUTH_SCOPE_REQUIRED' : 'YOUTUBE_RATE_FAILED',
+        requiresScope: 'https://www.googleapis.com/auth/youtube',
+        message: errData?.error?.message || 'YouTube rejected rating request.',
+      });
+    }
+    res.json({ success: true, videoId, rating });
+  } catch (err: any) {
+    res.status(500).json({ error: 'YOUTUBE_RATE_ERROR', message: err.message || 'Failed to rate YouTube video.' });
+  }
+});
+
+app.post('/api/youtube/videos/:videoId/comments', async (req: Request, res: Response) => {
+  const user = getReqUser(req);
+  const videoId = String(req.params.videoId || '').trim();
+  const text = String(req.body?.text || '').trim();
+  if (!videoId) return res.status(400).json({ error: 'Video ID is required' });
+  if (!text) return res.status(400).json({ error: 'Comment text is required' });
+
+  const resolved = await resolveYouTubeAccessToken(req, user?.id);
+  if (!resolved.accessToken) {
+    return res.status(403).json({
+      error: 'YOUTUBE_OAUTH_SCOPE_REQUIRED',
+      requiresScope: 'https://www.googleapis.com/auth/youtube.force-ssl',
+      message: 'Posting comments on YouTube requires connecting your Google account with youtube.force-ssl permission.',
+    });
+  }
+
+  try {
+    const cmtRes = await fetch('https://www.googleapis.com/youtube/v3/commentThreads?part=snippet', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resolved.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        snippet: {
+          videoId,
+          topLevelComment: {
+            snippet: {
+              textOriginal: text.slice(0, 5000),
+            },
+          },
+        },
+      }),
+    });
+    const cmtData: any = await cmtRes.json().catch(() => ({}));
+    if (!cmtRes.ok) {
+      return res.status(cmtRes.status === 401 || cmtRes.status === 403 ? 403 : cmtRes.status).json({
+        error: cmtRes.status === 403 ? 'YOUTUBE_OAUTH_SCOPE_REQUIRED' : 'YOUTUBE_COMMENT_FAILED',
+        requiresScope: 'https://www.googleapis.com/auth/youtube.force-ssl',
+        message: cmtData?.error?.message || 'YouTube refused to post comment (requires youtube.force-ssl OAuth scope).',
+      });
+    }
+    const top = cmtData?.snippet?.topLevelComment?.snippet;
+    res.status(201).json({
+      success: true,
+      comment: {
+        id: cmtData.id,
+        authorDisplayName: top?.authorDisplayName || user?.displayName || 'YouTube User',
+        authorProfileImageUrl: top?.authorProfileImageUrl || user?.avatar || '',
+        authorChannelUrl: top?.authorChannelUrl || '',
+        textDisplay: top?.textDisplay || top?.textOriginal || text,
+        likeCount: Number(top?.likeCount || 0),
+        publishedAt: top?.publishedAt || new Date().toISOString(),
+        totalReplyCount: 0,
+        replies: [],
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'YOUTUBE_COMMENT_ERROR', message: err.message || 'Failed to post YouTube comment.' });
   }
 });
 
@@ -2570,12 +2911,12 @@ app.delete('/api/media/:idOrFilename', (req: Request, res: Response) => {
 // Current User & Auth Endpoints
 app.post('/api/auth/register', registerRateLimiter, (req: Request, res: Response) => {
   const fullName = (req.body.fullName || req.body.displayName || '').trim();
+  const phoneNumber = (req.body.phoneNumber || req.body.phone || '').trim();
   const {
     username,
     email,
     password,
     dateOfBirth,
-    phoneNumber,
     gender,
     address,
     bio,
@@ -2607,6 +2948,9 @@ app.post('/api/auth/register', registerRateLimiter, (req: Request, res: Response
   const existingUser = db.findUserByEmailOrUsername(email) || db.findUserByEmailOrUsername(cleanUsername);
   if (existingUser) {
     return res.status(400).json({ error: 'An account with this email or username already exists' });
+  }
+  if (phoneNumber && String(phoneNumber).trim() && db.findUserByPhone(String(phoneNumber))) {
+    return res.status(400).json({ error: 'An account with this phone number already exists' });
   }
 
   const { hash, salt, iterations } = hashPassword(password);
@@ -2757,11 +3101,13 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
       user: db.toPublicProfile(user, user.id, getOnlineUserIds()),
       sessionId: (req as any).sessionId,
       isGuest: false,
+      sessionExpired: false,
     });
   }
   res.json({
     user: null,
     isGuest: true,
+    sessionExpired: Boolean((req as any).hadAuthToken),
   });
 });
 
@@ -2800,6 +3146,7 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
       }
       const { hash, salt, iterations } = hashPassword(crypto.randomBytes(24).toString('hex'));
       const newId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const isFirstUser = db.getAllUsers().length === 0;
       user = {
         id: newId,
         username: uniqueUsername,
@@ -2814,7 +3161,7 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
         bio: 'Verified Google & YouTube creator on MOTHERLAND.',
         joinedDate: 'November 2026',
         isVerified: true,
-        role: 'user',
+        role: isFirstUser ? 'owner' : 'user',
         isEmailVerified: Boolean(gInfo.email_verified ?? true),
         isPhoneVerified: false,
         twoFactorEnabled: false,
@@ -2995,7 +3342,10 @@ app.post('/api/auth/claim-owner', sensitiveAuthRateLimiter, (req: Request, res: 
   if (!user) return;
 
   const secret = String(req.body.secret || req.body.ownerSecret || '');
-  const OWNER_SECRET = process.env.OWNER_SECRET || 'MOTHERLAND_FOUNDER_2026';
+  const OWNER_SECRET = (process.env.OWNER_SECRET || '').trim();
+  if (!OWNER_SECRET) {
+    return res.status(503).json({ error: 'OWNER_SECRET is not configured on this server.' });
+  }
 
   if (secret !== OWNER_SECRET) {
     return res.status(403).json({ error: 'Invalid Owner Authorization Secret' });
@@ -3267,85 +3617,231 @@ app.get('/api/users/:id', (req: Request, res: Response) => {
 });
 
 
+function mapYouTubeRawItemToUnifiedPost(item: any): Post {
+  return {
+    id: `yt_feed_${item.id}`,
+    source: 'youtube' as const,
+    externalId: item.id,
+    author: {
+      id: item.snippet?.channelId || `ch_${item.id}`,
+      username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 24),
+      displayName: item.snippet?.channelTitle || 'Unavailable',
+      avatar: '',
+      isVerified: Boolean(item.snippet?.channelTitle),
+    },
+    content: `${item.snippet?.title || 'Unavailable'}\n\n${(item.snippet?.description || '').slice(0, 240)}`,
+    mediaType: 'video' as const,
+    mediaUrl: '',
+    thumbnailUrl:
+      item.snippet?.thumbnails?.maxres?.url ||
+      item.snippet?.thumbnails?.high?.url ||
+      item.snippet?.thumbnails?.medium?.url ||
+      `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+    videoDuration: formatIsoDuration(item.contentDetails?.duration),
+    hashtags: ['YouTube', 'MOTHERLAND', 'VideoTheater'],
+    audience: 'public' as const,
+    createdAt: item.snippet?.publishedAt || new Date().toISOString(),
+    stats: {
+      likes: Number(item.statistics?.likeCount) || 0,
+      comments: Number(item.statistics?.commentCount) || 0,
+      shares: 0,
+      views: Number(item.statistics?.viewCount) || 0,
+    },
+    userInteractions: {
+      isLiked: false,
+      isSaved: false,
+    },
+  };
+}
+
 async function getUnifiedFeedYouTubePosts(
   page: number,
   pageSize = 8,
   suppressedIds: Set<string> = new Set(),
   seed = '',
-  excludeIds: Set<string> = new Set()
-): Promise<Post[]> {
-  const uniquePool = Array.from(new Set(REAL_YOUTUBE_CATALOG.default)).filter(
-    (vid) => !suppressedIds.has(vid)
-  );
-  const rotatedPool = seed ? seededShuffle(uniquePool, `${seed}_unified`) : uniquePool;
-  const prioritizedPool =
-    excludeIds.size > 0
-      ? [
-          ...rotatedPool.filter((vid) => !excludeIds.has(vid)),
-          ...rotatedPool.filter((vid) => excludeIds.has(vid)),
-        ]
-      : rotatedPool;
+  excludeIds: Set<string> = new Set(),
+  rawYtCursor = ''
+): Promise<{ posts: Post[]; nextYtCursor: string | null; quotaExceeded: boolean; errorMessage?: string }> {
+  const queryList = CATEGORY_DISCOVERY_QUERIES.all;
+  const initialQIdx = hashSeedNumber(`${seed || 'home'}_unified_q`) % queryList.length;
 
-  const start = (page - 1) * pageSize;
-  if (start >= prioritizedPool.length) {
-    return [];
+  let cursor: FeedCursor = decodeFeedCursor(rawYtCursor) || {
+    mode: 'api_search',
+    qIdx: initialQIdx,
+    pageToken: '',
+    offset: Math.max(0, (page - 1) * pageSize),
+  };
+
+  const collected: Post[] = [];
+  const seenIds = new Set<string>();
+  let nextCursor: FeedCursor | null = null;
+  let quotaExceeded = false;
+  let errorMessage: string | undefined;
+  let attempts = 0;
+  const maxAttempts = 3;
+
+  const pushRawItems = (rawItems: any[]) => {
+    for (const rawItem of rawItems || []) {
+      const vid = String(rawItem?.id || '');
+      if (!vid) continue;
+      if (suppressedIds.has(vid) || suppressedIds.has(`yt_feed_${vid}`)) continue;
+      if (excludeIds.has(vid) || excludeIds.has(`yt_feed_${vid}`)) continue;
+      if (seenIds.has(vid)) continue;
+      seenIds.add(vid);
+      collected.push(mapYouTubeRawItemToUnifiedPost(rawItem));
+    }
+  };
+
+  while (collected.length < pageSize && attempts < maxAttempts) {
+    attempts++;
+    const prevCount = collected.length;
+
+    if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
+      try {
+        const searchParams: Record<string, string> = {
+          part: 'snippet',
+          type: 'video',
+          q: queryList[cursor.qIdx],
+          maxResults: String(Math.min(25, pageSize + 8)),
+        };
+        if (cursor.pageToken) searchParams.pageToken = cursor.pageToken;
+
+        const searchData = await fetchFromYouTubeApi('search', searchParams);
+        const videoIds = (searchData.items || [])
+          .map((it: any) => it?.id?.videoId)
+          .filter((vid: string | undefined) => Boolean(vid) && !suppressedIds.has(vid!) && !seenIds.has(vid!));
+
+        if (videoIds.length > 0) {
+          const statsData = await fetchFromYouTubeApi('videos', {
+            part: 'snippet,contentDetails,statistics',
+            id: videoIds.join(','),
+          });
+          pushRawItems(statsData.items || []);
+        }
+
+        if (searchData.nextPageToken) {
+          nextCursor = {
+            mode: 'api_search',
+            qIdx: cursor.qIdx,
+            pageToken: searchData.nextPageToken,
+            offset: 0,
+          };
+        } else if (cursor.qIdx + 1 < queryList.length) {
+          nextCursor = {
+            mode: 'api_search',
+            qIdx: cursor.qIdx + 1,
+            pageToken: '',
+            offset: 0,
+          };
+        } else {
+          nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+        }
+      } catch (err: any) {
+        if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
+          quotaExceeded = true;
+        }
+        errorMessage = err?.message || 'YouTube search pagination fallback active';
+        nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+      }
+    } else if (cursor.mode === 'api_popular') {
+      try {
+        const popParams: Record<string, string> = {
+          part: 'snippet,contentDetails,statistics',
+          chart: 'mostPopular',
+          maxResults: String(Math.min(25, pageSize + 8)),
+          regionCode: 'BD',
+        };
+        if (cursor.pageToken) popParams.pageToken = cursor.pageToken;
+
+        const popData = await fetchFromYouTubeApi('videos', popParams);
+        pushRawItems(popData.items || []);
+
+        if (popData.nextPageToken) {
+          nextCursor = {
+            mode: 'api_popular',
+            qIdx: 0,
+            pageToken: popData.nextPageToken,
+            offset: 0,
+          };
+        } else {
+          nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
+        }
+      } catch (err: any) {
+        if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
+          quotaExceeded = true;
+        }
+        errorMessage = err?.message || errorMessage;
+        nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
+      }
+    } else {
+      // Verified catalog videos slice (never repeats already-shown IDs)
+      const uniquePool = Array.from(new Set(REAL_YOUTUBE_CATALOG.default)).filter(
+        (vid) => !suppressedIds.has(vid) && !excludeIds.has(vid) && !seenIds.has(vid)
+      );
+      const rotatedPool = seed ? seededShuffle(uniquePool, `${seed}_unified`) : uniquePool;
+      const start = Math.max(0, cursor.offset);
+      const ids = rotatedPool.slice(start, start + pageSize);
+      const hasMoreCatalog = start + ids.length < rotatedPool.length;
+
+      if (ids.length > 0) {
+        try {
+          const statsData = await fetchFromYouTubeApi('videos', {
+            part: 'snippet,contentDetails,statistics',
+            id: ids.join(','),
+          });
+          pushRawItems(statsData.items || []);
+        } catch (err: any) {
+          if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded') {
+            quotaExceeded = true;
+          }
+          errorMessage = err?.message || 'Failed to fetch YouTube videos for feed';
+          nextCursor = null;
+          break;
+        }
+      }
+
+      if (hasMoreCatalog) {
+        nextCursor = {
+          mode: 'catalog',
+          qIdx: 0,
+          pageToken: '',
+          offset: start + ids.length,
+        };
+      } else {
+        nextCursor = null;
+      }
+    }
+
+    if (!nextCursor) break;
+    if (
+      collected.length === prevCount &&
+      nextCursor.mode === cursor.mode &&
+      nextCursor.qIdx === cursor.qIdx &&
+      nextCursor.offset === cursor.offset &&
+      nextCursor.pageToken === cursor.pageToken
+    ) {
+      break;
+    }
+    cursor = nextCursor;
   }
-  const ids = prioritizedPool.slice(start, start + pageSize);
 
-  try {
-    const statsData = await fetchFromYouTubeApi('videos', {
-      part: 'snippet,contentDetails,statistics',
-      id: ids.join(','),
-    });
-
-    const mappedPosts: Post[] = (statsData.items || []).map((item: any) => ({
-      id: `yt_feed_${item.id}`,
-      source: 'youtube' as const,
-      externalId: item.id,
-      author: {
-        id: item.snippet?.channelId || `ch_${item.id}`,
-        username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 24),
-        displayName: item.snippet?.channelTitle || 'Unavailable',
-        avatar: '',
-        isVerified: Boolean(item.snippet?.channelTitle),
-      },
-      content: `${item.snippet?.title || 'Unavailable'}\n\n${(item.snippet?.description || '').slice(0, 240)}`,
-      mediaType: 'video' as const,
-      mediaUrl: '',
-      thumbnailUrl:
-        item.snippet?.thumbnails?.maxres?.url ||
-        item.snippet?.thumbnails?.high?.url ||
-        item.snippet?.thumbnails?.medium?.url,
-      videoDuration: formatIsoDuration(item.contentDetails?.duration),
-      hashtags: ['YouTube', 'MOTHERLAND', 'VideoTheater'],
-      audience: 'public' as const,
-      createdAt: item.snippet?.publishedAt || new Date().toISOString(),
-      stats: {
-        likes: Number(item.statistics?.likeCount) || 0,
-        comments: Number(item.statistics?.commentCount) || 0,
-        shares: 0,
-        views: Number(item.statistics?.viewCount) || 0,
-      },
-      userInteractions: {
-        isLiked: false,
-        isSaved: false,
-      },
-    }));
-
-    return await enrichPostsWithChannelMeta(mappedPosts);
-  } catch (err) {
-    console.warn('Failed to fetch YouTube posts for feed:', err);
-    return [];
-  }
+  const enriched = await enrichPostsWithChannelMeta(collected);
+  return {
+    posts: enriched,
+    nextYtCursor: nextCursor ? encodeFeedCursor(nextCursor) : null,
+    quotaExceeded,
+    errorMessage,
+  };
 }
 
-// 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, Fresh Seed Rotation, & 7-Day Suppression)
+// 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, Fresh Seed Rotation, Cursor Pagination & 7-Day Suppression)
 app.get('/api/posts', async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
   const source = req.query.source as string;
   const feedType = (req.query.feedType as string) || 'all'; // 'all', 'for_you', 'motherland', 'saved'
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(30, Math.max(1, parseInt((req.query.pageSize as string) || '10', 10)));
+  const rawYtCursor = String(req.query.ytCursor || '').trim();
   const suppressedIds = getSuppressedSetFromReq(req);
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
@@ -3354,13 +3850,13 @@ app.get('/api/posts', async (req: Request, res: Response) => {
 
   if (feedType === 'saved') {
     if (!currentUserId) {
-      return res.json({ posts: [], total: 0, page, hasMore: false });
+      return res.json({ posts: [], total: 0, page, hasMore: false, nextYtCursor: null });
     }
     const savedIds = new Set(db.getUserSavedPostIds(currentUserId));
     const savedPosts = rawPosts
       .filter((p) => savedIds.has(p.id) && db.canViewerSeePost(currentUserId, p))
       .map((p) => db.hydratePostForUser(p, currentUserId));
-    return res.json({ posts: savedPosts, total: savedPosts.length, page, hasMore: false });
+    return res.json({ posts: savedPosts, total: savedPosts.length, page, hasMore: false, nextYtCursor: null });
   }
 
   if (feedType === 'for_you') {
@@ -3369,16 +3865,19 @@ app.get('/api/posts', async (req: Request, res: Response) => {
       .filter((p) => !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId)))));
     const start = (page - 1) * pageSize;
     const mlSlice = scoredAll.slice(start, start + pageSize).map((p) => db.hydratePostForUser(p, currentUserId));
-    const ytExtra =
+    const ytRes =
       mlSlice.length < pageSize
-        ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds, seed, excludeIds)
-        : [];
-    const combined = [...mlSlice, ...ytExtra];
+        ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds, seed, excludeIds, rawYtCursor)
+        : { posts: [], nextYtCursor: rawYtCursor || null, quotaExceeded: false, errorMessage: '' };
+    const combined = [...mlSlice, ...ytRes.posts];
     return res.json({
       posts: combined,
-      total: scoredAll.length + ytExtra.length,
+      total: scoredAll.length + ytRes.posts.length,
       page,
-      hasMore: start + mlSlice.length < scoredAll.length || ytExtra.length > 0,
+      hasMore: start + mlSlice.length < scoredAll.length || Boolean(ytRes.nextYtCursor),
+      nextYtCursor: ytRes.nextYtCursor,
+      quotaExceeded: ytRes.quotaExceeded,
+      errorMessage: ytRes.posts.length === 0 && ytRes.errorMessage ? ytRes.errorMessage : undefined,
     });
   }
 
@@ -3393,12 +3892,12 @@ app.get('/api/posts', async (req: Request, res: Response) => {
       total: motherlandPosts.length,
       page,
       hasMore: start + slice.length < motherlandPosts.length,
+      nextYtCursor: null,
     });
   }
 
-  // Unified Feed: Visible Motherland posts + Fresh Rotated Unwatched YouTube Video Posts
+  // Unified Feed: Visible Motherland posts (fairly sorted/mixed) + Continuous Live YouTube Video Posts
   try {
-    const ytVideosResult = await getUnifiedFeedYouTubePosts(page, pageSize, suppressedIds, seed, excludeIds);
     const visibleMotherland = rawPosts
       .filter(
         (p) =>
@@ -3408,34 +3907,68 @@ app.get('/api/posts', async (req: Request, res: Response) => {
       )
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    const mlStart = (page - 1) * pageSize;
+    const mlStart = (page - 1) * Math.max(2, Math.floor(pageSize / 2));
+    const mlBatchSize = Math.max(2, Math.floor(pageSize / 2));
     const hydratedMotherland = visibleMotherland
-      .slice(mlStart, mlStart + pageSize)
+      .slice(mlStart, mlStart + mlBatchSize)
       .map((p) => db.hydratePostForUser(p, currentUserId));
 
+    const ytTargetCount = Math.max(4, pageSize - hydratedMotherland.length);
+    const ytRes = await getUnifiedFeedYouTubePosts(page, ytTargetCount, suppressedIds, seed, excludeIds, rawYtCursor);
+
     const unifiedPosts: Post[] = [];
+    const seenUnifiedIds = new Set<string>();
     let mIdx = 0;
     let yIdx = 0;
-    while (mIdx < hydratedMotherland.length || yIdx < ytVideosResult.length) {
-      if (yIdx < ytVideosResult.length) unifiedPosts.push(ytVideosResult[yIdx++]);
-      if (mIdx < hydratedMotherland.length) unifiedPosts.push(hydratedMotherland[mIdx++]);
-      if (yIdx < ytVideosResult.length) unifiedPosts.push(ytVideosResult[yIdx++]);
+    while (mIdx < hydratedMotherland.length || yIdx < ytRes.posts.length) {
+      if (mIdx < hydratedMotherland.length) {
+        const mp = hydratedMotherland[mIdx++];
+        if (!seenUnifiedIds.has(mp.id)) {
+          seenUnifiedIds.add(mp.id);
+          unifiedPosts.push(mp);
+        }
+      }
+      if (yIdx < ytRes.posts.length) {
+        const yp = ytRes.posts[yIdx++];
+        if (!seenUnifiedIds.has(yp.id)) {
+          seenUnifiedIds.add(yp.id);
+          unifiedPosts.push(yp);
+        }
+      }
+      if (yIdx < ytRes.posts.length) {
+        const yp2 = ytRes.posts[yIdx++];
+        if (!seenUnifiedIds.has(yp2.id)) {
+          seenUnifiedIds.add(yp2.id);
+          unifiedPosts.push(yp2);
+        }
+      }
     }
 
-    const hasMore = mlStart + hydratedMotherland.length < visibleMotherland.length || ytVideosResult.length > 0;
+    const hasMoreMl = mlStart + hydratedMotherland.length < visibleMotherland.length;
+    const hasMore = hasMoreMl || Boolean(ytRes.nextYtCursor);
     res.json({
       posts: unifiedPosts,
       total: unifiedPosts.length,
       page,
       hasMore,
+      nextYtCursor: ytRes.nextYtCursor,
+      quotaExceeded: ytRes.quotaExceeded,
+      errorMessage: ytRes.posts.length === 0 && ytRes.errorMessage ? ytRes.errorMessage : undefined,
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error('Unified feed error:', err);
     const fallback = rawPosts
       .filter((p) => db.canViewerSeePost(currentUserId, p))
       .map((p) => db.hydratePostForUser(p, currentUserId));
     fallback.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    res.json({ posts: fallback, total: fallback.length, page, hasMore: false });
+    res.json({
+      posts: fallback,
+      total: fallback.length,
+      page,
+      hasMore: false,
+      nextYtCursor: null,
+      errorMessage: err?.message || 'Unable to load external YouTube posts right now.',
+    });
   }
 });
 
@@ -4406,16 +4939,73 @@ app.post('/api/users/:id/follow', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const targetId = req.params.id;
-  if (targetId === user.id) return res.status(400).json({ error: 'Cannot follow yourself' });
-  const isFollowing = db.isFollowing(user.id, targetId);
+  if (targetId === user.id) return res.status(400).json({ error: 'Cannot support yourself' });
+  const targetUser = db.findUserById(targetId);
+  if (!targetUser) return res.status(404).json({ error: 'User not found' });
+  if (db.isBlocked(user.id, targetId)) {
+    return res.status(403).json({ error: 'Action unavailable due to block settings' });
+  }
 
-  if (isFollowing) {
+  const wasFollowing = db.isFollowing(user.id, targetId);
+  if (wasFollowing) {
     db.unfollow(user.id, targetId);
   } else {
     db.follow(user.id, targetId);
+    const notif = {
+      id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      recipientId: targetId,
+      category: 'motherland' as const,
+      type: 'follow' as const,
+      sender: {
+        id: user.id,
+        displayName: user.displayName,
+        avatar: user.avatar,
+        username: user.username,
+      },
+      title: 'New Supporter',
+      body: `${user.displayName} started supporting you on MOTHERLAND.`,
+      targetId: user.id,
+      targetType: 'profile' as const,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+    };
+    db.addNotification(notif);
+    sendWsToUser(targetId, 'notification:new', notif);
   }
 
-  res.json({ isFollowing: !isFollowing });
+  const onlineIds = getOnlineUserIds();
+  const updatedMe = db.toPublicProfile(user, user.id, onlineIds);
+  const updatedTarget = db.toPublicProfile(targetUser, user.id, onlineIds);
+
+  res.json({
+    isFollowing: !wasFollowing,
+    followersCount: updatedMe.followersCount,
+    followingCount: updatedMe.followingCount,
+    targetFollowersCount: updatedTarget.followersCount,
+    targetFollowingCount: updatedTarget.followingCount,
+  });
+});
+
+app.get('/api/users/:id/network', (req: Request, res: Response) => {
+  const targetUser = db.findUserById(req.params.id);
+  if (!targetUser) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  const currentUserId = (req as any).userId as string | undefined;
+  if (currentUserId && db.isBlocked(currentUserId, targetUser.id)) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  const isSelf = currentUserId === targetUser.id;
+  if (!isSelf && targetUser.privacy?.profileVisibility === 'private') {
+    return res.json({ friends: [], supporters: [], supporting: [] });
+  }
+  const isFriend = currentUserId ? db.isFriend(currentUserId, targetUser.id) : false;
+  if (!isSelf && (targetUser.privacy?.profileVisibility === 'friends' || targetUser.isPrivate) && !isFriend) {
+    return res.json({ friends: [], supporters: [], supporting: [] });
+  }
+
+  const lists = db.getUserNetworkLists(targetUser.id, currentUserId, getOnlineUserIds());
+  res.json(lists);
 });
 
 app.post('/api/users/:id/report', (req: Request, res: Response) => {

@@ -108,11 +108,9 @@ export const MenuView: React.FC<MenuViewProps> = ({
 
   return (
     <div className="w-full max-w-2xl mx-auto px-3 sm:px-4 py-4 space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h2 className="text-xl font-extrabold text-[var(--text-primary)]">Menu</h2>
-        <div className="md:hidden">
-          <PWAInstallButton />
-        </div>
+        <PWAInstallButton variant="menu" showAlways />
       </div>
 
       {/* 1. Profile Card or Guest Sign-In Card */}

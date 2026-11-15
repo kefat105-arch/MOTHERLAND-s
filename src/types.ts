@@ -55,6 +55,9 @@ export interface UserProfile {
   friendsCount: number;
   followersCount: number;
   followingCount: number;
+  postsCount?: number;
+  videosCount?: number;
+  smallVideosCount?: number;
   privacy: UserPrivacySettings;
   notificationPrefs?: NotificationPreferences;
   dataSaver?: boolean;

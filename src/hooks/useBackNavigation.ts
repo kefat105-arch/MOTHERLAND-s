@@ -22,9 +22,14 @@ function getTopEntry(): BackEntry | null {
   return best;
 }
 
+let lastBackTriggerMs = 0;
+
 export function triggerTopBackAction(): boolean {
+  const now = Date.now();
+  if (now - lastBackTriggerMs < 180) return false;
   const top = getTopEntry();
   if (!top) return false;
+  lastBackTriggerMs = now;
   top.handler();
   return true;
 }
@@ -53,13 +58,13 @@ function ensureGlobalBackListeners() {
 
   const isBlockedTarget = (target: EventTarget | null): boolean => {
     if (!(target instanceof HTMLElement)) return false;
-    if (target.closest('input, textarea, select, [data-no-edge-back="true"]')) {
+    if (target.closest('input, textarea, select, video, [data-no-edge-back="true"]')) {
       return true;
     }
-    // Avoid hijacking horizontal scroll trays that are currently scrolled right
+    // Avoid hijacking horizontal scroll trays
     let el: HTMLElement | null = target;
     while (el && el !== document.body) {
-      if (el.scrollWidth > el.clientWidth + 4 && el.scrollLeft > 4) {
+      if (el.scrollWidth > el.clientWidth + 4 && (el.scrollLeft > 2 || el.dataset.horizontalStrip === 'true')) {
         return true;
       }
       el = el.parentElement;
@@ -72,7 +77,7 @@ function ensureGlobalBackListeners() {
     (e: TouchEvent) => {
       if (e.touches.length !== 1 || backStack.length === 0) return;
       const t = e.touches[0];
-      if (t.clientX <= 28 && !isBlockedTarget(e.target)) {
+      if (t.clientX <= 24 && !isBlockedTarget(e.target)) {
         trackingEdge = true;
         startX = t.clientX;
         startY = t.clientY;
@@ -90,12 +95,12 @@ function ensureGlobalBackListeners() {
       const t = e.touches[0];
       const dx = t.clientX - startX;
       const dy = Math.abs(t.clientY - startY);
-      if (dy > 65 && dx < 45) {
+      if (dy > 55 && dx < 45) {
         trackingEdge = false;
         notifyEdgeProgress(0);
         return;
       }
-      if (dx > 12) {
+      if (dx > 14 && dx > dy * 1.4) {
         notifyEdgeProgress(Math.min(96, dx));
       }
     },
@@ -110,7 +115,7 @@ function ensureGlobalBackListeners() {
     const dy = t ? Math.abs(t.clientY - startY) : 999;
     notifyEdgeProgress(0);
 
-    if (dx >= 68 && dy < 65) {
+    if (dx >= 72 && dy < 55 && dx > dy * 1.5) {
       triggerTopBackAction();
     }
   };

@@ -132,9 +132,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   // Paginated profile posts backed directly by /api/users/:id/posts
   const [profilePosts, setProfilePosts] = useState<Post[]>([]);
+  const [profilePostsTotal, setProfilePostsTotal] = useState<number | null>(null);
   const [profilePostsPage, setProfilePostsPage] = useState(1);
   const [hasMoreProfilePosts, setHasMoreProfilePosts] = useState(false);
   const [isLoadingProfilePosts, setIsLoadingProfilePosts] = useState(false);
+  const [networkLists, setNetworkLists] = useState<{
+    friends: UserProfile[];
+    supporters: UserProfile[];
+    supporting: UserProfile[];
+  }>({ friends: [], supporters: [], supporting: [] });
+  const [loadingNetwork, setLoadingNetwork] = useState(false);
 
   useBackHandler('profile-edit-modal', isEditing, () => setIsEditing(false), 60);
 
@@ -173,7 +180,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setEditVisibility(currentUser.privacy.profileVisibility);
   }, [currentUser?.id]);
 
-  // Load paginated own profile posts
+  // Load paginated own profile posts + live network counts
   useEffect(() => {
     if (!currentUser) return;
     let mounted = true;
@@ -183,12 +190,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       .then((res) => {
         if (!mounted) return;
         setProfilePosts(res.posts || []);
+        setProfilePostsTotal(typeof res.total === 'number' ? res.total : (res.posts || []).length);
         setProfilePostsPage(1);
         setHasMoreProfilePosts(Boolean(res.hasMore));
       })
       .catch(() => {
         if (!mounted) return;
-        setProfilePosts(userPosts.filter((p) => p.author.id === currentUser.id));
+        const own = userPosts.filter((p) => p.author.id === currentUser.id);
+        setProfilePosts(own);
+        setProfilePostsTotal(own.length);
       })
       .finally(() => {
         if (mounted) setIsLoadingProfilePosts(false);
@@ -197,6 +207,30 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       mounted = false;
     };
   }, [currentUser?.id, userPosts.length]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (activeTab !== 'friends' && activeTab !== 'followers' && activeTab !== 'following') return;
+    let mounted = true;
+    setLoadingNetwork(true);
+    api
+      .getUserNetwork(currentUser.id)
+      .then((res) => {
+        if (!mounted) return;
+        setNetworkLists({
+          friends: res.friends || [],
+          supporters: res.supporters || [],
+          supporting: res.supporting || [],
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setLoadingNetwork(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [currentUser?.id, activeTab, currentUser?.followersCount, currentUser?.followingCount, currentUser?.friendsCount]);
 
   useEffect(() => {
     if (!currentUser || activeTab !== 'saved') return;
@@ -342,7 +376,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     { key: 'about', label: 'About', icon: Shield },
     { key: 'photos', label: 'Photos', icon: Grid },
     { key: 'videos', label: 'Videos', icon: Film },
-    { key: 'shorts', label: 'Shorts', icon: Flame },
+    { key: 'shorts', label: 'Small Videos', icon: Flame },
     { key: 'friends', label: 'Friends', icon: Users },
     { key: 'followers', label: 'Supporters', icon: Users },
     { key: 'following', label: 'Supporting', icon: Users },
@@ -351,8 +385,22 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     { key: 'settings', label: 'Settings', icon: SlidersHorizontal },
   ];
 
-  const myOwnShorts = userShorts.filter((s) => s.creator.id === currentUser.id);
-  const myOwnLongVideos = userLongVideos.filter((v) => v.channel.id === currentUser.id);
+  const myOwnShorts = userShorts.filter((s) => s.source === 'motherland' && s.creator.id === currentUser.id);
+  const myOwnLongVideos = userLongVideos.filter((v) => v.source === 'motherland' && v.channel.id === currentUser.id);
+  const myVideoPosts = profilePosts.filter((p) => p.mediaType === 'video' && p.mediaAspectRatio !== '9:16');
+  const myShortPosts = profilePosts.filter((p) => p.mediaType === 'video' && p.mediaAspectRatio === '9:16');
+  const displayPostsCount =
+    typeof profilePostsTotal === 'number'
+      ? profilePostsTotal
+      : currentUser.postsCount ?? profilePosts.length;
+  const displayVideosCount =
+    typeof currentUser.videosCount === 'number'
+      ? currentUser.videosCount
+      : myOwnLongVideos.length + myVideoPosts.length;
+  const displaySmallVideosCount =
+    typeof currentUser.smallVideosCount === 'number'
+      ? currentUser.smallVideosCount
+      : myOwnShorts.length + myShortPosts.length;
 
   return (
     <div className="w-full max-w-4xl mx-auto pb-12">
@@ -461,25 +509,43 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-6 pt-3 border-t border-[var(--border-subtle)] text-xs">
-          <div className="cursor-pointer" onClick={() => setActiveTab('friends')}>
-            <span className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 pt-3 border-t border-[var(--border-subtle)] text-xs">
+          <button type="button" onClick={() => setActiveTab('posts')} className="text-left p-2 rounded-xl hover:bg-[var(--bg-surface-alt)] transition cursor-pointer">
+            <span data-testid="profile-count-posts" className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
+              {displayPostsCount.toLocaleString()}
+            </span>
+            <span className="text-[var(--text-secondary)]">Posts</span>
+          </button>
+          <button type="button" onClick={() => setActiveTab('videos')} className="text-left p-2 rounded-xl hover:bg-[var(--bg-surface-alt)] transition cursor-pointer">
+            <span data-testid="profile-count-videos" className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
+              {displayVideosCount.toLocaleString()}
+            </span>
+            <span className="text-[var(--text-secondary)]">Videos</span>
+          </button>
+          <button type="button" onClick={() => setActiveTab('shorts')} className="text-left p-2 rounded-xl hover:bg-[var(--bg-surface-alt)] transition cursor-pointer">
+            <span data-testid="profile-count-small-videos" className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
+              {displaySmallVideosCount.toLocaleString()}
+            </span>
+            <span className="text-[var(--text-secondary)]">Small Videos</span>
+          </button>
+          <button type="button" onClick={() => setActiveTab('friends')} className="text-left p-2 rounded-xl hover:bg-[var(--bg-surface-alt)] transition cursor-pointer">
+            <span data-testid="profile-count-friends" className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
               {currentUser.friendsCount.toLocaleString()}
             </span>
             <span className="text-[var(--text-secondary)]">Friends</span>
-          </div>
-          <div className="cursor-pointer" onClick={() => setActiveTab('followers')}>
-            <span className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
+          </button>
+          <button type="button" onClick={() => setActiveTab('followers')} className="text-left p-2 rounded-xl hover:bg-[var(--bg-surface-alt)] transition cursor-pointer">
+            <span data-testid="profile-count-supporters" className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
               {currentUser.followersCount.toLocaleString()}
             </span>
             <span className="text-[var(--text-secondary)]">Supporters</span>
-          </div>
-          <div className="cursor-pointer" onClick={() => setActiveTab('following')}>
-            <span className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
+          </button>
+          <button type="button" onClick={() => setActiveTab('following')} className="text-left p-2 rounded-xl hover:bg-[var(--bg-surface-alt)] transition cursor-pointer">
+            <span data-testid="profile-count-supporting" className="font-extrabold text-sm text-[var(--text-primary)] block tabular-nums">
               {currentUser.followingCount.toLocaleString()}
             </span>
             <span className="text-[var(--text-secondary)]">Supporting</span>
-          </div>
+          </button>
         </div>
       </div>
 
@@ -618,61 +684,147 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         )}
 
-        {/* Tab 4: Videos */}
+        {/* Tab 4: Own Videos Only */}
         {activeTab === 'videos' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {(myOwnLongVideos.length > 0 ? myOwnLongVideos : userLongVideos).map((video) => (
-              <div key={video.id} className="rounded-2xl overflow-hidden ml-glass">
-                <div className="aspect-video w-full relative">
-                  <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover" />
-                  <span className="absolute bottom-2 right-2 bg-black/80 px-1.5 py-0.5 rounded text-[10px] text-white font-mono">
-                    {video.duration}
-                  </span>
+          myOwnLongVideos.length === 0 && myVideoPosts.length === 0 ? (
+            <div className="p-10 text-center text-xs text-[var(--text-secondary)] ml-glass rounded-2xl">
+              You have not published any long videos yet.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {myOwnLongVideos.map((video) => (
+                <div key={video.id} className="rounded-2xl overflow-hidden ml-glass">
+                  <div className="aspect-video w-full relative bg-black">
+                    <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover" />
+                    <span className="absolute bottom-2 right-2 bg-black/80 px-1.5 py-0.5 rounded text-[10px] text-white font-mono">
+                      {video.duration}
+                    </span>
+                  </div>
+                  <div className="p-3">
+                    <h4 className="font-bold text-xs text-[var(--text-primary)] line-clamp-1">{video.title}</h4>
+                    <span className="text-[10px] text-[var(--text-secondary)]">
+                      {video.stats.views.toLocaleString()} views
+                    </span>
+                  </div>
                 </div>
-                <div className="p-3">
-                  <h4 className="font-bold text-xs text-[var(--text-primary)] line-clamp-1">{video.title}</h4>
-                  <span className="text-[10px] text-[var(--text-secondary)]">
-                    {video.stats.views.toLocaleString()} views
-                  </span>
+              ))}
+              {myVideoPosts.map((vp) => (
+                <div key={vp.id} className="rounded-2xl overflow-hidden ml-glass">
+                  <div className="aspect-video w-full relative bg-black">
+                    {vp.mediaUrl ? (
+                      <video src={vp.mediaUrl} poster={vp.thumbnailUrl} controls playsInline className="w-full h-full object-cover" />
+                    ) : null}
+                  </div>
+                  <div className="p-3">
+                    <h4 className="font-bold text-xs text-[var(--text-primary)] line-clamp-1">{vp.content || 'Video post'}</h4>
+                    <span className="text-[10px] text-[var(--text-secondary)]">
+                      {new Date(vp.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )
         )}
 
-        {/* Tab 5: Shorts */}
+        {/* Tab 5: Own Small Videos Only */}
         {activeTab === 'shorts' && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {(myOwnShorts.length > 0 ? myOwnShorts : userShorts).map((short) => (
-              <div
-                key={short.id}
-                className="aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] relative"
-              >
-                <img src={short.thumbnailUrl} alt={short.title} className="w-full h-full object-cover" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent flex items-end p-2.5">
-                  <span className="text-[11px] font-bold text-white line-clamp-2">{short.title}</span>
+          myOwnShorts.length === 0 && myShortPosts.length === 0 ? (
+            <div className="p-10 text-center text-xs text-[var(--text-secondary)] ml-glass rounded-2xl">
+              You have not published any Small Videos yet.
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {myOwnShorts.map((short) => (
+                <div
+                  key={short.id}
+                  className="aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] relative"
+                >
+                  <img src={short.thumbnailUrl} alt={short.title} className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent flex items-end p-2.5">
+                    <span className="text-[11px] font-bold text-white line-clamp-2">{short.title}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+              {myShortPosts.map((sp) => (
+                <div
+                  key={sp.id}
+                  className="aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] relative"
+                >
+                  {sp.mediaUrl && (
+                    <video src={sp.mediaUrl} poster={sp.thumbnailUrl} controls playsInline className="w-full h-full object-cover" />
+                  )}
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-transparent to-transparent p-2.5 pointer-events-none">
+                    <span className="text-[11px] font-bold text-white line-clamp-2">{sp.content || 'Small Video'}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
         )}
 
-        {/* Tab 6-8: Network */}
-        {activeTab === 'friends' && (
-          <div className="p-6 text-center text-xs text-[var(--text-secondary)] ml-glass rounded-2xl">
-            Confirmed connections: {currentUser.friendsCount.toLocaleString()} friends across MOTHERLAND.
-          </div>
-        )}
-        {activeTab === 'followers' && (
-          <div className="p-6 text-center text-xs text-[var(--text-secondary)] ml-glass rounded-2xl">
-            Audience: {currentUser.followersCount.toLocaleString()} supporters receiving your updates.
-          </div>
-        )}
-        {activeTab === 'following' && (
-          <div className="p-6 text-center text-xs text-[var(--text-secondary)] ml-glass rounded-2xl">
-            Supporting {currentUser.followingCount.toLocaleString()} creators and channels.
-          </div>
-        )}
+        {/* Tab 6-8: Real Network Lists (Friends, Supporters, Supporting) */}
+        {(activeTab === 'friends' || activeTab === 'followers' || activeTab === 'following') && (() => {
+          const list =
+            activeTab === 'friends'
+              ? networkLists.friends
+              : activeTab === 'followers'
+              ? networkLists.supporters
+              : networkLists.supporting;
+          const emptyMsg =
+            activeTab === 'friends'
+              ? 'No confirmed friends yet.'
+              : activeTab === 'followers'
+              ? 'No supporters yet.'
+              : 'You are not supporting any MOTHERLAND creators yet.';
+          if (loadingNetwork) {
+            return (
+              <div className="py-10 flex justify-center text-[var(--accent-primary)]">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            );
+          }
+          if (list.length === 0) {
+            return (
+              <div className="p-8 text-center text-xs text-[var(--text-secondary)] ml-glass rounded-2xl">
+                {emptyMsg}
+              </div>
+            );
+          }
+          return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {list.map((person) => (
+                <button
+                  key={person.id}
+                  type="button"
+                  onClick={() =>
+                    onOpenCreator?.({
+                      id: person.id,
+                      name: person.displayName,
+                      username: person.username,
+                      avatar: person.avatar,
+                      source: 'motherland',
+                    })
+                  }
+                  className="ml-glass rounded-2xl p-3 flex items-center gap-3 text-left hover:border-[var(--accent-primary-border)] transition-colors cursor-pointer"
+                >
+                  <img
+                    src={person.avatar}
+                    alt={person.displayName}
+                    className="w-11 h-11 rounded-xl object-cover border border-[var(--border-subtle)] shrink-0"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-[var(--text-primary)] truncate">{person.displayName}</p>
+                    <p className="text-[11px] text-[var(--text-secondary)] truncate">@{person.username}</p>
+                    <p className="text-[10px] text-[var(--text-muted)] mt-0.5 tabular-nums">
+                      {person.followersCount.toLocaleString()} Supporters
+                    </p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* Tab 9: Saved (Posts + Videos) */}
         {activeTab === 'saved' && (

@@ -47,7 +47,7 @@ export const MessagesDrawer: React.FC<MessagesDrawerProps> = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full h-full sm:max-w-5xl sm:h-[88vh] sm:rounded-3xl overflow-hidden border border-[var(--ml-border)] shadow-2xl bg-[var(--ml-surface)]"
+        className="w-full h-[100dvh] sm:max-w-5xl sm:h-[88dvh] sm:rounded-3xl overflow-hidden border border-[var(--ml-border)] shadow-2xl bg-[var(--ml-surface)]"
       >
         <WaveWorkspace
           onClose={onClose}

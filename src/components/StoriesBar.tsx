@@ -115,62 +115,103 @@ export const StoriesBar: React.FC<StoriesBarProps> = ({
 
   return (
     <>
-      {/* Horizontal Stories Tray */}
-      <div className="w-full overflow-x-auto py-2 px-1 no-scrollbar touch-pan-x flex items-center gap-3">
-        {/* Own Story / Add Story */}
-        <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
-          <div className="relative w-16 h-16">
+      {/* Horizontal Stories Tray (Facebook-style vertical 2:3 story cards) */}
+      <div
+        data-testid="stories-bar"
+        data-horizontal-strip="true"
+        data-no-pull-refresh="true"
+        className="w-full overflow-x-auto py-2 px-1 no-scrollbar touch-pan-x flex items-stretch gap-2.5"
+      >
+        {/* Add Story / Own Story Card */}
+        <div className="flex-shrink-0 w-[94px] sm:w-[104px] h-[146px] sm:h-[160px] rounded-2xl overflow-hidden ml-glass border border-[var(--border-subtle)] flex flex-col relative group shadow-sm">
+          {ownStory ? (
             <button
               type="button"
               onClick={() => {
-                if (ownStory) {
-                  const idx = viewerStories.findIndex((s) => s.id === ownStory.id);
-                  setSelectedStoryIndex(idx !== -1 ? idx : 0);
-                  setProgress(0);
-                } else {
-                  onCreateStory();
-                }
+                const idx = viewerStories.findIndex((s) => s.id === ownStory.id);
+                setSelectedStoryIndex(idx !== -1 ? idx : 0);
+                setProgress(0);
               }}
-              className="w-16 h-16 rounded-2xl overflow-hidden block focus:outline-none"
+              className="relative w-full h-full block focus:outline-none text-left"
             >
-              {ownStory ? (
-                <div className="w-full h-full rounded-2xl p-[2px] bg-gradient-to-tr from-[var(--accent-primary)] to-[var(--accent-gold)]">
-                  <img
-                    src={ownStory.mediaUrl || currentUser?.avatar || ''}
-                    alt={currentUser?.displayName || 'Your story'}
-                    className="w-full h-full object-cover rounded-[13px]"
-                  />
-                </div>
+              {ownStory.mediaType === 'video' ? (
+                <video
+                  src={ownStory.mediaUrl}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  className="w-full h-full object-cover"
+                />
               ) : (
-                <div className="w-full h-full rounded-2xl p-[2px] border-2 border-dashed border-[var(--accent-primary-border)] bg-[var(--bg-surface-alt)] flex items-center justify-center">
-                  {currentUser?.avatar ? (
-                    <img
-                      src={currentUser.avatar}
-                      alt={currentUser.displayName}
-                      className="w-full h-full object-cover rounded-[12px] opacity-85"
-                    />
-                  ) : (
-                    <Plus className="w-6 h-6 text-[var(--accent-primary)]" />
-                  )}
-                </div>
+                <img
+                  src={ownStory.mediaUrl || currentUser?.avatar || ''}
+                  alt={currentUser?.displayName || 'Your story'}
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                />
               )}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-black/25" />
+              <div className="absolute top-2 left-2 w-8 h-8 rounded-full p-0.5 bg-gradient-to-tr from-[var(--accent-primary)] to-orange-500">
+                {currentUser?.avatar ? (
+                  <img
+                    src={currentUser.avatar}
+                    alt={currentUser.displayName}
+                    className="w-full h-full rounded-full object-cover"
+                  />
+                ) : (
+                  <span className="w-full h-full rounded-full bg-[var(--accent-primary)] text-white text-[10px] font-bold flex items-center justify-center">
+                    {currentUser?.displayName?.[0] || 'U'}
+                  </span>
+                )}
+              </div>
+              <span className="absolute bottom-2 left-2 right-2 text-[11px] font-bold text-white truncate">
+                Your Story
+              </span>
             </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="add-story-card"
+              onClick={onCreateStory}
+              className="w-full h-full flex flex-col focus:outline-none text-left"
+            >
+              <div className="relative h-[68%] w-full bg-[var(--bg-surface-alt)] overflow-hidden flex items-center justify-center">
+                {currentUser?.avatar ? (
+                  <img
+                    src={currentUser.avatar}
+                    alt={currentUser.displayName}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-[var(--accent-primary-soft)] via-[var(--bg-surface-alt)] to-orange-500/10 flex items-center justify-center">
+                    <Plus className="w-6 h-6 text-[var(--accent-primary)] opacity-75" />
+                  </div>
+                )}
+              </div>
+              <div className="relative flex-1 bg-[var(--bg-surface)] flex flex-col items-center justify-end pb-2 px-1.5 border-t border-[var(--border-subtle)]">
+                <span className="absolute -top-4 w-8 h-8 rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] flex items-center justify-center shadow-md border-2 border-[var(--bg-surface-solid)]">
+                  <Plus className="w-4 h-4 stroke-[3px]" />
+                </span>
+                <span className="text-[11px] font-bold text-[var(--text-primary)] truncate max-w-full text-center">
+                  Add Story
+                </span>
+              </div>
+            </button>
+          )}
 
+          {ownStory && (
             <button
               type="button"
               onClick={onCreateStory}
-              className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] flex items-center justify-center shadow-md border-2 border-[var(--bg-surface)]"
+              aria-label="Create another story"
               title="Add Story"
+              className="absolute top-2 right-2 w-7 h-7 rounded-full bg-[var(--accent-primary)] text-white flex items-center justify-center shadow-md border border-white/40 z-10"
             >
               <Plus className="w-3.5 h-3.5 stroke-[3px]" />
             </button>
-          </div>
-          <span className="text-[11px] font-medium text-[var(--text-secondary)] truncate max-w-[68px]">
-            {ownStory ? 'Your Story' : 'Add Story'}
-          </span>
+          )}
         </div>
 
-        {/* Other Users' Stories */}
+        {/* Real Users' Stories */}
         {otherStories.map((story) => (
           <button
             key={story.id}
@@ -180,28 +221,62 @@ export const StoriesBar: React.FC<StoriesBarProps> = ({
               setSelectedStoryIndex(idx !== -1 ? idx : 0);
               setProgress(0);
             }}
-            className="flex-shrink-0 flex flex-col items-center gap-1.5 group focus:outline-none"
+            className="flex-shrink-0 w-[94px] sm:w-[104px] h-[146px] sm:h-[160px] rounded-2xl overflow-hidden relative group focus:outline-none border border-[var(--border-subtle)] shadow-sm text-left bg-black"
           >
+            {story.mediaType === 'video' ? (
+              <video
+                src={story.mediaUrl}
+                muted
+                playsInline
+                preload="metadata"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <img
+                src={story.mediaUrl || story.userAvatar}
+                alt={story.userDisplayName}
+                loading="lazy"
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              />
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/15 to-black/25" />
             <div
-              className={`w-16 h-16 rounded-2xl p-[2px] transition-transform group-hover:scale-105 ${
+              className={`absolute top-2 left-2 w-8 h-8 rounded-full p-[2px] ${
                 story.isViewed
-                  ? 'border border-[var(--border-strong)]'
-                  : 'bg-gradient-to-tr from-[var(--accent-primary)] to-[var(--accent-gold)]'
+                  ? 'bg-white/40'
+                  : 'bg-gradient-to-tr from-[var(--accent-primary)] to-orange-500'
               }`}
             >
-              <div className="w-full h-full bg-[var(--bg-surface)] rounded-[13px] p-0.5 overflow-hidden">
-                <img
-                  src={story.userAvatar}
-                  alt={story.userDisplayName}
-                  className="w-full h-full object-cover rounded-[11px]"
-                />
-              </div>
+              <img
+                src={story.userAvatar}
+                alt={story.userDisplayName}
+                className="w-full h-full rounded-full object-cover border border-black/40"
+              />
             </div>
-            <span className="text-[11px] font-medium text-[var(--text-secondary)] truncate max-w-[68px]">
-              {story.userDisplayName.split(' ')[0]}
+            <span className="absolute bottom-2 left-2 right-2 text-[11px] font-bold text-white leading-tight line-clamp-2 drop-shadow">
+              {story.userDisplayName}
             </span>
           </button>
         ))}
+
+        {/* Clean Empty State Card when no stories from others yet */}
+        {otherStories.length === 0 && (
+          <button
+            type="button"
+            onClick={onCreateStory}
+            className="flex-shrink-0 w-[136px] sm:w-[152px] h-[146px] sm:h-[160px] rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--bg-surface)]/70 p-3 flex flex-col items-center justify-center text-center gap-1.5 hover:border-[var(--accent-primary-border)] transition-colors"
+          >
+            <div className="w-9 h-9 rounded-xl bg-[var(--bg-surface-alt)] flex items-center justify-center text-[var(--accent-primary)]">
+              <Plus className="w-5 h-5" />
+            </div>
+            <p className="text-[11px] font-bold text-[var(--text-primary)] leading-tight">
+              No active stories
+            </p>
+            <p className="text-[10px] text-[var(--text-muted)] leading-snug">
+              Share a moment for 24h
+            </p>
+          </button>
+        )}
       </div>
 
       {/* Full-Screen Stories Viewer */}

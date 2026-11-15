@@ -27,7 +27,9 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({
   const shouldIgnoreTarget = (target: EventTarget | null): boolean => {
     if (!(target instanceof HTMLElement)) return false;
     if (
-      target.closest('video, iframe, input, textarea, select, [data-no-pull-refresh="true"], [data-no-edge-back="true"]')
+      target.closest(
+        'video, iframe, input, textarea, select, [data-no-pull-refresh="true"], [data-no-edge-back="true"], [data-horizontal-strip="true"]'
+      )
     ) {
       return true;
     }

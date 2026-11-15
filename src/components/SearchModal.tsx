@@ -152,7 +152,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
               [
                 { id: 'all', label: 'All' },
                 { id: 'videos', label: 'Videos' },
-                { id: 'shorts', label: 'Shorts' },
+                { id: 'shorts', label: 'Small Video' },
                 { id: 'people', label: 'Creators' },
               ] as const
             ).map((t) => (

@@ -18,7 +18,6 @@ import {
   ArrowLeft,
   X,
   KeyRound,
-  Crown,
   Users,
 } from 'lucide-react';
 import { api } from '../api';
@@ -31,6 +30,11 @@ interface AuthModalProps {
   onClose: () => void;
   onAuthSuccess: (user: UserProfile) => void;
   initialTab?: 'login' | 'register';
+  expiredSessionHint?: {
+    displayName?: string;
+    username?: string;
+    avatar?: string;
+  } | null;
 }
 
 const AVATAR_PRESETS = [
@@ -54,16 +58,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onAuthSuccess,
   initialTab = 'login',
+  expiredSessionHint = null,
 }) => {
   const [activeTab, setActiveTab] = useState<'login' | 'register' | 'forgot'>(initialTab);
   const [regStep, setRegStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Login State
-  const [loginIdentifier, setLoginIdentifier] = useState('');
+  const [loginIdentifier, setLoginIdentifier] = useState(expiredSessionHint?.username || '');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  React.useEffect(() => {
+    if (isOpen && expiredSessionHint?.username) {
+      setActiveTab('login');
+      setLoginIdentifier((prev) => prev || expiredSessionHint.username || '');
+    }
+  }, [isOpen, expiredSessionHint?.username]);
 
   // Register State
   const [fullName, setFullName] = useState('');
@@ -142,25 +154,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
     } catch (err: any) {
       setLoginError(err.message || 'Failed to authenticate');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  // Quick Demo Login for instant testing of multi-user separation
-  const handleQuickLogin = async (identifier: string, pass = 'Motherland2026!') => {
-    setLoginError('');
-    setIsLoggingIn(true);
-    try {
-      const res = await api.login({ identifier, password: pass });
-      if (res.token && res.user) {
-        onAuthSuccess(res.user);
-        onClose();
-      } else {
-        setLoginError(res.message || 'Quick login failed');
-      }
-    } catch (err: any) {
-      setLoginError(err.message || 'Quick login error');
     } finally {
       setIsLoggingIn(false);
     }
@@ -352,6 +345,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
+        {/* Expired Session Prompt to Re-enter Same Account */}
+        {expiredSessionHint && activeTab === 'login' && (
+          <div
+            data-testid="expired-session-hint"
+            className="mb-4 p-3 bg-[var(--accent-gold-soft)] border border-[var(--accent-gold-border)] rounded-xl flex items-center justify-between gap-2.5 text-xs"
+          >
+            <div className="min-w-0">
+              <p className="font-bold text-[var(--text-primary)]">
+                Session expired for {expiredSessionHint.displayName || `@${expiredSessionHint.username}`}
+              </p>
+              <p className="text-[11px] text-[var(--text-secondary)]">
+                Sign in below to restore your existing account (no new account needed).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLoginIdentifier('')}
+              className="text-[11px] font-semibold text-[var(--accent-primary)] hover:underline whitespace-nowrap shrink-0"
+            >
+              Use another account
+            </button>
+          </div>
+        )}
+
         {/* Global Error Notice */}
         {loginError && (
           <div className="mb-4 p-3 bg-[var(--danger-soft)] border border-[var(--danger)]/35 rounded-xl flex items-center gap-2 text-[var(--danger)] text-xs">
@@ -374,7 +391,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   type="text"
                   value={loginIdentifier}
                   onChange={(e) => setLoginIdentifier(e.target.value)}
-                  placeholder="e.g. kefatahmed or kefat@motherland.social"
+                  placeholder="Enter your email, @username, or phone"
                   required
                   className="w-full bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] rounded-xl px-4 py-2.5 pl-10 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-primary)] transition-colors"
                 />
@@ -426,84 +443,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <ArrowRight className="w-4 h-4" />
             </button>
 
-            {/* Quick Multi-User Test Accounts Section */}
-            <div className="pt-4 border-t border-[var(--border-subtle)]">
-              <p className="text-[11px] text-[var(--text-secondary)] text-center font-medium mb-2.5 flex items-center justify-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
-                Test Multi-User Account Switching:
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickLogin('kefatahmed')}
-                  className="flex items-center gap-2 p-2.5 min-h-[44px] rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--accent-gold-border)] hover:border-[var(--accent-gold)] transition-colors text-left"
-                >
-                  <img
-                    src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80"
-                    alt="Kefat"
-                    className="w-7 h-7 rounded-lg object-cover"
-                  />
-                  <div className="overflow-hidden">
-                    <p className="text-[11px] font-bold text-[var(--text-primary)] truncate flex items-center gap-1">
-                      Kefat Ahmed <Crown className="w-3 h-3 text-[var(--accent-gold)]" />
-                    </p>
-                    <p className="text-[9px] text-[var(--accent-primary)]">Founder &amp; Owner</p>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleQuickLogin('nadia_creative')}
-                  className="flex items-center gap-2 p-2.5 min-h-[44px] rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary-border)] transition-colors text-left"
-                >
-                  <img
-                    src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&auto=format&fit=crop&q=80"
-                    alt="Nadia"
-                    className="w-7 h-7 rounded-lg object-cover"
-                  />
-                  <div className="overflow-hidden">
-                    <p className="text-[11px] font-bold text-[var(--text-primary)] truncate">Nadia Hossain</p>
-                    <p className="text-[9px] text-[var(--text-secondary)]">Creator Account</p>
-                  </div>
-                </button>
-              </div>
-
-              {/* Saved accounts on this device */}
-              {savedAccounts.length > 0 && (
-                <div className="mt-3">
-                  <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1.5">Saved Sessions on Device</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {savedAccounts.map((acc) => (
-                      <button
-                        key={acc.id}
-                        type="button"
-                        onClick={() => {
-                          setLoginError('');
-                          api.setToken(acc.token);
-                          api.getCurrentUser().then((res) => {
+            {/* Saved sessions previously authenticated on this device */}
+            {savedAccounts.length > 0 && (
+              <div className="pt-4 border-t border-[var(--border-subtle)]">
+                <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1.5">
+                  Saved Sessions on Device
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {savedAccounts.map((acc) => (
+                    <button
+                      key={acc.id}
+                      type="button"
+                      onClick={() => {
+                        setLoginError('');
+                        api.setToken(acc.token);
+                        api
+                          .getCurrentUser()
+                          .then((res) => {
                             if (res.user) {
                               onAuthSuccess(res.user);
                               onClose();
                             } else {
                               api.setToken('');
-                              setLoginError(`Saved session for ${acc.displayName} expired. Please enter your password.`);
+                              setLoginError(
+                                `Saved session for ${acc.displayName} expired. Please enter your password.`
+                              );
                               setLoginIdentifier(acc.username || '');
                             }
-                          }).catch(() => {
+                          })
+                          .catch(() => {
                             api.setToken('');
                             setLoginError('Could not restore saved session. Please sign in.');
                           });
-                        }}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary-border)] text-[11px] text-[var(--text-primary)] transition-colors"
-                      >
-                        <img src={acc.avatar} alt="" className="w-4 h-4 rounded-full" />
-                        <span>{acc.displayName}</span>
-                      </button>
-                    ))}
-                  </div>
+                      }}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary-border)] text-[11px] text-[var(--text-primary)] transition-colors"
+                    >
+                      <img src={acc.avatar} alt="" className="w-4 h-4 rounded-full" />
+                      <span>{acc.displayName}</span>
+                    </button>
+                  ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </form>
         )}
 

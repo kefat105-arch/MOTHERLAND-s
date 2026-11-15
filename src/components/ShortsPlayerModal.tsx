@@ -87,6 +87,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const [savedMap, setSavedMap] = useState<Record<string, boolean>>({});
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1);
+  const [actionNotice, setActionNotice] = useState<{ text: string; url?: string } | null>(null);
 
   // Playback progress
   const [currentTime, setCurrentTime] = useState(0);
@@ -148,6 +149,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     setDuration(0);
     setIsPlaying(true);
     setMoreMenuOpen(false);
+    setActionNotice(null);
     watchedSecondsRef.current = 0;
     reportedShortRef.current = false;
   }, [currentIndex]);
@@ -305,8 +307,44 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     });
   }, []);
 
-  const toggleLike = (forceLike = false) => {
+  const toggleLike = async (forceLike = false) => {
     if (!currentShort) return;
+    if (isYouTube) {
+      if (!api.getToken()) {
+        setActionNotice({
+          text: 'Sign in and connect Google YouTube permission to like on YouTube.',
+          url: currentShort.youtubeId ? `https://youtube.com/shorts/${currentShort.youtubeId}` : undefined,
+        });
+        return;
+      }
+      const alreadyLiked = Boolean(currentShort.userInteractions?.isLiked);
+      const nextLiked = forceLike ? true : !alreadyLiked;
+      try {
+        await api.rateYouTubeVideo(currentShort.youtubeId || currentShort.id, nextLiked ? 'like' : 'none');
+        setActionNotice(null);
+        setItems((prev) =>
+          prev.map((item, idx) =>
+            idx === currentIndex
+              ? {
+                  ...item,
+                  stats: {
+                    ...item.stats,
+                    likes: Math.max(0, item.stats.likes + (nextLiked === alreadyLiked ? 0 : nextLiked ? 1 : -1)),
+                  },
+                  userInteractions: { ...item.userInteractions, isLiked: nextLiked },
+                }
+              : item
+          )
+        );
+      } catch (err: any) {
+        setActionNotice({
+          text: err?.message || 'YouTube OAuth authorization required to like on YouTube.',
+          url: currentShort.youtubeId ? `https://youtube.com/shorts/${currentShort.youtubeId}` : undefined,
+        });
+      }
+      return;
+    }
+
     setItems((prev) =>
       prev.map((item, idx) => {
         if (idx !== currentIndex) return item;
@@ -332,25 +370,66 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   };
 
   const toggleDislike = () => {
-    if (!currentShort) return;
+    if (!currentShort || isYouTube) return;
     const nextDisliked = !dislikedMap[currentShort.id];
     setDislikedMap((prev) => ({ ...prev, [currentShort.id]: nextDisliked }));
     if (nextDisliked && currentShort.userInteractions?.isLiked) {
-      toggleLike(false);
+      void toggleLike(false);
     }
   };
 
-  const toggleFollow = () => {
-    setItems((prev) =>
-      prev.map((item, idx) =>
-        idx === currentIndex
-          ? {
-              ...item,
-              creator: { ...item.creator, isFollowing: !item.creator.isFollowing },
-            }
-          : item
-      )
-    );
+  const toggleFollow = async () => {
+    if (!currentShort) return;
+    if (isYouTube) {
+      if (!api.getToken()) {
+        setActionNotice({
+          text: 'Sign in and connect YouTube permission to Support this channel on YouTube.',
+          url: `https://www.youtube.com/channel/${encodeURIComponent(currentShort.creator.id)}`,
+        });
+        return;
+      }
+      const nextSub = !currentShort.creator.isFollowing;
+      try {
+        const res = await api.subscribeYouTubeChannel(
+          currentShort.creator.id,
+          nextSub ? 'subscribe' : 'unsubscribe'
+        );
+        if (res.success) {
+          setActionNotice(null);
+          setItems((prev) =>
+            prev.map((item, idx) =>
+              idx === currentIndex
+                ? { ...item, creator: { ...item.creator, isFollowing: Boolean(res.subscribed) } }
+                : item
+            )
+          );
+        }
+      } catch (err: any) {
+        setActionNotice({
+          text: err?.message || 'YouTube OAuth scope required to Support this channel.',
+          url: `https://www.youtube.com/channel/${encodeURIComponent(currentShort.creator.id)}`,
+        });
+      }
+      return;
+    }
+
+    if (!api.getToken()) {
+      setActionNotice({ text: 'Sign in to Support MOTHERLAND creators.' });
+      return;
+    }
+    try {
+      const res = await api.toggleFollow(currentShort.creator.id);
+      setActionNotice(null);
+      setItems((prev) =>
+        prev.map((item, idx) =>
+          idx === currentIndex
+            ? { ...item, creator: { ...item.creator, isFollowing: Boolean(res.isFollowing) } }
+            : item
+        )
+      );
+    } catch (err: any) {
+      setActionNotice({ text: err?.message || 'Could not update Support status.' });
+    }
   };
 
   const handleSurfaceTap = (clientX: number, clientY: number) => {
@@ -366,14 +445,18 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
         tapTimerRef.current = null;
       }
       lastTapTimeRef.current = 0;
-      toggleLike(true);
+      if (!isYouTube) {
+        void toggleLike(true);
 
-      const rect = stageRef.current?.getBoundingClientRect();
-      setShowHeartBurst({
-        x: rect ? clientX - rect.left : 180,
-        y: rect ? clientY - rect.top : 300,
-      });
-      setTimeout(() => setShowHeartBurst(null), 700);
+        const rect = stageRef.current?.getBoundingClientRect();
+        setShowHeartBurst({
+          x: rect ? clientX - rect.left : 180,
+          y: rect ? clientY - rect.top : 300,
+        });
+        setTimeout(() => setShowHeartBurst(null), 700);
+      } else {
+        void toggleLike(true);
+      }
       return;
     }
 
@@ -519,7 +602,79 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  if (!isOpen || items.length === 0 || !currentShort) return null;
+  if (!isOpen) return null;
+
+  if (items.length === 0 || !currentShort) {
+    return (
+      <div
+        data-testid="shorts-player-modal"
+        className="fixed inset-0 z-50 bg-[#101319] flex items-center justify-center select-none overflow-hidden"
+      >
+        <div className="relative w-full max-w-[440px] h-full sm:h-[94dvh] sm:rounded-3xl overflow-hidden bg-[#13161C] sm:border sm:border-white/15 flex flex-col justify-between p-4 shadow-2xl">
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-11 h-11 rounded-full bg-white/15 border border-white/20 text-white hover:bg-white/25 flex items-center justify-center"
+              aria-label="Back from Small Video"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div
+              data-testid="shorts-header-badge"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/12 border border-white/20 text-xs text-white font-semibold"
+            >
+              <span className="w-2 h-2 rounded-full bg-[#D0AF72]" />
+              <span>Small Video</span>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-11 h-11 rounded-full bg-white/15 border border-white/20 text-white hover:bg-white/25 flex items-center justify-center"
+              aria-label="Close Small Video"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="flex-1 flex flex-col items-center justify-center text-center px-4 space-y-4">
+            {isLoadingMore ? (
+              <>
+                <Loader2 className="w-8 h-8 animate-spin text-[#2B8A86]" />
+                <p className="text-sm font-semibold text-white">Loading Small Videos...</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-bold text-white">No Small Videos available right now</p>
+                <p className="text-xs text-white/70 max-w-xs">
+                  {exhaustedNotice || 'Upload a vertical video or check back when creators share Small Videos.'}
+                </p>
+                <div className="flex items-center gap-2.5">
+                  {onLoadMore && (
+                    <button
+                      type="button"
+                      onClick={onLoadMore}
+                      className="min-h-[42px] px-4 py-2 rounded-xl bg-[#2B8A86] text-white text-xs font-bold"
+                    >
+                      Retry
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-white/15 border border-white/20 text-white text-xs font-bold"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+          <div className="h-4" />
+        </div>
+      </div>
+    );
+  }
 
   const isLiked = Boolean(currentShort.userInteractions?.isLiked);
   const isDisliked = Boolean(dislikedMap[currentShort.id]);
@@ -560,7 +715,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             onClick={onClose}
             className="w-11 h-11 rounded-full bg-white/15 backdrop-blur-md border border-white/20 text-white hover:bg-white/25 flex items-center justify-center transition-colors"
             title="Back"
-            aria-label="Back from Shorts"
+            aria-label="Back from Small Video"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -570,7 +725,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/12 backdrop-blur-md border border-white/20 text-xs text-white font-semibold"
           >
             <span className="w-2 h-2 rounded-full bg-[#D0AF72]" />
-            <span>Shorts</span>
+            <span>Small Video</span>
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -586,7 +741,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
               type="button"
               onClick={onClose}
               className="w-11 h-11 rounded-full bg-white/15 backdrop-blur-md border border-white/20 text-white hover:bg-white/25 flex items-center justify-center transition-colors"
-              aria-label="Close Shorts"
+              aria-label="Close Small Video"
             >
               <X className="w-5 h-5" />
             </button>
@@ -694,6 +849,33 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             </div>
           )}
 
+          {/* Honest OAuth / Action Notice */}
+          {actionNotice && (
+            <div className="absolute top-20 inset-x-4 z-40 flex justify-center">
+              <div className="px-3.5 py-2.5 rounded-2xl bg-[#161B26]/95 backdrop-blur-md border border-orange-500/40 text-white text-xs shadow-2xl flex items-center gap-2.5 max-w-sm">
+                <span className="flex-1 leading-snug">{actionNotice.text}</span>
+                {actionNotice.url && (
+                  <a
+                    href={actionNotice.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-[11px] font-bold shrink-0"
+                  >
+                    YouTube
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActionNotice(null)}
+                  className="text-white/70 hover:text-white font-bold px-1"
+                  aria-label="Dismiss notice"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Drag / Swipe Preview Hint Pills */}
           {dragHint === 'next' && nextShort && (
             <div className="absolute bottom-28 inset-x-6 z-30 flex justify-center pointer-events-none">
@@ -714,7 +896,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           {dragHint === 'close' && (
             <div className="absolute top-20 inset-x-6 z-30 flex justify-center pointer-events-none">
               <div className="px-4 py-2 rounded-full bg-black/80 backdrop-blur-md border border-white/20 text-white text-xs font-semibold">
-                Release to exit Shorts
+                Release to exit Small Video
               </div>
             </div>
           )}
@@ -787,11 +969,11 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             <div className="flex items-center gap-2 text-[11px] text-white/75">
               {isYouTube ? (
                 <span className="inline-flex items-center gap-1 text-red-400 font-semibold">
-                  <Youtube className="w-3.5 h-3.5" /> YouTube Shorts
+                  <Youtube className="w-3.5 h-3.5" /> YouTube Small Video
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 text-[#2B8A86] font-semibold">
-                  <Shield className="w-3.5 h-3.5" /> MOTHERLAND Shorts
+                  <Shield className="w-3.5 h-3.5" /> MOTHERLAND Small Video
                 </span>
               )}
             </div>
@@ -826,9 +1008,9 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           </div>
         </div>
 
-        {/* Right Side Action Stack */}
+        {/* Right Side Action Stack (Flame-inspired Action Boxes, inside mobile viewport bounds) */}
         <div
-          className={`absolute right-2.5 bottom-24 z-30 flex flex-col items-center gap-3 text-white transition-opacity duration-200 ${
+          className={`absolute right-2 sm:right-2.5 bottom-24 z-30 flex flex-col items-center gap-2.5 text-white transition-opacity duration-200 ${
             controlsVisible ? 'opacity-100' : 'opacity-80'
           }`}
         >
@@ -838,7 +1020,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
               onClick={goPrev}
               disabled={currentIndex === 0}
               className="w-9 h-9 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center disabled:opacity-30 hover:bg-white/20"
-              aria-label="Previous Short"
+              aria-label="Previous Small Video"
             >
               <ChevronUp className="w-4 h-4" />
             </button>
@@ -847,7 +1029,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
               onClick={goNext}
               disabled={currentIndex >= items.length - 1 && !hasMoreShorts}
               className="w-9 h-9 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center disabled:opacity-30 hover:bg-white/20"
-              aria-label="Next Short"
+              aria-label="Next Small Video"
             >
               <ChevronDown className="w-4 h-4" />
             </button>
@@ -856,11 +1038,13 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           <div className="flex flex-col items-center">
             <button
               type="button"
-              onClick={() => toggleLike(false)}
-              className={`w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform ${
-                isLiked ? 'bg-orange-500/20 border-orange-400/50' : 'text-white'
+              onClick={() => void toggleLike(false)}
+              className={`w-11 h-11 rounded-2xl backdrop-blur-md flex items-center justify-center active:scale-90 transition-all ${
+                isLiked
+                  ? 'border border-orange-400/70 bg-orange-500/25 shadow-[0_0_12px_rgba(249,115,22,0.3)]'
+                  : 'border border-orange-500/30 bg-black/55 hover:border-orange-400/50 text-white'
               }`}
-              aria-label="Fire Like short"
+              aria-label="Fire Like small video"
             >
               <FireLikeIcon size={22} active={isLiked} />
             </button>
@@ -874,10 +1058,12 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
               <button
                 type="button"
                 onClick={toggleDislike}
-                className={`w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform ${
-                  isDisliked ? 'bg-orange-500/20 border-orange-400/50' : 'text-white'
+                className={`w-11 h-11 rounded-2xl backdrop-blur-md flex items-center justify-center active:scale-90 transition-all ${
+                  isDisliked
+                    ? 'border border-orange-400/70 bg-orange-500/25 shadow-[0_0_12px_rgba(249,115,22,0.3)]'
+                    : 'border border-orange-500/30 bg-black/55 hover:border-orange-400/50 text-white'
                 }`}
-                aria-label="Dislike short"
+                aria-label="Dislike small video"
               >
                 <FireDislikeIcon size={20} active={isDisliked} />
               </button>
@@ -897,7 +1083,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                   title: currentShort.title,
                 })
               }
-              className="w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform"
+              className="w-11 h-11 rounded-2xl border border-orange-500/30 bg-black/55 hover:border-orange-400/50 backdrop-blur-md flex items-center justify-center active:scale-90 transition-all"
               aria-label="Talk"
             >
               <TalkIcon size={20} />
@@ -929,10 +1115,12 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                     .catch(() => {});
                 }
               }}
-              className={`w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform ${
-                isSaved ? 'bg-orange-500/20 border-orange-400/50' : 'text-white'
+              className={`w-11 h-11 rounded-2xl backdrop-blur-md flex items-center justify-center active:scale-90 transition-all ${
+                isSaved
+                  ? 'border border-orange-400/70 bg-orange-500/25 shadow-[0_0_12px_rgba(249,115,22,0.3)]'
+                  : 'border border-orange-500/30 bg-black/55 hover:border-orange-400/50 text-white'
               }`}
-              aria-label="Vault short"
+              aria-label="Vault small video"
             >
               <VaultIcon size={20} active={isSaved} />
             </button>
@@ -945,8 +1133,8 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             <button
               type="button"
               onClick={handleShare}
-              className="w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform"
-              aria-label="Boost short"
+              className="w-11 h-11 rounded-2xl border border-orange-500/30 bg-black/55 hover:border-orange-400/50 backdrop-blur-md flex items-center justify-center active:scale-90 transition-all"
+              aria-label="Boost small video"
             >
               {copiedId === currentShort.id ? (
                 <Check className="w-5 h-5 text-orange-400" />
@@ -963,7 +1151,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             <button
               type="button"
               onClick={() => setMoreMenuOpen((o) => !o)}
-              className="w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform"
+              className="w-11 h-11 rounded-2xl border border-orange-500/30 bg-black/55 hover:border-orange-400/50 backdrop-blur-md flex items-center justify-center active:scale-90 transition-all"
               aria-label="More options"
             >
               <MoreVertical className="w-5 h-5" />

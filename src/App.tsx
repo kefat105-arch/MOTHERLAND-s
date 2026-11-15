@@ -20,6 +20,10 @@ import {
   Users,
   Bell,
   Globe,
+  UserPlus,
+  UserCheck,
+  X,
+  AlertCircle,
 } from 'lucide-react';
 import { api } from './api';
 import type {
@@ -32,6 +36,7 @@ import type {
   PlatformAdapterInfo,
   ReactionType,
   ChatMessage,
+  FriendRequest,
 } from './types';
 
 import { Header } from './components/Header';
@@ -77,6 +82,7 @@ import { parseGoogleOAuthHashRedirect } from './services/youtubeAuthService';
 import { playNotificationChime, playMessageChime } from './utils/motherlandSoundEngine';
 
 const LEGACY_FEED_CACHE_KEY = 'motherland_instant_cache_v1';
+const LAST_USER_HINT_KEY = 'motherland_last_user_hint';
 
 function isEligibleShortVideo(short: ShortVideo): boolean {
   if (typeof short.durationSeconds === 'number') {
@@ -157,8 +163,22 @@ export default function App() {
   const [homeFeedPage, setHomeFeedPage] = useState(1);
   const [isLoadingMorePosts, setIsLoadingMorePosts] = useState(false);
   const [hasMorePosts, setHasMorePosts] = useState(true);
+  const [homeFeedError, setHomeFeedError] = useState('');
+  const [peopleDiscovery, setPeopleDiscovery] = useState<{
+    suggested: UserProfile[];
+    pendingRequests: FriendRequest[];
+    loaded: boolean;
+  }>({ suggested: [], pendingRequests: [], loaded: false });
+  const [sentRequestIds, setSentRequestIds] = useState<Record<string, boolean>>({});
+  const [expiredSessionHint, setExpiredSessionHint] = useState<{
+    displayName?: string;
+    username?: string;
+    avatar?: string;
+  } | null>(null);
   const lastAutoRefreshRef = useRef<number>(Date.now());
   const homeSentinelRef = useRef<HTMLDivElement | null>(null);
+  const homeYtCursorRef = useRef<string>('');
+  const sessionExpiredPromptedRef = useRef(false);
   const savedScrollRef = useRef<number>(0);
 
   // Persistent Long-Form Watch Player State
@@ -389,12 +409,83 @@ export default function App() {
     return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
   }, []);
 
+  const refreshPeopleDiscovery = useCallback(async (userOverride?: UserProfile | null) => {
+    const activeUser = userOverride !== undefined ? userOverride : currentUserRef.current;
+    try {
+      if (activeUser || api.getToken()) {
+        const fr = await api.getFriendsData().catch(() => null);
+        if (fr) {
+          setPeopleDiscovery({
+            suggested: fr.suggested || [],
+            pendingRequests: fr.pendingRequests || [],
+            loaded: true,
+          });
+          return;
+        }
+      }
+      const res = await api.searchUsers('').catch(() => ({ users: [] }));
+      setPeopleDiscovery({
+        suggested: (res.users || []).filter((u) => u.id !== activeUser?.id),
+        pendingRequests: [],
+        loaded: true,
+      });
+    } catch {
+      setPeopleDiscovery((prev) => ({ ...prev, loaded: true }));
+    }
+  }, []);
+
+  const refreshCurrentUserCounts = useCallback(async () => {
+    try {
+      const res = await api.getCurrentUser();
+      if (res.user) setCurrentUser(res.user);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const bootstrapApp = async () => {
     try {
       setAuthToken(api.getToken() || '');
-      const userData = await api.getCurrentUser().catch(() => ({ user: null }));
+      setHomeFeedError('');
+      homeYtCursorRef.current = '';
+      const userData = await api.getCurrentUser().catch(() => ({
+        user: null,
+        sessionExpired: false,
+      }));
       const resolvedUser = userData.user || null;
       setWatchSuppressionUserId(resolvedUser?.id || null);
+
+      if (resolvedUser) {
+        sessionExpiredPromptedRef.current = false;
+        setExpiredSessionHint(null);
+        try {
+          localStorage.setItem(
+            LAST_USER_HINT_KEY,
+            JSON.stringify({
+              displayName: resolvedUser.displayName,
+              username: resolvedUser.username,
+              avatar: resolvedUser.avatar,
+            })
+          );
+        } catch {
+          // ignore
+        }
+      } else if (userData.sessionExpired) {
+        api.setToken('');
+        setAuthToken('');
+        let hint: { displayName?: string; username?: string; avatar?: string } | null = null;
+        try {
+          const raw = localStorage.getItem(LAST_USER_HINT_KEY);
+          if (raw) hint = JSON.parse(raw);
+        } catch {
+          hint = null;
+        }
+        setExpiredSessionHint(hint);
+        if (!sessionExpiredPromptedRef.current) {
+          sessionExpiredPromptedRef.current = true;
+          setIsAuthOpen(true);
+        }
+      }
 
       const [
         ytData,
@@ -413,7 +504,12 @@ export default function App() {
         api.getShorts(false, 1, 12).catch(() => ({ shorts: [], nextPageToken: null, hasMore: true })),
         api.getLongVideos().catch(() => ({ videos: [] })),
         api.getToken() ? api.getConversations().catch(() => ({ totalUnread: 0 })) : Promise.resolve({ totalUnread: 0 }),
-        api.getPosts(feedFilter, 'all', 1, 10).catch(() => ({ posts: [], hasMore: false })),
+        api.getPosts(feedFilter, 'all', 1, 10, '').catch((err) => ({
+          posts: [],
+          hasMore: true,
+          nextYtCursor: null,
+          errorMessage: err?.message || 'Unable to load feed',
+        })),
       ]);
 
       const nextStories = storiesData.stories || [];
@@ -432,6 +528,11 @@ export default function App() {
         ]);
         resolvedNotifs = cookieNotifs.notifications || [];
         resolvedUnread = (cookieConvs as any).totalUnread || 0;
+      }
+
+      homeYtCursorRef.current = (postsData as any).nextYtCursor || '';
+      if ((postsData as any).errorMessage) {
+        setHomeFeedError(String((postsData as any).errorMessage));
       }
 
       setCurrentUser(resolvedUser);
@@ -453,6 +554,7 @@ export default function App() {
 
       recordShownFeedIds('home', nextPosts.map((p) => p.externalId || p.id));
       recordShownFeedIds('shorts', nextShorts.map((s) => s.youtubeId || s.id));
+      void refreshPeopleDiscovery(resolvedUser);
     } catch (err) {
       console.error('Bootstrap error:', err);
     } finally {
@@ -464,24 +566,30 @@ export default function App() {
   const loadPosts = async (type: 'all' | 'for_you' | 'motherland' | 'saved' = feedFilter, reset = true) => {
     try {
       if (reset) {
+        setHomeFeedError('');
         setHomeFeedPage(1);
-        const data = await api.getPosts(type, 'all', 1, 10);
+        homeYtCursorRef.current = '';
+        const data = await api.getPosts(type, 'all', 1, 10, '');
+        homeYtCursorRef.current = data.nextYtCursor || '';
         const filtered = filterUnsuppressed(data.posts || [], true);
         setPosts(filtered);
         setHasMorePosts(data.hasMore !== false);
         recordShownFeedIds('home', filtered.map((p) => p.externalId || p.id));
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load posts:', err);
+      setHomeFeedError(err?.message || 'Unable to load posts');
     }
   };
 
   const loadMorePosts = async () => {
     if (isLoadingMorePosts || !hasMorePosts) return;
     setIsLoadingMorePosts(true);
+    setHomeFeedError('');
     try {
       const nextPage = homeFeedPage + 1;
-      const data = await api.getPosts(feedFilter, 'all', nextPage, 10);
+      const data = await api.getPosts(feedFilter, 'all', nextPage, 10, homeYtCursorRef.current);
+      homeYtCursorRef.current = data.nextYtCursor || '';
       if (data.posts && data.posts.length > 0) {
         const filtered = filterUnsuppressed(data.posts, true);
         recordShownFeedIds('home', filtered.map((p) => p.externalId || p.id));
@@ -492,8 +600,9 @@ export default function App() {
         setHomeFeedPage(nextPage);
       }
       setHasMorePosts(data.hasMore !== false);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Load more posts error:', err);
+      setHomeFeedError(err?.message || 'Failed to load more posts');
     } finally {
       setIsLoadingMorePosts(false);
     }
@@ -609,9 +718,11 @@ export default function App() {
     setIsRefreshing(false);
   };
 
-  // Full-Screen Shorts open/close preserving exact scroll position
+  // Full-Screen Small Video open/close preserving exact scroll position
   const openShortsPlayer = (list: ShortVideo[], startIndex = 0) => {
-    savedScrollRef.current = window.scrollY;
+    if (!shortsPlayerState.isOpen) {
+      savedScrollRef.current = window.scrollY;
+    }
     setShortsPlayerState({
       isOpen: true,
       list: list.length > 0 ? list : shorts,
@@ -684,6 +795,7 @@ export default function App() {
     try {
       await api.deletePost(postId);
       setPosts((prev) => prev.filter((p) => p.id !== postId));
+      void refreshCurrentUserCounts();
     } catch (err) {
       console.error('Delete post error:', err);
     }
@@ -752,6 +864,12 @@ export default function App() {
       setAuthToken('');
       setNotifications([]);
       setUnreadMessagesCount(0);
+      setExpiredSessionHint(null);
+      try {
+        localStorage.removeItem(LAST_USER_HINT_KEY);
+      } catch {
+        // ignore
+      }
       await bootstrapApp();
     } catch (err) {
       console.error('Logout error:', err);
@@ -763,6 +881,12 @@ export default function App() {
     setAuthToken('');
     setNotifications([]);
     setUnreadMessagesCount(0);
+    setExpiredSessionHint(null);
+    try {
+      localStorage.removeItem(LAST_USER_HINT_KEY);
+    } catch {
+      // ignore
+    }
     setActiveNav('home');
     await bootstrapApp();
   };
@@ -792,68 +916,315 @@ export default function App() {
     activeWatchVideo && (isWatchMinimized || activeNav !== 'video')
   );
 
-  // Render inline horizontal Shorts carousel inside Home feed
+  // Render inline horizontal Small Video carousel inside Home feed
   const renderHomeShortsStrip = (offset = 0) => {
-    if (shorts.length === 0) return null;
     const rotated =
-      offset > 0 && shorts.length > 3
+      shorts.length > 0 && offset > 0 && shorts.length > 3
         ? [...shorts.slice(offset % shorts.length), ...shorts.slice(0, offset % shorts.length)]
         : shorts;
 
     return (
-      <section className="ml-glass rounded-2xl p-3.5">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-[var(--accent-gold-soft)] border border-[var(--accent-gold-border)] flex items-center justify-center text-[var(--accent-gold)]">
+      <section
+        data-testid="home-small-video-strip"
+        data-horizontal-strip="true"
+        data-no-pull-refresh="true"
+        className="ml-glass rounded-2xl p-3.5 w-full min-w-0"
+      >
+        <div className="flex items-center justify-between mb-3 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-[var(--accent-gold-soft)] border border-[var(--accent-gold-border)] flex items-center justify-center text-[var(--accent-gold)] shrink-0">
               <Flame className="w-4 h-4" />
             </div>
-            <h3 className="font-bold text-sm text-[var(--text-primary)]">Shorts</h3>
+            <h3 className="font-bold text-sm text-[var(--text-primary)] truncate">Small Video</h3>
           </div>
           <button
             type="button"
             onClick={() => openShortsPlayer(shorts, 0)}
-            className="text-xs font-bold text-[var(--accent-primary)] hover:underline flex items-center gap-0.5 min-h-[36px] px-1"
+            className="text-xs font-bold text-[var(--accent-primary)] hover:underline flex items-center gap-0.5 min-h-[36px] px-1 shrink-0"
           >
             <span>Watch all</span>
             <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <div className="flex items-stretch gap-2.5 overflow-x-auto no-scrollbar snap-x snap-mandatory pb-1">
-          {rotated.slice(0, 10).map((short) => {
-            const actualIndex = shorts.findIndex((s) => s.id === short.id);
-            return (
+        {rotated.length === 0 ? (
+          <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] px-3.5 py-4">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-[var(--text-primary)]">
+                {isFetchingInitialPosts || isLoadingMoreShorts
+                  ? 'Loading Small Videos...'
+                  : 'No Small Videos available right now'}
+              </p>
+              <p className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                Tap Retry to fetch the latest vertical videos.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setIsLoadingMoreShorts(true);
+                api
+                  .getShorts(false, 1, 12)
+                  .then((res) => {
+                    const fresh = filterUnsuppressed(res.shorts || []).filter(isEligibleShortVideo);
+                    setShorts(fresh);
+                    setShortsPage(1);
+                    setShortsNextPageToken(res.nextPageToken || null);
+                    setShortsHasMore(res.hasMore !== false);
+                  })
+                  .catch(() => {})
+                  .finally(() => setIsLoadingMoreShorts(false));
+              }}
+              className="ml-flame-box px-3 py-2 rounded-xl text-xs font-bold text-[var(--text-primary)] shrink-0"
+            >
+              {isLoadingMoreShorts ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5" />
+              )}
+              <span>Retry</span>
+            </button>
+          </div>
+        ) : (
+          <div
+            data-horizontal-strip="true"
+            className="flex items-stretch gap-2.5 overflow-x-auto no-scrollbar snap-x snap-mandatory pb-1 touch-pan-x"
+          >
+            {rotated.slice(0, 10).map((short) => {
+              const actualIndex = shorts.findIndex((s) => s.id === short.id);
+              return (
+                <button
+                  key={`${short.id}-${offset}`}
+                  type="button"
+                  onClick={() => openShortsPlayer(shorts, actualIndex >= 0 ? actualIndex : 0)}
+                  className="flex-shrink-0 w-[132px] sm:w-[148px] aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] snap-start relative group text-left shadow-sm"
+                >
+                  <img
+                    src={short.thumbnailUrl}
+                    alt={short.title}
+                    loading="lazy"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#13161C]/90 via-[#13161C]/15 to-transparent" />
+                  <div className="absolute bottom-2.5 left-2.5 right-2.5">
+                    <p className="text-[11px] font-bold text-white line-clamp-2 leading-snug drop-shadow">
+                      {short.title}
+                    </p>
+                    <p className="text-[10px] text-white/75 mt-1 tabular-nums">
+                      {short.stats.views.toLocaleString()} views
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    );
+  };
+
+  // Render inline horizontal People Discovery & Friend Requests strip inside Home feed
+  const renderHomePeopleStrip = () => {
+    const hasRequests = peopleDiscovery.pendingRequests.length > 0;
+    const hasSuggested = peopleDiscovery.suggested.length > 0;
+
+    return (
+      <section
+        data-testid="home-people-strip"
+        data-horizontal-strip="true"
+        data-no-pull-refresh="true"
+        className="ml-glass rounded-2xl p-3.5 w-full min-w-0"
+      >
+        <div className="flex items-center justify-between mb-3 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] flex items-center justify-center text-[var(--accent-primary)] shrink-0">
+              <Users className="w-4 h-4" />
+            </div>
+            <h3 className="font-bold text-sm text-[var(--text-primary)] truncate">
+              {hasRequests ? 'Friend Requests & People' : 'People You May Know'}
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveNav('friends')}
+            className="text-xs font-bold text-[var(--accent-primary)] hover:underline flex items-center gap-0.5 min-h-[36px] px-1 shrink-0"
+          >
+            <span>See all</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div
+          data-horizontal-strip="true"
+          className="flex items-stretch gap-2.5 overflow-x-auto no-scrollbar snap-x snap-mandatory pb-1 touch-pan-x"
+        >
+          {peopleDiscovery.pendingRequests.map((req) => (
+            <div
+              key={`req-${req.id}`}
+              className="flex-shrink-0 w-[166px] rounded-2xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] overflow-hidden snap-start flex flex-col"
+            >
               <button
-                key={`${short.id}-${offset}`}
                 type="button"
-                onClick={() => openShortsPlayer(shorts, actualIndex >= 0 ? actualIndex : 0)}
-                className="flex-shrink-0 w-[132px] sm:w-[148px] aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] snap-start relative group text-left shadow-sm"
+                onClick={() =>
+                  setCreatorTarget({
+                    userId: req.sender.id,
+                    displayName: req.sender.displayName,
+                    username: req.sender.username,
+                    avatar: req.sender.avatar,
+                    source: 'motherland',
+                  })
+                }
+                className="w-full h-28 bg-black/20 overflow-hidden block"
               >
                 <img
-                  src={short.thumbnailUrl}
-                  alt={short.title}
-                  loading="lazy"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  src={req.sender.avatar}
+                  alt={req.sender.displayName}
+                  className="w-full h-full object-cover"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#13161C]/90 via-[#13161C]/15 to-transparent" />
-                <div className="absolute bottom-2.5 left-2.5 right-2.5">
-                  <p className="text-[11px] font-bold text-white line-clamp-2 leading-snug drop-shadow">
-                    {short.title}
+              </button>
+              <div className="p-2.5 flex-1 flex flex-col justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-[var(--text-primary)] truncate">
+                    {req.sender.displayName}
                   </p>
-                  <p className="text-[10px] text-white/75 mt-1 tabular-nums">
-                    {short.stats.views.toLocaleString()} views
+                  <p className="text-[10px] text-[var(--accent-gold)] font-semibold truncate">
+                    Sent friend request
                   </p>
                 </div>
-              </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!requireSignedIn()) return;
+                      await api.respondFriendRequest(req.id, 'accept').catch(() => {});
+                      void refreshPeopleDiscovery();
+                      void refreshCurrentUserCounts();
+                    }}
+                    className="flex-1 min-h-[34px] rounded-xl bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] text-[11px] font-bold"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!requireSignedIn()) return;
+                      await api.respondFriendRequest(req.id, 'reject').catch(() => {});
+                      void refreshPeopleDiscovery();
+                    }}
+                    className="w-8 min-h-[34px] rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] text-[var(--text-secondary)] flex items-center justify-center"
+                    aria-label="Decline request"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {peopleDiscovery.suggested.map((person) => {
+            const isSent = Boolean(sentRequestIds[person.id]);
+            return (
+              <div
+                key={`sug-${person.id}`}
+                className="flex-shrink-0 w-[166px] rounded-2xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] overflow-hidden snap-start flex flex-col"
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCreatorTarget({
+                      userId: person.id,
+                      displayName: person.displayName,
+                      username: person.username,
+                      avatar: person.avatar,
+                      source: 'motherland',
+                    })
+                  }
+                  className="w-full h-28 bg-black/20 overflow-hidden block"
+                >
+                  <img
+                    src={person.avatar}
+                    alt={person.displayName}
+                    className="w-full h-full object-cover"
+                  />
+                </button>
+                <div className="p-2.5 flex-1 flex flex-col justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[var(--text-primary)] truncate">
+                      {person.displayName}
+                    </p>
+                    <p className="text-[10px] text-[var(--text-secondary)] truncate">
+                      @{person.username}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isSent}
+                    onClick={async () => {
+                      if (!requireSignedIn()) return;
+                      try {
+                        await api.sendFriendRequest(person.id);
+                        setSentRequestIds((prev) => ({ ...prev, [person.id]: true }));
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    className={`w-full min-h-[34px] rounded-xl text-[11px] font-bold flex items-center justify-center gap-1 ${
+                      isSent
+                        ? 'ml-flame-box-active text-[var(--text-primary)]'
+                        : 'bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)]'
+                    }`}
+                  >
+                    {isSent ? (
+                      <>
+                        <UserCheck className="w-3.5 h-3.5" />
+                        <span>Requested</span>
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>Add Friend</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
             );
           })}
+
+          {!hasRequests && !hasSuggested && (
+            <button
+              type="button"
+              onClick={() => {
+                if (currentUser) {
+                  setActiveNav('friends');
+                } else {
+                  setIsAuthOpen(true);
+                }
+              }}
+              className="flex-shrink-0 w-full min-w-[240px] rounded-2xl border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface-alt)] px-4 py-5 flex items-center gap-3 text-left hover:border-[var(--accent-primary-border)] transition-colors"
+            >
+              <div className="w-11 h-11 rounded-full bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] flex items-center justify-center text-[var(--accent-primary)] shrink-0">
+                <UserPlus className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-[var(--text-primary)]">
+                  {currentUser ? 'Find friends on MOTHERLAND' : 'Sign in to discover people'}
+                </p>
+                <p className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                  {currentUser
+                    ? 'Search real accounts or manage requests in Friends.'
+                    : 'Create an account or sign in to add friends.'}
+                </p>
+              </div>
+            </button>
+          )}
         </div>
       </section>
     );
   };
 
   return (
-    <div className="min-h-screen ml-canvas-bg text-[var(--text-primary)] font-['Plus_Jakarta_Sans'] flex flex-col selection:bg-[var(--accent-primary)] selection:text-[var(--accent-primary-contrast)] transition-colors">
+    <div className="min-h-screen w-full max-w-[100vw] overflow-x-clip ml-canvas-bg text-[var(--text-primary)] font-['Plus_Jakarta_Sans'] flex flex-col selection:bg-[var(--accent-primary)] selection:text-[var(--accent-primary-contrast)] transition-colors">
       {/* Subtle Edge-Swipe Back Indicator */}
       {edgeSwipePx > 14 && (
         <div
@@ -917,9 +1288,9 @@ export default function App() {
         {/* ========================================================= */}
         {activeNav === 'home' && (
           <PullToRefresh onRefresh={refreshAll} disabled={isRefreshing}>
-            <div className="max-w-6xl mx-auto px-2.5 sm:px-4 py-3.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <div className="max-w-6xl mx-auto px-2.5 sm:px-4 py-3.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-5 w-full min-w-0">
               {/* Center Feed Column */}
-              <div className="lg:col-span-8 space-y-4">
+              <div className="lg:col-span-8 space-y-4 min-w-0">
                 {/* Stories Carousel */}
                 <div className="ml-glass rounded-2xl p-2.5">
                   <StoriesBar
@@ -1164,6 +1535,7 @@ export default function App() {
                     </button>
                   </div>
                   {renderHomeShortsStrip(0)}
+                  {renderHomePeopleStrip()}
                 </>
               ) : (
                 <>
@@ -1172,6 +1544,9 @@ export default function App() {
                       (idx === 1 && posts.length >= 2) ||
                       (idx > 2 && (idx - 1) % 4 === 0) ||
                       (posts.length === 1 && idx === 0);
+                    const showPeopleAfter =
+                      (idx === 3 && posts.length >= 4) ||
+                      (posts.length > 0 && posts.length < 4 && idx === posts.length - 1);
 
                     return (
                       <React.Fragment key={post.id}>
@@ -1205,6 +1580,7 @@ export default function App() {
                           }
                         />
                         {showShortsAfter && renderHomeShortsStrip(idx)}
+                        {showPeopleAfter && renderHomePeopleStrip()}
                       </React.Fragment>
                     );
                   })}
@@ -1215,6 +1591,21 @@ export default function App() {
                       <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl ml-glass text-xs text-[var(--accent-primary)] font-semibold">
                         <Loader2 className="w-4 h-4 animate-spin" />
                         <span>Loading more posts...</span>
+                      </div>
+                    ) : homeFeedError ? (
+                      <div className="inline-flex flex-col items-center gap-2 px-4 py-3 rounded-2xl ml-glass">
+                        <p className="text-xs text-[var(--accent-danger)] font-semibold flex items-center gap-1.5">
+                          <AlertCircle className="w-3.5 h-3.5" />
+                          <span>{homeFeedError}</span>
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => (posts.length === 0 ? loadPosts(feedFilter, true) : loadMorePosts())}
+                          className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] text-xs font-bold inline-flex items-center gap-1.5"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Retry</span>
+                        </button>
                       </div>
                     ) : hasMorePosts ? (
                       <button
@@ -1567,26 +1958,24 @@ export default function App() {
           onTabChange={(tab) => {
             if (tab === 'shorts') {
               const latestUnsuppressed = filterUnsuppressed(shorts).filter(isEligibleShortVideo);
-              if (latestUnsuppressed.length > 0) {
-                openShortsPlayer(latestUnsuppressed, 0);
-              }
+              openShortsPlayer(latestUnsuppressed, 0);
+              setIsLoadingMoreShorts(true);
               api
                 .getShorts(false, 1, 12)
                 .then((res) => {
                   const fresh = filterUnsuppressed(res.shorts || []).filter(isEligibleShortVideo);
-                  if (fresh.length > 0) {
-                    setShorts(fresh);
-                    setShortsPage(1);
-                    setShortsNextPageToken(res.nextPageToken || null);
-                    setShortsHasMore(res.hasMore !== false);
-                    setShortsPlayerState((prev) =>
-                      prev.isOpen && prev.list.length > 0
-                        ? prev
-                        : { isOpen: true, list: fresh, initialIndex: 0 }
-                    );
-                  }
+                  setShorts(fresh);
+                  setShortsPage(1);
+                  setShortsNextPageToken(res.nextPageToken || null);
+                  setShortsHasMore(res.hasMore !== false);
+                  setShortsPlayerState((prev) =>
+                    prev.isOpen && prev.list.length > 0
+                      ? prev
+                      : { isOpen: true, list: fresh, initialIndex: 0 }
+                  );
                 })
-                .catch(() => {});
+                .catch(() => {})
+                .finally(() => setIsLoadingMoreShorts(false));
               return;
             }
             if (tab === 'video' && activeNav === 'video' && activeWatchVideo && !isWatchMinimized) {
@@ -1642,13 +2031,17 @@ export default function App() {
             setCreateModalState({ isOpen: false, initialMode: 'menu' });
             setVideoPublishState({ isOpen: true, initialDestination: 'select' });
           }}
-          onPostCreated={() => loadPosts(feedFilter, true)}
+          onPostCreated={() => {
+            void loadPosts(feedFilter, true);
+            void refreshCurrentUserCounts();
+          }}
           onStoryCreated={() =>
             api.getStories().then((res) => setStories(res.stories || []))
           }
-          onShortCreated={() =>
-            api.getShorts().then((res) => setShorts(res.shorts || []))
-          }
+          onShortCreated={() => {
+            api.getShorts().then((res) => setShorts(res.shorts || []));
+            void refreshCurrentUserCounts();
+          }}
         />
       )}
 
@@ -1661,9 +2054,13 @@ export default function App() {
           initialDestination={videoPublishState.initialDestination}
           onMotherlandVideoCreated={() => {
             api.getLongVideos().then((res) => setLongVideos(res.videos || []));
-            loadPosts(feedFilter, true);
+            void loadPosts(feedFilter, true);
+            void refreshCurrentUserCounts();
           }}
-          onMotherlandPostCreated={() => loadPosts(feedFilter, true)}
+          onMotherlandPostCreated={() => {
+            void loadPosts(feedFilter, true);
+            void refreshCurrentUserCounts();
+          }}
           onYouTubeConnectionChanged={bootstrapApp}
         />
       )}
@@ -1745,6 +2142,7 @@ export default function App() {
         isOpen={isAuthOpen}
         onClose={() => setIsAuthOpen(false)}
         onAuthSuccess={handleAuthSuccess}
+        expiredSessionHint={expiredSessionHint}
       />
 
       {/* 11. Marketplace · Social Apps */}
@@ -1857,6 +2255,19 @@ export default function App() {
           if (!requireSignedIn()) return;
           setChatTargetUserId(userId);
           setIsMessagesOpen(true);
+        }}
+        onPlayVideo={(video) => {
+          setCreatorTarget(null);
+          setActiveWatchVideo(video);
+          setIsWatchMinimized(false);
+          setActiveNav('video');
+        }}
+        onPlayShort={(shortList, index) => {
+          setCreatorTarget(null);
+          openShortsPlayer(shortList, index);
+        }}
+        onSupportChanged={() => {
+          void refreshCurrentUserCounts();
         }}
       />
 

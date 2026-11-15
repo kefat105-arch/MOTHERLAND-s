@@ -135,6 +135,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const [dislikedMap, setDislikedMap] = useState<Record<string, boolean>>({});
   const [savedMap, setSavedMap] = useState<Record<string, boolean>>({});
   const [subscribedMap, setSubscribedMap] = useState<Record<string, boolean>>({});
+  const [watchActionNotice, setWatchActionNotice] = useState<{ text: string; url?: string } | null>(null);
   const [showFullDesc, setShowFullDesc] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -228,6 +229,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   useEffect(() => {
     setShowFullDesc(false);
     setMoreMenuOpen(false);
+    setWatchActionNotice(null);
+    if (watchingVideo?.source === 'youtube' && watchingVideo.channel?.id && api.getToken()) {
+      api
+        .getYouTubeSubscriptionStatus(watchingVideo.channel.id)
+        .then((res) => {
+          if (res.connected && res.hasScope) {
+            setSubscribedMap((m) => ({ ...m, [watchingVideo.channel.id]: Boolean(res.subscribed) }));
+          }
+        })
+        .catch(() => {});
+    }
   }, [watchingVideo?.id]);
 
   // Smart Staleness Auto-Refresh: quietly updates unseen recommendations without disturbing active player
@@ -597,6 +609,73 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
     });
   };
 
+  const handleToggleWatchSupport = async (video: LongVideo, currentlySubscribed: boolean) => {
+    setWatchActionNotice(null);
+    if (video.source === 'youtube') {
+      if (!api.getToken()) {
+        setWatchActionNotice({
+          text: 'Sign in and connect Google YouTube permission to Support this channel on YouTube.',
+          url: `https://www.youtube.com/channel/${encodeURIComponent(video.channel.id)}`,
+        });
+        return;
+      }
+      try {
+        const res = await api.subscribeYouTubeChannel(
+          video.channel.id,
+          currentlySubscribed ? 'unsubscribe' : 'subscribe'
+        );
+        if (res.success) {
+          setSubscribedMap((m) => ({ ...m, [video.channel.id]: Boolean(res.subscribed) }));
+        }
+      } catch (err: any) {
+        setWatchActionNotice({
+          text: err?.message || 'YouTube OAuth authorization required to Support this channel.',
+          url: `https://www.youtube.com/channel/${encodeURIComponent(video.channel.id)}`,
+        });
+      }
+      return;
+    }
+
+    if (!api.getToken()) {
+      setWatchActionNotice({ text: 'Sign in to Support MOTHERLAND creators.' });
+      return;
+    }
+    try {
+      const res = await api.toggleFollow(video.channel.id);
+      setSubscribedMap((m) => ({ ...m, [video.channel.id]: Boolean(res.isFollowing) }));
+    } catch (err: any) {
+      setWatchActionNotice({ text: err?.message || 'Unable to update Support status.' });
+    }
+  };
+
+  const handleToggleWatchLike = async (video: LongVideo, currentlyLiked: boolean, currentlyDisliked: boolean) => {
+    setWatchActionNotice(null);
+    if (video.source === 'youtube') {
+      if (!api.getToken()) {
+        setWatchActionNotice({
+          text: 'Sign in and connect Google YouTube permission to like videos on YouTube.',
+          url: video.youtubeId ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.youtubeId)}` : undefined,
+        });
+        return;
+      }
+      const nextLiked = !currentlyLiked;
+      try {
+        await api.rateYouTubeVideo(video.youtubeId || video.id, nextLiked ? 'like' : 'none');
+        setLikedMap((m) => ({ ...m, [video.id]: nextLiked }));
+      } catch (err: any) {
+        setWatchActionNotice({
+          text: err?.message || 'YouTube OAuth authorization required to like on YouTube.',
+          url: video.youtubeId ? `https://www.youtube.com/watch?v=${encodeURIComponent(video.youtubeId)}` : undefined,
+        });
+      }
+      return;
+    }
+
+    const next = !currentlyLiked;
+    setLikedMap((m) => ({ ...m, [video.id]: next }));
+    if (next && currentlyDisliked) setDislikedMap((m) => ({ ...m, [video.id]: false }));
+  };
+
   const handleShareVideo = async (video: LongVideo) => {
     const shareUrl = video.youtubeId
       ? `https://www.youtube.com/watch?v=${video.youtubeId}`
@@ -790,22 +869,32 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setSubscribedMap((m) => ({
-                    ...m,
-                    [watchingVideo.channel.id]: !isSubscribed,
-                  }))
-                }
+                onClick={() => void handleToggleWatchSupport(watchingVideo, isSubscribed)}
                 className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors flex-shrink-0 ${
                   isSubscribed
-                    ? 'bg-[var(--bg-surface-alt)] text-[var(--text-primary)] border border-[var(--border-subtle)]'
+                    ? 'ml-flame-box-active'
                     : 'bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)]'
                 }`}
               >
-                {isSubscribed && <Bell className="w-3.5 h-3.5 text-[var(--accent-gold)]" />}
+                {isSubscribed && <Bell className="w-3.5 h-3.5 text-orange-400" />}
                 <span>{isSubscribed ? 'Supporting ✓' : 'Support'}</span>
               </button>
             </div>
+            {watchActionNotice && (
+              <div className="p-2.5 rounded-xl bg-[var(--accent-gold-soft)] border border-[var(--accent-gold-border)] text-xs text-[var(--accent-gold)] flex items-center justify-between gap-2">
+                <span className="flex-1">{watchActionNotice.text}</span>
+                {watchActionNotice.url && (
+                  <a
+                    href={watchActionNotice.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-[11px] font-bold shrink-0"
+                  >
+                    YouTube
+                  </a>
+                )}
+              </div>
+            )}
 
             {/* 2. Title & Stats */}
             <div data-testid="watch-desktop-title-block">
@@ -864,11 +953,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
             <div data-testid="watch-desktop-actions" className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
               <button
                 type="button"
-                onClick={() => {
-                  const next = !isLiked;
-                  setLikedMap((m) => ({ ...m, [watchingVideo.id]: next }));
-                  if (next && isDisliked) setDislikedMap((m) => ({ ...m, [watchingVideo.id]: false }));
-                }}
+                onClick={() => void handleToggleWatchLike(watchingVideo, isLiked, isDisliked)}
                 className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
                   isLiked ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                 }`}
@@ -1032,22 +1117,32 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
 
               <button
                 type="button"
-                onClick={() =>
-                  setSubscribedMap((m) => ({
-                    ...m,
-                    [watchingVideo.channel.id]: !isSubscribed,
-                  }))
-                }
+                onClick={() => void handleToggleWatchSupport(watchingVideo, isSubscribed)}
                 className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors flex-shrink-0 ${
                   isSubscribed
-                    ? 'bg-[var(--bg-surface-alt)] text-[var(--text-primary)] border border-[var(--border-subtle)]'
+                    ? 'ml-flame-box-active'
                     : 'bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)]'
                 }`}
               >
-                {isSubscribed && <Bell className="w-3.5 h-3.5 text-[var(--accent-gold)]" />}
+                {isSubscribed && <Bell className="w-3.5 h-3.5 text-orange-400" />}
                 <span>{isSubscribed ? 'Supporting ✓' : 'Support'}</span>
               </button>
             </div>
+            {watchActionNotice && (
+              <div className="p-2.5 rounded-xl bg-[var(--accent-gold-soft)] border border-[var(--accent-gold-border)] text-xs text-[var(--accent-gold)] flex items-center justify-between gap-2">
+                <span className="flex-1">{watchActionNotice.text}</span>
+                {watchActionNotice.url && (
+                  <a
+                    href={watchActionNotice.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-[11px] font-bold shrink-0"
+                  >
+                    YouTube
+                  </a>
+                )}
+              </div>
+            )}
 
             {/* 2. Mobile Title & Stats */}
             <div data-testid="watch-mobile-title-block">
@@ -1106,11 +1201,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
             <div data-testid="watch-mobile-actions" className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
               <button
                 type="button"
-                onClick={() => {
-                  const next = !isLiked;
-                  setLikedMap((m) => ({ ...m, [watchingVideo.id]: next }));
-                  if (next && isDisliked) setDislikedMap((m) => ({ ...m, [watchingVideo.id]: false }));
-                }}
+                onClick={() => void handleToggleWatchLike(watchingVideo, isLiked, isDisliked)}
                 className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
                   isLiked ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                 }`}
@@ -1609,13 +1700,13 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         </div>
       </section>
 
-      {/* SECTION 5: Horizontal Shorts Discovery Carousel */}
+      {/* SECTION 5: Horizontal Small Video Discovery Carousel */}
       {shortsCarousel.length > 0 && (
         <section className="space-y-2.5">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-extrabold text-[var(--text-primary)] flex items-center gap-2">
               <Flame className="w-4 h-4 text-[var(--accent-gold)]" />
-              <span>Shorts</span>
+              <span>Small Video</span>
             </h2>
             <button
               type="button"

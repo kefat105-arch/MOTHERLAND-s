@@ -99,8 +99,25 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
 
   const handleSendComment = async () => {
     if (!inputComment.trim()) return;
+    setNoticeMsg('');
 
-    if (postId) {
+    if (isYouTube && youtubeVideoId) {
+      setIsSubmitting(true);
+      try {
+        const res = await api.postYouTubeComment(youtubeVideoId, inputComment.trim());
+        if (res.success && res.comment) {
+          setYoutubeComments((prev) => [res.comment, ...prev]);
+          setInputComment('');
+        }
+      } catch (err: any) {
+        setNoticeMsg(
+          err?.message ||
+            'Google OAuth with YouTube permission is required to post comments on YouTube.'
+        );
+      } finally {
+        setIsSubmitting(false);
+      }
+    } else if (postId) {
       setIsSubmitting(true);
       try {
         const res = await api.addPostComment(postId, inputComment, replyingTo?.id);
@@ -109,13 +126,11 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
           setInputComment('');
           setReplyingTo(null);
         }
-      } catch (err) {
-        console.error('Failed to submit comment:', err);
+      } catch (err: any) {
+        setNoticeMsg(err?.message || 'Failed to post comment.');
       } finally {
         setIsSubmitting(false);
       }
-    } else if (isYouTube) {
-      setNoticeMsg('Posting comments to YouTube requires Google OAuth authorization.');
     }
   };
 
@@ -224,8 +239,18 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
         {/* Comments List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {noticeMsg && (
-            <div className="p-2.5 rounded-xl bg-[var(--accent-gold-soft)] border border-[var(--accent-gold-border)] text-xs text-[var(--accent-gold)]">
-              {noticeMsg}
+            <div className="p-2.5 rounded-xl bg-[var(--accent-gold-soft)] border border-[var(--accent-gold-border)] text-xs text-[var(--accent-gold)] flex items-center justify-between gap-2">
+              <span className="flex-1">{noticeMsg}</span>
+              {isYouTube && youtubeVideoId && (
+                <a
+                  href={`https://www.youtube.com/watch?v=${encodeURIComponent(youtubeVideoId)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-[11px] font-bold shrink-0"
+                >
+                  Open on YouTube
+                </a>
+              )}
             </div>
           )}
 
@@ -495,21 +520,20 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
                     type="text"
                     placeholder={
                       isYouTube
-                        ? 'Google sign-in required to comment on YouTube'
+                        ? 'Comment on YouTube (requires YouTube OAuth)...'
                         : replyingTo
                         ? `Write a reply to ${replyingTo.userDisplayName}...`
                         : 'Write a comment on MOTHERLAND...'
                     }
-                    disabled={isYouTube}
                     value={inputComment}
                     onChange={(e) => setInputComment(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSendComment()}
-                    className="flex-1 bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] rounded-xl px-3 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-primary)] disabled:opacity-50"
+                    className="ml-flame-box flex-1 min-w-0 rounded-xl px-3 py-2 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-orange-400"
                   />
                   <button
                     onClick={handleSendComment}
-                    disabled={isSubmitting || !inputComment.trim() || isYouTube}
-                    className="w-10 h-10 rounded-xl bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)] disabled:opacity-40 transition-colors flex items-center justify-center flex-shrink-0"
+                    disabled={isSubmitting || !inputComment.trim()}
+                    className="ml-flame-box-active w-10 h-10 rounded-xl disabled:opacity-40 transition-colors flex items-center justify-center flex-shrink-0"
                     aria-label="Send comment"
                   >
                     {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}

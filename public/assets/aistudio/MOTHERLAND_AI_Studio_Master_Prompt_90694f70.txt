@@ -1,0 +1,483 @@
+MOTHERLAND — COMPLETE APP REPAIR, UI RESPONSIVENESS, ACCOUNT PERMANENCE & FEATURE RESTORATION
+AI STUDIO MASTER DEVELOPMENT PROMPT
+Priority: Critical | Platform: Mobile-first Android web app / PWA
+
+============================================================
+0. CRITICAL PRESERVATION RULE — READ BEFORE EDITING
+============================================================
+
+This is an existing application. DO NOT rebuild it, replace it with a starter template, or create a parallel fake implementation.
+
+Before changing anything:
+1. Inspect the complete current project structure, frontend, backend, database schema, authentication flow, API routes, storage rules, service worker/PWA configuration, and all relevant UI components.
+2. Identify the exact existing components and root causes for each issue below.
+3. Prepare a concise implementation plan based on the real code.
+4. Preserve existing working features, real user content, media, posts, comments, messages, settings, integrations, and database relationships.
+5. Make the smallest safe changes that solve the issues.
+6. Do not silently remove, rename, or replace existing APIs, components, database tables, environment variables, or backend services.
+7. Do not claim a feature is fixed unless it has actually been implemented and tested.
+8. Do not use mock data, hard-coded counters, fake users, fake videos, fake comments, or simulated success as a substitute for real functionality.
+
+If a requested feature cannot be completed because an API permission, provider capability, or missing configuration is required, explain exactly what is missing. Do not pretend it works.
+
+============================================================
+1. MOBILE RESPONSIVE LAYOUT — FIX OVERFLOW AND DRIFT
+============================================================
+
+Current problem:
+- Bottom navigation icons and the top profile/account icon are shifted too far to the right.
+- Some controls extend beyond the app's visible screen.
+- When swiping vertically to change videos, the page sometimes moves toward the menu/navigation area and then snaps back into the app.
+- The interface feels unstable and makes normal use difficult.
+
+Required fixes:
+1. Make every screen properly fit common Android mobile viewport sizes, including narrow screens.
+2. Correct horizontal overflow, incorrect margins, padding, widths, transforms, and positioning.
+3. Keep the bottom navigation bar fully inside the viewport, centered and fixed in its intended position.
+4. Keep the top logo/header/profile controls aligned within the viewport.
+5. If necessary, slightly reduce icon dimensions, gaps, and labels so all controls fit. Do not make icons unnecessarily tiny or difficult to tap.
+6. Use consistent safe-area handling for devices with system bars, display cutouts, and gesture navigation.
+7. Prevent horizontal page movement caused by accidental overflow.
+8. Keep vertical scrolling and video swiping inside the correct content container.
+9. Make navigation bars fixed/stable where appropriate. They must not jump, drift, or move when the user scrolls.
+10. Use appropriate touch-action and overscroll behavior without breaking normal scrolling, swipe gestures, or accessibility.
+11. Ensure like, comment, share, and save controls remain inside the right edge of the screen with adequate spacing.
+12. Test at narrow, standard, and large Android viewport widths.
+
+Acceptance test:
+- No icon, button, label, profile picture, or menu item is clipped or pushed off-screen.
+- Swiping between videos never causes the whole app layout to shift sideways.
+- The layout remains stable after scrolling, opening menus, changing tabs, and refreshing.
+
+============================================================
+2. SHORTS / SMALL VIDEO BUTTON — RELIABLE NAVIGATION
+============================================================
+
+Current problem:
+The Shorts/Small Video icon sometimes works and sometimes does nothing.
+
+Required fixes:
+1. Find the actual navigation handler and route for the existing Shorts/Small Video section.
+2. Fix inconsistent click/tap handling, event propagation, overlays, disabled states, and route errors.
+3. Make the icon respond reliably to repeated taps.
+4. Prevent double navigation or accidental activation of another control.
+5. Preserve the existing Shorts/Small Video content and features.
+6. Restore the horizontal Shorts discovery strip/carousel on the home page that previously appeared but has disappeared.
+7. The strip should allow left-to-right and right-to-left browsing, and tapping an item should open the correct short-video experience.
+8. Do not insert demo videos or demo creator accounts.
+
+============================================================
+3. HOME FEED — CONTINUOUS PAGINATION AND MIXED CONTENT
+============================================================
+
+Current problem:
+The home page stops loading after approximately 10–12 videos.
+
+Required fixes:
+1. Inspect the current feed query, pagination cursor, page-size limit, backend response, database query, and frontend loading state.
+2. Fix the actual reason loading stops after the first 10–12 items.
+3. Implement reliable cursor-based or equivalent server-side pagination.
+4. Load the next page automatically when the user approaches the end of the feed, with a visible loading indicator.
+5. Allow users to keep discovering available content without an arbitrary 10–12-video ceiling.
+6. Avoid loading the entire database at once. Use efficient pagination and lazy loading to protect performance and data usage.
+7. Prevent duplicate posts, repeated videos, missing items, and pagination loops.
+8. Show a proper end-of-feed message only when there really is no more available content.
+9. Add retry handling for temporary network errors.
+10. Ensure feed loading works after refresh, app restart, and returning from another tab.
+
+Feed distribution:
+- Include eligible public videos, photo posts, and short videos from all real users.
+- Do not prioritize the owner's posts unfairly.
+- Do not show only the first user's content.
+- Use a fair, varied feed ranking/mixing approach so content from different eligible creators can appear throughout the feed.
+- The owner's content may appear naturally among other content, not exclusively at the top.
+- Do not fabricate content to make the feed look full.
+- Respect privacy, visibility, blocks, moderation, and user preferences.
+
+============================================================
+4. RESTORE THE HORIZONTAL SHORT-VIDEO DISCOVERY STRIP
+============================================================
+
+A horizontal short-video section previously existed on the home page but has disappeared.
+
+Restore it:
+1. Place it in the appropriate home-feed position, inspired by familiar social-app discovery patterns without copying proprietary assets.
+2. Support horizontal scrolling in both directions.
+3. Make each real short-video item tappable and open the correct video.
+4. Use only actual eligible content.
+5. If there is no content, show a clean empty state rather than fake videos.
+6. Keep the strip responsive and prevent it from causing page-width overflow.
+
+============================================================
+5. ACCOUNT CREATION, LOGIN PERSISTENCE AND DATA DURABILITY
+============================================================
+
+Current critical problem:
+A person creates an account and can use the app, but after some minutes or after returning later, they may be unable to enter the same account and are asked to create a new account again.
+
+Investigate the actual root cause. Do not simply extend a temporary session or hide the symptom.
+
+Required fixes:
+1. Inspect authentication provider configuration, token refresh, session persistence, cookie settings, local storage/session storage usage, backend validation, database writes, user ID mapping, and logout/session-expiry logic.
+2. Ensure a successful registration creates a real persistent user record in the production database.
+3. Ensure login always resolves to the same existing user record when the correct credentials/provider account are used.
+4. Never create a second account automatically just because a session token expired or a temporary network request failed.
+5. Implement secure session restoration and token refresh using the existing authentication provider's recommended approach.
+6. Handle expired sessions by refreshing securely or asking the user to sign in again to the same account—not by asking them to register again.
+7. Do not store passwords in plain text. Do not expose secrets or private tokens in frontend code.
+8. Keep user profile data, posts, followers/support relationships, and account identity associated with a stable immutable user ID.
+9. Do not delete accounts merely because they have been inactive for a few minutes, because the app was closed, or because the user changed devices.
+10. Make account data durable across browser refresh, app restart, device restart, and normal session expiration.
+11. Add appropriate database constraints and safe upsert logic to prevent duplicate user records.
+12. Add clear error messages for genuine authentication failures.
+13. Test registration → logout → login → refresh → close/reopen app → login again.
+14. Test token expiry and temporary network failure.
+15. Verify persistence against the real production backend/database, not only local development storage.
+
+Important wording:
+No system can honestly guarantee an account will exist forever under every possible circumstance. Implement normal production-grade durable account storage with no arbitrary short-term expiry or automatic deletion. Accounts should remain until the user or an authorized administrator deletes them, or a clearly disclosed legal/security requirement applies.
+
+============================================================
+6. REMOVE SEEDED DEMO / REFERENCE / OWNER ACCOUNTS SAFELY
+============================================================
+
+The owner requests removal of all preloaded demo/reference accounts and the current pre-created owner account, because a new owner account will be created later.
+
+Before deletion:
+1. Inspect the database and identify exactly which records are seeded demo accounts, reference accounts, test accounts, or the specifically pre-created owner account.
+2. Distinguish seeded/test records from genuine user-created accounts. Do not infer that an account is fake merely because it has few posts or an unusual name.
+3. Create a secure backup/export before any destructive database operation, where supported.
+4. Show or log the exact records/categories proposed for deletion before executing the destructive operation.
+5. Delete only confirmed seeded demo/reference/test accounts and the specifically identified old pre-created owner account, including their demo-only dependent content where appropriate.
+6. Preserve real user accounts and real user-generated content. Do not wipe the entire users table or production database.
+7. Remove demo-account generation scripts, default demo credentials, seeded fake profiles, fake follower counts, fake posts, and automatic demo-user insertion so they do not reappear.
+8. Do not create a replacement owner account automatically. Leave owner setup ready for the owner to complete later through a secure setup process.
+9. Never expose or hard-code an owner password.
+10. If the project cannot reliably distinguish demo records from genuine accounts, STOP before deletion and report the ambiguity. Do not guess.
+
+After cleanup:
+- New users must be real registered users.
+- Empty areas must show genuine empty states or clearly marked add/invite placeholders.
+- No fake users should appear in friend suggestions, feed, comments, search, or profile lists.
+
+============================================================
+7. PULL-TO-REFRESH — FINGER SWIPE DOWN
+============================================================
+
+Current problem:
+Pulling down from the top of the page does not refresh the feed like familiar social apps.
+
+Required fixes:
+1. Implement a proper pull-to-refresh interaction in the relevant scroll container.
+2. Pulling downward from the top should trigger a real feed refresh.
+3. Show a clear loading/refresh indicator.
+4. Reset the feed cursor and reload the latest eligible posts without duplicating entries.
+5. Preserve the user's current account and session.
+6. Avoid triggering refresh when the user is midway through a video or when a horizontal carousel is being swiped.
+7. Prevent conflicts with browser/PWA overscroll behavior and native Android gestures.
+8. Make the interaction reliable on touch screens.
+
+============================================================
+8. INSTALL OPTION IN THE MENU + APP ICON / BRANDING
+============================================================
+
+Required:
+1. Add an “Install App” option inside the existing menu.
+2. When tapped, use the supported PWA installation flow where available.
+3. If the browser does not expose an install prompt, show accurate instructions for the supported browser's manual installation process.
+4. Do not show a fake install-success message.
+5. Preserve the existing PWA manifest, service worker, offline behavior, and update strategy unless a verified bug requires a targeted fix.
+6. Set the installed app icon to use the existing MOTHERLAND brand logo shown in the app header, matching the actual logo artwork.
+7. Use suitable icon sizes and formats required by the PWA manifest and Android installation.
+8. Set the installed app name/short name to MOTHERLAND as appropriate.
+9. Ensure the installed icon does not become a generic browser icon or unrelated placeholder.
+10. Verify the manifest icon paths actually exist and load successfully.
+
+============================================================
+9. FRIEND REQUEST / PEOPLE DISCOVERY HORIZONTAL STRIP
+============================================================
+
+Add or restore a horizontal friend-request / people-discovery strip that may appear periodically while browsing the home feed, inspired by familiar social apps.
+
+Important:
+- There are currently no real users available for this section, so do not display demo accounts.
+- Initially show a few empty/add-user placeholder tiles with a plus (+) symbol.
+- These placeholders must not pretend to be actual people or actual friend requests.
+- As real users join and become eligible for discovery, show their genuine profiles according to privacy and recommendation rules.
+- If real friend requests exist, show the actual requests and correct actions.
+- Do not create fake request counts or fake names.
+- Make the strip horizontally scrollable and responsive.
+- Keep the feed usable and do not interrupt video playback.
+
+============================================================
+10. REAL YOUTUBE CHANNEL CREATOR PROFILE PAGES INSIDE MOTHERLAND
+============================================================
+
+Goal:
+When a user watches a YouTube video embedded or presented in MOTHERLAND, tapping the creator's name/profile should open a creator profile page inside MOTHERLAND, styled consistently with MOTHERLAND's own profile design.
+
+Required profile behavior:
+1. Use the real YouTube creator/channel identity associated with the video, not a demo profile.
+2. Display the channel's available public information using permitted YouTube Data API fields, such as channel name, avatar, description, and public video information.
+3. Show the channel's available public video list inside the MOTHERLAND creator page.
+4. Tapping a listed video should open/play the corresponding real YouTube video through an approved playback method.
+5. Label the subscription action “Support” in the MOTHERLAND interface.
+6. Label the Shorts area “Small Video” in the MOTHERLAND interface where applicable.
+7. Keep the design consistent with MOTHERLAND's existing profile page.
+8. Do not imply that a MOTHERLAND account is the same as a YouTube account unless the identities have actually been linked and verified.
+9. Clearly distinguish a YouTube channel profile from a normal MOTHERLAND user profile when needed.
+
+YouTube API / OAuth reality check — mandatory:
+- Google Sign-In alone does NOT automatically grant permission to subscribe, like, or comment on YouTube.
+- These actions require the appropriate YouTube OAuth scopes, user consent, a valid authorized account, supported YouTube Data API operations, and compliance with Google's/YouTube's current policies and quota limits.
+- For each user, request only the necessary permissions and explain why they are needed.
+- Use secure OAuth authorization-code/token handling appropriate to the existing architecture. Never expose client secrets or refresh tokens in public frontend code.
+- If the required scope is not granted, show a clear connect/authorize YouTube action or open the official YouTube experience. Do not show a false success state.
+- Verify that the action actually succeeds through the API before updating the UI.
+- Do not attempt to bypass YouTube restrictions, impersonate a user, or write actions to YouTube without that user's authorization.
+- Use official API documentation and verify the current supported methods before implementation.
+
+Support / Subscribe:
+- The MOTHERLAND button should say “Support”.
+- If authorized and supported, the action should subscribe the signed-in user's authorized YouTube account to the selected channel through the official API.
+- If not authorized or unsupported, guide the user to connect YouTube or open the real channel in YouTube.
+- Never count a click as a successful subscription unless the real subscription state is confirmed.
+
+Like and Comment:
+- Only perform YouTube likes/comments when the user has granted the required permissions and the official API supports the requested action.
+- Confirm success from the API response.
+- If unavailable, provide a clear fallback to the real YouTube video/page.
+- Do not silently store a MOTHERLAND-only like/comment and present it as a YouTube like/comment.
+
+============================================================
+11. FIRE-EMOJI-INSPIRED ACTION BOX REDESIGN
+============================================================
+
+Redesign the visual appearance of the following action areas using a consistent original fire/flame-inspired visual language:
+- Comment box
+- Share box
+- Save box
+- Like/reaction area
+- Other related action boxes
+
+Requirements:
+1. Use an original flame-inspired style that fits MOTHERLAND's branding.
+2. Keep text readable and controls easy to tap.
+3. Use consistent borders, backgrounds, icon sizes, spacing, and interaction states.
+4. Do not make every control excessively bright or visually noisy.
+5. Preserve all existing action logic and backend integrations.
+6. Keep the redesigned controls inside the mobile viewport.
+7. Ensure comment, share, and save still work after the redesign.
+8. Do not use copied proprietary artwork from another app.
+
+============================================================
+12. MESSENGER BOX / CHAT UI REDESIGN
+============================================================
+
+Redesign the MOTHERLAND Messenger interface to match the app's visual identity.
+
+Requirements:
+1. Improve the chat list, conversation header, message bubbles, composer, attachment controls, and send button.
+2. Use a clean, modern, mobile-first design consistent with the flame-inspired MOTHERLAND style.
+3. Keep messages readable and distinguish sent/received messages clearly.
+4. Preserve existing real-time messaging, message history, delivery/read states, attachments, notifications, and backend behavior.
+5. Do not replace real messaging with a visual-only mockup.
+6. Ensure keyboard opening does not cover the message composer.
+7. Ensure the chat screen remains inside the device viewport.
+
+============================================================
+13. SUPPORT / SUPPORTING / SUPPORTERS COUNTS
+============================================================
+
+Current problems:
+- Supporting another account does not appear correctly on that account.
+- The profile does not reliably show how many people support the user.
+- The user's own supporting count is missing or incorrect.
+
+Required:
+1. Implement or repair the real relationship between a supporter and the account being supported.
+2. When User A supports User B, persist the relationship in the database.
+3. User B's profile must show the correct number of Supporters.
+4. User A's profile must show the correct number of Supporting accounts.
+5. Display both counts on the profile page.
+6. Update counts after successful support/un-support actions.
+7. Prevent duplicate relationships from the same user to the same account.
+8. Ensure counts are calculated from real database relationships, not hard-coded values.
+9. Ensure counts remain correct after refresh, logout/login, and on another device.
+10. Define and enforce the intended behavior for private, blocked, deleted, or unavailable accounts.
+11. If YouTube Support is a separate action from supporting a MOTHERLAND user, keep the two relationship types clearly distinct. Do not mix their counts.
+
+============================================================
+14. PROFILE PAGE — POSTS / VIDEOS / SMALL VIDEOS / COUNTS
+============================================================
+
+Current problem:
+The profile page does not correctly show how many posts the user has made.
+
+Give the profile page special attention.
+
+Required:
+1. Show the user's real post count.
+2. Show the user's real video count where applicable.
+3. Show the user's real Small Video count where applicable.
+4. Show Supporters and Supporting counts.
+5. Display the user's actual posts in the correct profile tabs/sections.
+6. Include photos, videos, and short videos according to the existing content model.
+7. Ensure the counts match the actual visible, eligible content.
+8. Exclude deleted, hidden, private-to-others, or moderated content from public counts where appropriate.
+9. Recalculate or query counts reliably; do not use hard-coded values.
+10. Ensure the page updates after a user publishes, deletes, or changes visibility of a post.
+11. Preserve existing profile editing, avatar, cover image, and account settings.
+
+============================================================
+15. HOME FEED CONTENT DISTRIBUTION
+============================================================
+
+When real users begin posting:
+- Their eligible photo posts, video posts, and Small Videos should be discoverable across the MOTHERLAND home feed and relevant video sections.
+- Do not restrict new posts to only the beginning of a feed.
+- Use a fair and varied feed ranking so different real creators can appear throughout browsing.
+- Do not give the owner automatic priority over everyone else.
+- The owner's posts may appear naturally among other eligible posts.
+- Respect chronological/relevance ranking, privacy, moderation, blocks, and user preferences.
+- Do not fabricate engagement or creator activity.
+
+============================================================
+16. FACEBOOK-STYLE STORY ROW
+============================================================
+
+Redesign the Stories area to resemble the familiar usability pattern of social-app story cards, while keeping original MOTHERLAND branding and artwork.
+
+Requirements:
+1. Use clear rounded story tiles/cards.
+2. Show the current user's “Add Story” tile with a plus symbol.
+3. Show real users' stories only when available and visible to the viewer.
+4. Use actual profile pictures and story media.
+5. Make story cards horizontally scrollable.
+6. Show viewed/unviewed states clearly if the existing story system supports them.
+7. Do not insert demo stories or fake accounts.
+8. If there are no stories, show the user's Add Story tile and a clean empty state.
+
+============================================================
+17. GENERAL MOBILE QUALITY AND PERFORMANCE
+============================================================
+
+1. Use a consistent mobile spacing system.
+2. Avoid fixed widths that exceed the device viewport.
+3. Keep tap targets comfortably usable.
+4. Prevent layout shifts while images and videos load.
+5. Lazy-load media and use appropriate thumbnails.
+6. Avoid unnecessary repeated API calls.
+7. Add loading, empty, retry, and error states where appropriate.
+8. Preserve accessibility: readable text, adequate contrast, and meaningful button labels.
+9. Do not break landscape/portrait behavior or PWA installation.
+10. Test on real Android mobile browsers and installed PWA where possible.
+
+============================================================
+18. REQUIRED TEST PLAN — DO NOT SKIP
+============================================================
+
+Run and report actual results for:
+
+A. Mobile layout
+- Narrow Android viewport
+- Standard Android viewport
+- Bottom navigation alignment
+- Top profile/header alignment
+- No horizontal overflow
+- Video swipe does not shift the app sideways
+
+B. Navigation
+- Tap Shorts/Small Video repeatedly
+- Open and close the section
+- Restore horizontal short-video strip
+- Confirm all navigation routes work
+
+C. Feed
+- Load beyond 12 items when more content exists
+- Continue through multiple pages
+- No duplicate entries
+- Retry after network failure
+- Pull down to refresh
+- Confirm feed distribution includes eligible real creators
+
+D. Authentication
+- Create a new account
+- Sign out
+- Sign in again
+- Refresh the page
+- Close and reopen the app
+- Sign in on another device/browser if available
+- Test expired session handling
+- Confirm the same stable account ID and profile are restored
+
+E. Demo cleanup
+- Identify seeded demo/reference/test accounts
+- Identify the specifically pre-created owner account
+- Confirm backup and deletion scope
+- Confirm genuine users/content are preserved
+- Confirm demo seeding does not happen again
+- Do not execute ambiguous destructive deletion
+
+F. PWA
+- Install option in menu
+- Manifest validity
+- MOTHERLAND logo as installed icon
+- Correct app name
+- Verify installation flow on supported Android browser
+
+G. YouTube
+- Open real channel profile from a video creator name
+- Load permitted channel/video data
+- Test OAuth permission flow
+- Test Support/Subscribe only when authorized
+- Test Like/Comment only when authorized and supported
+- Verify actual API success or show honest fallback
+
+H. Profile and relationships
+- Publish a post and verify profile count
+- Support another account and verify both counts
+- Refresh and verify counts persist
+- Check photo/video/Small Video sections
+
+I. Stories and Messenger
+- Story row and Add Story
+- Real story visibility
+- Chat list and conversation
+- Keyboard/composer behavior
+- Message sending and history
+
+============================================================
+19. IMPLEMENTATION AND DELIVERY RULES
+============================================================
+
+Work in this order:
+1. Inspect project and report root causes.
+2. Fix mobile layout overflow and unstable scrolling.
+3. Fix Shorts/Small Video navigation and restore the horizontal discovery strip.
+4. Fix feed pagination and pull-to-refresh.
+5. Fix authentication persistence and account identity.
+6. Safely identify and remove only confirmed seeded demo/reference/test accounts and the specifically identified old owner account, after backup and scope verification.
+7. Add the menu install option and correct PWA branding.
+8. Restore friend-discovery placeholders and Stories UI.
+9. Repair profile counts and Support/Supporting relationships.
+10. Redesign action boxes and Messenger UI.
+11. Implement YouTube creator profiles and authorized YouTube actions only to the extent officially supported.
+12. Run the complete test plan and report results.
+
+Final report must clearly separate:
+- Implemented
+- Tested successfully
+- Implemented but not yet tested on a real device
+- Blocked by missing API permission/configuration
+- Not implemented
+
+For every issue, state the actual files/components changed and the root cause fixed.
+
+Do not say “everything is done” if any item remains incomplete.
+Do not replace real backend functionality with frontend-only demonstrations.
+Do not delete genuine user accounts or content.
+Do not claim YouTube actions succeeded unless the official API confirms success.
+
+FINAL GOAL:
+Make the existing MOTHERLAND application stable, properly fitted to Android mobile screens, reliable to navigate, capable of continuously loading real content, and equipped with durable account login, accurate profile/support counts, real creator identity pages, and a consistent original visual design — while preserving the existing application and all genuine user data.

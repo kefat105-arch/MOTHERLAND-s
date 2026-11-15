@@ -278,6 +278,124 @@ export const api = {
     return res.json();
   },
 
+  async getYouTubeChannel(channelId: string, pageToken = ''): Promise<{
+    channel: {
+      id: string;
+      source: 'youtube';
+      title: string;
+      description: string;
+      customUrl?: string;
+      avatar: string;
+      bannerUrl?: string;
+      subscriberCount: string;
+      rawSubscriberCount: number | null;
+      videoCount: number;
+      viewCount: number;
+      country?: string;
+      publishedAt?: string;
+      url: string;
+    };
+    videos: (LongVideo & { isShort?: boolean })[];
+    smallVideos: (LongVideo & { isShort?: boolean })[];
+    nextPageToken?: string | null;
+  }> {
+    const params = new URLSearchParams();
+    if (pageToken) params.set('pageToken', pageToken);
+    const qs = params.toString();
+    const res = await authFetch(`${API_BASE}/youtube/channel/${encodeURIComponent(channelId)}${qs ? `?${qs}` : ''}`);
+    return parseJsonOrThrow(res);
+  },
+
+  async getYouTubeSubscriptionStatus(channelId: string): Promise<{
+    connected: boolean;
+    hasScope: boolean;
+    subscribed: boolean;
+    subscriptionId: string | null;
+    requiresScope?: string;
+    message?: string;
+  }> {
+    const res = await authFetch(`${API_BASE}/youtube/channel/${encodeURIComponent(channelId)}/subscription-status`);
+    if (!res.ok) return { connected: false, hasScope: false, subscribed: false, subscriptionId: null };
+    return res.json();
+  },
+
+  async subscribeYouTubeChannel(channelId: string, action: 'subscribe' | 'unsubscribe' = 'subscribe'): Promise<{
+    success: boolean;
+    subscribed: boolean;
+    subscriptionId: string | null;
+    requiresScope?: string;
+    error?: string;
+    message?: string;
+  }> {
+    const res = await authFetch(`${API_BASE}/youtube/channel/${encodeURIComponent(channelId)}/subscribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data?.message || data?.error || 'YouTube action failed') as Error & {
+        status?: number;
+        code?: string;
+        requiresScope?: string;
+      };
+      err.status = res.status;
+      err.code = data?.error;
+      err.requiresScope = data?.requiresScope;
+      throw err;
+    }
+    return data;
+  },
+
+  async rateYouTubeVideo(videoId: string, rating: 'like' | 'dislike' | 'none' = 'like'): Promise<{
+    success: boolean;
+    videoId: string;
+    rating: string;
+  }> {
+    const res = await authFetch(`${API_BASE}/youtube/videos/${encodeURIComponent(videoId)}/rate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data?.message || data?.error || 'YouTube rating failed') as Error & {
+        status?: number;
+        code?: string;
+        requiresScope?: string;
+      };
+      err.status = res.status;
+      err.code = data?.error;
+      err.requiresScope = data?.requiresScope;
+      throw err;
+    }
+    return data;
+  },
+
+  async postYouTubeComment(videoId: string, text: string): Promise<{
+    success: boolean;
+    comment: YouTubeCommentThread;
+  }> {
+    const res = await authFetch(`${API_BASE}/youtube/videos/${encodeURIComponent(videoId)}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data?.message || data?.error || 'YouTube comment failed') as Error & {
+        status?: number;
+        code?: string;
+        requiresScope?: string;
+      };
+      err.status = res.status;
+      err.code = data?.error;
+      err.requiresScope = data?.requiresScope;
+      throw err;
+    }
+    return data;
+  },
+
   // Official YouTube OAuth 2.0 + Direct Upload
   async getYouTubeOAuthStatus(): Promise<YouTubeOAuthStatus> {
     const res = await authFetch(`${API_BASE}/youtube/oauth/status`);
@@ -497,10 +615,10 @@ export const api = {
     return res.json().catch(() => ({ success: true }));
   },
 
-  async getCurrentUser(): Promise<{ user: UserProfile | null; isGuest?: boolean; error?: string }> {
+  async getCurrentUser(): Promise<{ user: UserProfile | null; isGuest?: boolean; sessionExpired?: boolean; error?: string }> {
     const res = await authFetch(`${API_BASE}/auth/me`);
     if (!res.ok) {
-      return { user: null, isGuest: true, error: 'Unauthorized' };
+      return { user: null, isGuest: true, sessionExpired: false, error: 'Unauthorized' };
     }
     return res.json();
   },
@@ -661,15 +779,29 @@ export const api = {
     feedType: string = 'all',
     source = 'all',
     page = 1,
-    pageSize = 10
-  ): Promise<{ posts: Post[]; total: number; page?: number; hasMore?: boolean }> {
+    pageSize = 10,
+    ytCursor = ''
+  ): Promise<{
+    posts: Post[];
+    total: number;
+    page?: number;
+    hasMore?: boolean;
+    nextYtCursor?: string | null;
+    quotaExceeded?: boolean;
+    errorMessage?: string;
+  }> {
     const params = new URLSearchParams({
       feedType,
       source,
       page: String(page),
       pageSize: String(pageSize),
     });
+    if (ytCursor) params.set('ytCursor', ytCursor);
     const res = await authFetch(`${API_BASE}/posts?${params.toString()}`);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData?.error || errData?.message || `Failed to load feed (${res.status})`);
+    }
     return res.json();
   },
 
@@ -993,10 +1125,25 @@ export const api = {
     return parseJsonOrThrow(res);
   },
 
-  async toggleFollow(userId: string) {
-    const res = await authFetch(`${API_BASE}/users/${userId}/follow`, {
+  async toggleFollow(userId: string): Promise<{
+    isFollowing: boolean;
+    followersCount: number;
+    followingCount: number;
+    targetFollowersCount: number;
+    targetFollowingCount: number;
+  }> {
+    const res = await authFetch(`${API_BASE}/users/${encodeURIComponent(userId)}/follow`, {
       method: 'POST',
     });
+    return parseJsonOrThrow(res);
+  },
+
+  async getUserNetwork(userId: string): Promise<{
+    friends: UserProfile[];
+    supporters: UserProfile[];
+    supporting: UserProfile[];
+  }> {
+    const res = await authFetch(`${API_BASE}/users/${encodeURIComponent(userId)}/network`);
     return parseJsonOrThrow(res);
   },
 

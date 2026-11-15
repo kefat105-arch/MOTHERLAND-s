@@ -783,13 +783,28 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
       activeConversation.requestedBy !== currentUser.id
   );
 
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      if (mobileShowThread && messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }
+    };
+    vv.addEventListener('resize', onResize);
+    return () => vv.removeEventListener('resize', onResize);
+  }, [mobileShowThread]);
+
   return (
-    <div className="w-full h-full flex flex-col md:flex-row bg-[var(--ml-surface)] text-[var(--ml-text-primary)] overflow-hidden relative">
+    <div
+      data-testid="wave-workspace"
+      className="w-full h-full max-w-full flex flex-col md:flex-row bg-[var(--ml-surface)] text-[var(--ml-text-primary)] overflow-hidden overflow-x-hidden relative"
+    >
       {/* LEFT SIDEBAR: WAVE HOMEPAGE */}
       <aside
         className={`${
           mobileShowThread ? 'hidden md:flex' : 'flex'
-        } w-full md:w-[340px] lg:w-[370px] border-r border-[var(--ml-border)] flex-col h-full shrink-0 bg-[var(--ml-surface)]`}
+        } w-full md:w-[340px] lg:w-[370px] border-r border-[var(--ml-border)] flex-col h-full shrink-0 bg-[var(--ml-surface)] overflow-x-hidden`}
       >
         {/* Brand Top Bar */}
         <div className="px-4 py-3 border-b border-[var(--ml-border)] flex items-center justify-between gap-2">
@@ -1145,7 +1160,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
       <main
         className={`${
           mobileShowThread ? 'flex' : 'hidden md:flex'
-        } flex-1 min-w-0 flex-col h-full bg-[var(--ml-bg)] relative`}
+        } flex-1 min-w-0 w-full flex-col h-full bg-[var(--ml-bg)] relative overflow-x-hidden`}
       >
         {!activeConversation ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
@@ -1442,11 +1457,11 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                       )}
 
                       <div
-                        className={`relative rounded-2xl px-3.5 py-2.5 shadow-sm transition-all ${
-                          isHighlighted ? 'ring-2 ring-[#E6C987] scale-[1.01]' : ''
+                        className={`relative rounded-2xl px-3.5 py-2.5 shadow-sm transition-all break-words ${
+                          isHighlighted ? 'ring-2 ring-orange-400 scale-[1.01]' : ''
                         } ${
                           isOwn
-                            ? 'bg-gradient-to-br from-[#1B3C59] to-[#235962] text-white rounded-br-sm border border-[#C9A25B]/25'
+                            ? 'bg-gradient-to-br from-[#1B3C59] via-[#1F6E6C] to-[#EA580C]/90 text-white rounded-br-sm border border-orange-400/35'
                             : 'bg-[var(--ml-surface)] text-[var(--ml-text-primary)] rounded-bl-sm border border-[var(--ml-border)]'
                         }`}
                       >
@@ -1762,7 +1777,10 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
             )}
 
             {/* COMPOSER FOOTER */}
-            <footer className="p-2.5 sm:p-3 border-t border-[var(--ml-border)] bg-[var(--ml-surface)] space-y-2 shrink-0">
+            <footer
+              data-testid="wave-composer-footer"
+              className="p-2 sm:p-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] border-t border-[var(--ml-border)] bg-[var(--ml-surface)] space-y-2 shrink-0 w-full max-w-full"
+            >
               {sendError && (
                 <div className="px-3 py-1.5 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-400 flex items-center justify-between">
                   <span>{sendError}</span>
@@ -1774,9 +1792,9 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
 
               {/* Quoted Reply / Edit Banner */}
               {(replyingTo || editingMsg) && (
-                <div className="px-3 py-2 rounded-xl bg-[var(--ml-surface-soft)] border-l-2 border-[var(--ml-accent-teal)] flex items-center justify-between gap-2">
+                <div className="px-3 py-2 rounded-xl bg-[var(--ml-surface-soft)] border-l-2 border-orange-400 flex items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-bold text-[var(--ml-accent-teal)]">
+                    <p className="text-[11px] font-bold text-orange-400">
                       {editingMsg ? 'Editing message' : `Replying to ${replyingTo?.senderName}`}
                     </p>
                     <p className="text-xs text-[var(--ml-text-secondary)] truncate">
@@ -1857,7 +1875,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                   onSendVoice={handleSendVoiceNote}
                 />
               ) : (
-                <form onSubmit={handleSend} className="flex items-end gap-2">
+                <form onSubmit={handleSend} className="flex items-end gap-1.5 sm:gap-2 w-full min-w-0">
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -1876,16 +1894,21 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                     disabled={showPendingAcceptBanner}
                     title="Attach photos, videos, audio, or documents"
                     aria-label="Attach files"
-                    className="w-10 h-10 rounded-xl bg-[var(--ml-surface-soft)] hover:border-[var(--ml-accent-teal)] border border-[var(--ml-border)] flex items-center justify-center text-[var(--ml-text-secondary)] shrink-0 disabled:opacity-50 cursor-pointer"
+                    className="ml-flame-box w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 disabled:opacity-50 cursor-pointer"
                   >
                     <Paperclip className="w-4 h-4" />
                   </button>
 
-                  <div className="flex-1 flex items-end gap-1.5 rounded-2xl bg-[var(--ml-surface-soft)] border border-[var(--ml-border)] focus-within:border-[var(--ml-accent-teal)] px-3 py-1.5">
+                  <div className="ml-flame-box flex-1 min-w-0 flex items-end gap-1 rounded-2xl focus-within:border-orange-400 px-2.5 sm:px-3 py-1">
                     <textarea
                       rows={1}
                       value={inputText}
                       disabled={showPendingAcceptBanner}
+                      onFocus={() => {
+                        window.setTimeout(() => {
+                          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                        }, 180);
+                      }}
                       onChange={(e) => {
                         setInputText(e.target.value);
                         emitTyping(e.target.value.trim().length > 0);
@@ -1901,9 +1924,9 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                           ? 'Accept request above to reply...'
                           : editingMsg
                           ? 'Edit your message...'
-                          : 'Message on MOTHERLAND WAVE...'
+                          : 'Message on WAVE...'
                       }
-                      className="w-full bg-transparent text-sm text-[var(--ml-text-primary)] placeholder:text-[var(--ml-text-muted)] resize-none max-h-28 py-1.5 focus:outline-none"
+                      className="w-full min-w-0 bg-transparent text-sm text-[var(--ml-text-primary)] placeholder:text-[var(--ml-text-muted)] resize-none max-h-28 py-1.5 focus:outline-none"
                     />
                     <FirePickerTrigger
                       size="sm"
@@ -1920,16 +1943,16 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                       onClick={() => setIsRecordingVoice(true)}
                       title="Record Voice Note"
                       aria-label="Record voice message"
-                      className="w-11 h-11 rounded-xl bg-[var(--ml-accent-teal)] text-white flex items-center justify-center hover:opacity-90 disabled:opacity-50 transition shrink-0 cursor-pointer"
+                      className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-br from-[#1F6E6C] to-[#EA580C] text-white flex items-center justify-center hover:opacity-95 disabled:opacity-50 transition shrink-0 cursor-pointer shadow-sm"
                     >
-                      <Mic className="w-5 h-5" />
+                      <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
                     </button>
                   ) : (
                     <button
                       type="submit"
                       disabled={isSending || showPendingAcceptBanner}
                       aria-label="Send message"
-                      className="w-11 h-11 rounded-xl bg-[var(--ml-accent-teal)] text-white flex items-center justify-center hover:opacity-90 disabled:opacity-50 transition shrink-0 cursor-pointer"
+                      className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-br from-[#1F6E6C] to-[#EA580C] text-white flex items-center justify-center hover:opacity-95 disabled:opacity-50 transition shrink-0 cursor-pointer shadow-sm"
                     >
                       <Send className="w-4 h-4" />
                     </button>

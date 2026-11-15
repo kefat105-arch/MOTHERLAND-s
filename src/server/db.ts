@@ -239,384 +239,28 @@ export function needsPasswordUpgrade(user: UserAccount): boolean {
   return !user.passwordIterations || user.passwordIterations < DEFAULT_PBKDF2_ITERATIONS;
 }
 
-// Initial Database Seeding
-const DEFAULT_PASSWORD = 'Motherland2026!';
-
+// Clean Initial Database Schema (No hardcoded demo passwords, fake users, or seeded posts)
 function getInitialDbData(): DatabaseSchema {
-  const { hash: ownerHash, salt: ownerSalt } = hashPassword(DEFAULT_PASSWORD);
-  const { hash: nadiaHash, salt: nadiaSalt } = hashPassword(DEFAULT_PASSWORD);
-  const { hash: tariqHash, salt: tariqSalt } = hashPassword(DEFAULT_PASSWORD);
-  const { hash: ayeshaHash, salt: ayeshaSalt } = hashPassword(DEFAULT_PASSWORD);
-
-  const ownerUser: UserAccount = {
-    id: 'usr_kefat_01',
-    username: 'kefatahmed',
-    email: 'kefat@motherland.social',
-    passwordHash: ownerHash,
-    passwordSalt: ownerSalt,
-    displayName: 'Kefat Ahmed',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
-    coverImage: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1600&auto=format&fit=crop&q=80',
-    bio: 'Founder & Systems Architect @ MOTHERLAND. Architecting next-generation sovereign social infrastructure.',
-    website: 'https://motherland.social',
-    location: 'Dhaka, Bangladesh',
-    work: 'Founder & Lead Systems Architect @ MOTHERLAND',
-    education: 'Computer Science & Distributed Systems',
-    phoneNumber: '+8801700000001',
-    dateOfBirth: '1998-05-12',
-    gender: 'Male',
-    address: 'Gulshan-2, Dhaka, Bangladesh',
-    joinedDate: 'November 2026',
-    isVerified: true,
-    role: 'owner',
-    isEmailVerified: true,
-    isPhoneVerified: true,
-    twoFactorEnabled: false,
-    isPrivate: false,
-    privacy: {
-      profileVisibility: 'public',
-      showOnlineStatus: true,
-      allowDirectMessages: 'everyone',
-      showContactInfo: true,
-    },
-    socialLinks: {
-      youtube: 'https://youtube.com/@motherland-social',
-      facebook: 'https://facebook.com/motherland',
-      instagram: 'https://instagram.com/motherland',
-    },
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  const seedUser2: UserAccount = {
-    id: 'usr_nadia_02',
-    username: 'nadia_creative',
-    email: 'nadia@motherland.social',
-    passwordHash: nadiaHash,
-    passwordSalt: nadiaSalt,
-    displayName: 'Nadia Hossain',
-    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&auto=format&fit=crop&q=80',
-    coverImage: 'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=1600&auto=format&fit=crop&q=80',
-    bio: 'Visual story director & cinema colorist. Capturing the untold beauty of South Asia 🎨📽️',
-    website: 'https://nadiahossain.studio',
-    location: 'Chittagong, Bangladesh',
-    work: 'Independent Film Director',
-    education: 'Dhaka University Fine Arts',
-    phoneNumber: '+8801700000002',
-    dateOfBirth: '2000-08-20',
-    gender: 'Female',
-    joinedDate: 'October 2026',
-    isVerified: true,
-    role: 'user',
-    isEmailVerified: true,
-    isPhoneVerified: true,
-    twoFactorEnabled: false,
-    isPrivate: false,
-    privacy: { profileVisibility: 'public', showOnlineStatus: true, allowDirectMessages: 'everyone', showContactInfo: false },
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 25).toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  const seedUser3: UserAccount = {
-    id: 'usr_tariq_03',
-    username: 'tariq_nature',
-    email: 'tariq@motherland.social',
-    passwordHash: tariqHash,
-    passwordSalt: tariqSalt,
-    displayName: 'Tariqul Islam',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80',
-    coverImage: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=1600&auto=format&fit=crop&q=80',
-    bio: 'Wildlife & drone cinematographer. Highlighting Sundarbans & Cox’s Bazar marine life 🌿🐅',
-    location: 'Khulna, Bangladesh',
-    work: 'National Geo Explorer Contributor',
-    phoneNumber: '+8801700000003',
-    dateOfBirth: '1996-03-15',
-    gender: 'Male',
-    joinedDate: 'September 2026',
-    isVerified: true,
-    role: 'user',
-    isEmailVerified: true,
-    isPhoneVerified: true,
-    twoFactorEnabled: false,
-    isPrivate: false,
-    privacy: { profileVisibility: 'public', showOnlineStatus: true, allowDirectMessages: 'everyone', showContactInfo: true },
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 20).toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  const seedUser4: UserAccount = {
-    id: 'usr_ayesha_04',
-    username: 'ayesha_tech',
-    email: 'ayesha@motherland.social',
-    passwordHash: ayeshaHash,
-    passwordSalt: ayeshaSalt,
-    displayName: 'Ayesha Rahman',
-    avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80',
-    coverImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1600&auto=format&fit=crop&q=80',
-    bio: 'AI Engineer & Web3 builder. Writing tutorials on real-time streaming and decentralized social graphs 💻⚡',
-    location: 'Sylhet, Bangladesh',
-    work: 'Senior Distributed Engineer',
-    phoneNumber: '+8801700000004',
-    dateOfBirth: '1999-11-04',
-    gender: 'Female',
-    joinedDate: 'August 2026',
-    isVerified: true,
-    role: 'user',
-    isEmailVerified: true,
-    isPhoneVerified: true,
-    twoFactorEnabled: false,
-    isPrivate: false,
-    privacy: { profileVisibility: 'public', showOnlineStatus: true, allowDirectMessages: 'everyone', showContactInfo: true },
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 15).toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  const seedPosts: Post[] = [
-    {
-      id: 'post_01',
-      source: 'motherland',
-      author: {
-        id: ownerUser.id,
-        username: ownerUser.username,
-        displayName: ownerUser.displayName,
-        avatar: ownerUser.avatar,
-        isVerified: true,
-      },
-      content: 'Welcome to MOTHERLAND! 🇧🇩✨ We are officially initializing the next-generation social ecosystem: unified feed, vertical 9:16 Shorts, 16:9 Cinema Long Video, real-time messaging, and seamless YouTube Data API v3 integration. Built for creators, communities, and uncompromised digital sovereignty.',
-      mediaType: 'image',
-      mediaUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=1200&auto=format&fit=crop&q=80',
-      mediaAspectRatio: '16:9',
-      hashtags: ['Motherland', 'NextGenSocial', 'Bangladesh', 'Innovation'],
-      audience: 'public',
-      createdAt: new Date(Date.now() - 1000 * 60 * 35).toISOString(),
-      stats: {
-        likes: 3,
-        comments: 1,
-        shares: 26,
-        views: 1890,
-      },
-    },
-    {
-      id: 'post_02',
-      source: 'motherland',
-      author: {
-        id: seedUser2.id,
-        username: seedUser2.username,
-        displayName: seedUser2.displayName,
-        avatar: seedUser2.avatar,
-        isVerified: true,
-      },
-      content: 'Early morning cinematic frames captured around Jaflong stone beds and tea gardens. Golden hour light hitting the river rocks creates this breathtaking natural emerald grading. What should be our next location? 🌿🎥',
-      mediaType: 'image',
-      mediaUrl: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=1200&auto=format&fit=crop&q=80',
-      mediaAspectRatio: '16:9',
-      hashtags: ['Jaflong', 'Sylhet', 'Cinematography', 'Nature'],
-      audience: 'public',
-      createdAt: new Date(Date.now() - 1000 * 60 * 180).toISOString(),
-      stats: {
-        likes: 2,
-        comments: 0,
-        shares: 12,
-        views: 940,
-      },
-    },
-    {
-      id: 'post_03',
-      source: 'motherland',
-      author: {
-        id: seedUser3.id,
-        username: seedUser3.username,
-        displayName: seedUser3.displayName,
-        avatar: seedUser3.avatar,
-        isVerified: true,
-      },
-      content: 'Sundarbans mangrove waterways at dawn. Spotted a herd of spotted deer by the canal bank. Respecting wildlife habitats with ultra-quiet long-lens optics. 🦌🌊',
-      mediaType: 'image',
-      mediaUrl: 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=1200&auto=format&fit=crop&q=80',
-      mediaAspectRatio: '16:9',
-      hashtags: ['Sundarbans', 'Wildlife', 'Ecology', 'Biodiversity'],
-      audience: 'public',
-      createdAt: new Date(Date.now() - 1000 * 60 * 420).toISOString(),
-      stats: {
-        likes: 1,
-        comments: 0,
-        shares: 8,
-        views: 710,
-      },
-    },
-  ];
-
-  // Seed reactions - 1 per user per post!
-  const seedReactions: ReactionRecord[] = [
-    { postId: 'post_01', userId: ownerUser.id, type: 'fire', createdAt: new Date().toISOString() },
-    { postId: 'post_01', userId: seedUser2.id, type: 'love', createdAt: new Date().toISOString() },
-    { postId: 'post_01', userId: seedUser3.id, type: 'like', createdAt: new Date().toISOString() },
-    { postId: 'post_02', userId: ownerUser.id, type: 'love', createdAt: new Date().toISOString() },
-    { postId: 'post_02', userId: seedUser4.id, type: 'fire', createdAt: new Date().toISOString() },
-    { postId: 'post_03', userId: seedUser2.id, type: 'like', createdAt: new Date().toISOString() },
-  ];
-
-  const seedStories: Story[] = [
-    {
-      id: 'story_01',
-      userId: ownerUser.id,
-      userDisplayName: ownerUser.displayName,
-      userUsername: ownerUser.username,
-      userAvatar: ownerUser.avatar,
-      isUserVerified: true,
-      source: 'motherland',
-      mediaUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80',
-      mediaType: 'image',
-      caption: 'Testing 24h ephemeral story nodes 🇧🇩⚡',
-      createdAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(),
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 22).toISOString(),
-      viewersCount: 420,
-    },
-    {
-      id: 'story_02',
-      userId: seedUser2.id,
-      userDisplayName: seedUser2.displayName,
-      userUsername: seedUser2.username,
-      userAvatar: seedUser2.avatar,
-      isUserVerified: true,
-      source: 'motherland',
-      mediaUrl: 'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=800&auto=format&fit=crop&q=80',
-      mediaType: 'image',
-      caption: 'Grading fresh 4K footage for documentary 🎬✨',
-      createdAt: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 21).toISOString(),
-      viewersCount: 310,
-    },
-    {
-      id: 'story_03',
-      userId: seedUser3.id,
-      userDisplayName: seedUser3.displayName,
-      userUsername: seedUser3.username,
-      userAvatar: seedUser3.avatar,
-      isUserVerified: true,
-      source: 'motherland',
-      mediaUrl: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80',
-      mediaType: 'image',
-      caption: 'Sunset over Kaptai Lake waterways 🚤🌅',
-      createdAt: new Date(Date.now() - 1000 * 60 * 240).toISOString(),
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 19).toISOString(),
-      viewersCount: 680,
-    },
-  ];
-
-  const seedShorts: ShortVideo[] = [];
-
-  const seedLongVideos: LongVideo[] = [
-    {
-      id: 'long_01',
-      source: 'motherland',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      thumbnailUrl: 'https://images.unsplash.com/photo-1536240478700-b869070f9279?w=1280&auto=format&fit=crop&q=80',
-      title: 'MOTHERLAND Systems Architecture — The Sovereign Digital Super App',
-      description: 'An in-depth presentation detailing MOTHERLAND’s multi-tenant architecture, persistent distributed ledger, seamless YouTube Data API integration, and high-performance video engine.',
-      duration: '09:56',
-      channel: {
-        id: ownerUser.id,
-        title: ownerUser.displayName,
-        avatar: ownerUser.avatar,
-        subscriberCount: '18.4K',
-        isVerified: true,
-      },
-      stats: {
-        views: 45200,
-        likes: 3820,
-        comments: 290,
-      },
-      publishedAt: '2 days ago',
-      tags: ['Motherland', 'Architecture', 'WebEngineering', 'Keynote'],
-    },
-  ];
-
-  const seedFriendships: FriendshipRecord[] = [
-    { user1Id: ownerUser.id, user2Id: seedUser2.id, createdAt: new Date().toISOString() },
-    { user1Id: ownerUser.id, user2Id: seedUser3.id, createdAt: new Date().toISOString() },
-  ];
-
-  const seedFollows: FollowRecord[] = [
-    { followerId: ownerUser.id, followingId: seedUser2.id, createdAt: new Date().toISOString() },
-    { followerId: ownerUser.id, followingId: seedUser3.id, createdAt: new Date().toISOString() },
-    { followerId: seedUser2.id, followingId: ownerUser.id, createdAt: new Date().toISOString() },
-    { followerId: seedUser3.id, followingId: ownerUser.id, createdAt: new Date().toISOString() },
-    { followerId: seedUser4.id, followingId: ownerUser.id, createdAt: new Date().toISOString() },
-  ];
-
-  const seedNotifications: (NotificationItem & { recipientId: string; category?: string })[] = [
-    {
-      id: 'notif_01',
-      recipientId: ownerUser.id,
-      category: 'motherland',
-      type: 'like',
-      sender: {
-        id: seedUser2.id,
-        displayName: seedUser2.displayName,
-        avatar: seedUser2.avatar,
-        username: seedUser2.username,
-      },
-      title: 'New Reaction',
-      body: 'Nadia Hossain loved your post about MOTHERLAND ecosystem.',
-      targetId: 'post_01',
-      targetType: 'post',
-      isRead: false,
-      createdAt: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-    },
-    {
-      id: 'notif_02',
-      recipientId: ownerUser.id,
-      category: 'youtube',
-      type: 'platform_alert',
-      sender: {
-        id: 'sys_yt',
-        displayName: 'YouTube Partner Engine',
-        avatar: 'https://api.dicebear.com/7.x/identicon/svg?seed=youtube',
-        username: 'youtube_live',
-      },
-      title: 'YouTube Sync Online',
-      body: 'YouTube Data API v3 integration active with infinite video stream search enabled.',
-      isRead: true,
-      createdAt: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    },
-  ];
-
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     migrationsApplied: [],
     lastBackupAt: new Date().toISOString(),
-    users: [ownerUser, seedUser2, seedUser3, seedUser4],
+    users: [],
     sessions: [],
-    posts: seedPosts,
-    reactions: seedReactions,
+    posts: [],
+    reactions: [],
     savedPosts: [],
-    postComments: {
-      post_01: [
-        {
-          id: 'cmt_seed_1',
-          postId: 'post_01',
-          userId: seedUser2.id,
-          userDisplayName: seedUser2.displayName,
-          userUsername: seedUser2.username,
-          userAvatar: seedUser2.avatar,
-          text: 'Proud to see MOTHERLAND leading sovereign digital media in South Asia! 🇧🇩❤️',
-          createdAt: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
-          likesCount: 2,
-          isLiked: false,
-        },
-      ],
-    },
-    stories: seedStories,
+    postComments: {},
+    stories: [],
     expiredStoriesArchive: [],
     mediaAssets: [],
-    shortVideos: seedShorts,
-    longVideos: seedLongVideos,
-    friendships: seedFriendships,
+    shortVideos: [],
+    longVideos: [],
+    friendships: [],
     friendRequests: [],
-    follows: seedFollows,
+    follows: [],
     blocks: [],
-    notifications: seedNotifications,
+    notifications: [],
     conversations: [],
     conversationMessages: {},
     calls: [],
@@ -1006,6 +650,14 @@ export class MotherlandDatabase {
     );
   }
 
+  public findUserByPhone(phone: string): UserAccount | undefined {
+    const clean = phone.replace(/[\s\-()]/g, '').trim();
+    if (!clean) return undefined;
+    return this.data.users.find(
+      (u) => u.phoneNumber && u.phoneNumber.replace(/[\s\-()]/g, '').trim() === clean
+    );
+  }
+
   public getAllUsers(): UserAccount[] {
     return this.data.users;
   }
@@ -1030,9 +682,35 @@ export class MotherlandDatabase {
     requestingUserId?: string,
     onlineUserIds?: Set<string>
   ): UserProfile {
-    const friendsCount = this.getFriendIds(user.id).length;
-    const followersCount = this.data.follows.filter((f) => f.followingId === user.id).length;
-    const followingCount = this.data.follows.filter((f) => f.followerId === user.id).length;
+    const validFriendIds = this.getFriendIds(user.id).filter(
+      (fid) => Boolean(this.findUserById(fid)) && !this.isBlocked(user.id, fid)
+    );
+    const friendsCount = validFriendIds.length;
+    const followersCount = this.data.follows.filter(
+      (f) => f.followingId === user.id && Boolean(this.findUserById(f.followerId)) && !this.isBlocked(user.id, f.followerId)
+    ).length;
+    const followingCount = this.data.follows.filter(
+      (f) => f.followerId === user.id && Boolean(this.findUserById(f.followingId)) && !this.isBlocked(user.id, f.followingId)
+    ).length;
+    const visibleUserPosts = this.data.posts.filter(
+      (p) => p.author?.id === user.id && this.canViewerSeePost(requestingUserId, p)
+    );
+    const postsCount = visibleUserPosts.length;
+    const postSmallVideosCount = visibleUserPosts.filter(
+      (p) => p.mediaType === 'video' && p.mediaAspectRatio === '9:16'
+    ).length;
+    const ownShortsCount = this.data.shortVideos.filter(
+      (s) => s.source === 'motherland' && s.creator?.id === user.id
+    ).length;
+    const postLongVideosCount = visibleUserPosts.filter(
+      (p) => p.mediaType === 'video' && p.mediaAspectRatio !== '9:16'
+    ).length;
+    const ownLongVideosCount = this.data.longVideos.filter(
+      (v) => v.source === 'motherland' && v.channel?.id === user.id
+    ).length;
+    const smallVideosCount = ownShortsCount + postSmallVideosCount;
+    const videosCount = ownLongVideosCount + postLongVideosCount;
+
     const isSelf = requestingUserId === user.id;
     const rel = requestingUserId
       ? this.getRelationshipStatus(requestingUserId, user.id)
@@ -1073,6 +751,9 @@ export class MotherlandDatabase {
       friendsCount,
       followersCount,
       followingCount,
+      postsCount,
+      videosCount,
+      smallVideosCount,
       privacy: {
         showLastSeen: true,
         showReadReceipts: true,
@@ -1096,6 +777,54 @@ export class MotherlandDatabase {
       mutualFriendsCount: requestingUserId && !isSelf ? this.getMutualFriendCount(requestingUserId, user.id) : undefined,
       isOnline: showOnline ? onlineUserIds!.has(user.id) : false,
     };
+  }
+
+  public getUserNetworkLists(
+    targetUserId: string,
+    viewerId?: string,
+    onlineUserIds?: Set<string>
+  ): {
+    friends: UserProfile[];
+    supporters: UserProfile[];
+    supporting: UserProfile[];
+  } {
+    const friends: UserProfile[] = [];
+    for (const fid of this.getFriendIds(targetUserId)) {
+      if (this.isBlocked(targetUserId, fid)) continue;
+      if (viewerId && this.isBlocked(viewerId, fid)) continue;
+      const u = this.findUserById(fid);
+      if (u) friends.push(this.toPublicProfile(u, viewerId, onlineUserIds));
+    }
+
+    const supporters: UserProfile[] = [];
+    const seenSupporterIds = new Set<string>();
+    for (const f of this.data.follows) {
+      if (f.followingId !== targetUserId) continue;
+      if (seenSupporterIds.has(f.followerId)) continue;
+      if (this.isBlocked(targetUserId, f.followerId)) continue;
+      if (viewerId && this.isBlocked(viewerId, f.followerId)) continue;
+      const u = this.findUserById(f.followerId);
+      if (u) {
+        seenSupporterIds.add(u.id);
+        supporters.push(this.toPublicProfile(u, viewerId, onlineUserIds));
+      }
+    }
+
+    const supporting: UserProfile[] = [];
+    const seenSupportingIds = new Set<string>();
+    for (const f of this.data.follows) {
+      if (f.followerId !== targetUserId) continue;
+      if (seenSupportingIds.has(f.followingId)) continue;
+      if (this.isBlocked(targetUserId, f.followingId)) continue;
+      if (viewerId && this.isBlocked(viewerId, f.followingId)) continue;
+      const u = this.findUserById(f.followingId);
+      if (u) {
+        seenSupportingIds.add(u.id);
+        supporting.push(this.toPublicProfile(u, viewerId, onlineUserIds));
+      }
+    }
+
+    return { friends, supporters, supporting };
   }
 
   public touchUserLastActive(userId: string): void {
@@ -2000,23 +1729,33 @@ export class MotherlandDatabase {
     return { ok: true, request: reqItem };
   }
 
-  // Follows
+  // Follows (validated against existing unblocked users; strictly prevents self-follows)
   public isFollowing(followerId: string, followingId: string): boolean {
+    if (!followerId || !followingId || followerId === followingId) return false;
     return this.data.follows.some((f) => f.followerId === followerId && f.followingId === followingId);
   }
 
-  public follow(followerId: string, followingId: string): void {
+  public follow(followerId: string, followingId: string): boolean {
+    if (!followerId || !followingId || followerId === followingId) return false;
+    if (!this.findUserById(followerId) || !this.findUserById(followingId)) return false;
+    if (this.isBlocked(followerId, followingId)) return false;
     if (!this.isFollowing(followerId, followingId)) {
       this.data.follows.push({ followerId, followingId, createdAt: new Date().toISOString() });
       this.save();
     }
+    return true;
   }
 
-  public unfollow(followerId: string, followingId: string): void {
+  public unfollow(followerId: string, followingId: string): boolean {
+    const before = this.data.follows.length;
     this.data.follows = this.data.follows.filter(
       (f) => !(f.followerId === followerId && f.followingId === followingId)
     );
-    this.save();
+    if (this.data.follows.length !== before) {
+      this.save();
+      return true;
+    }
+    return false;
   }
 
   // Blocks

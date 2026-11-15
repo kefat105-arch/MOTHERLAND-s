@@ -17,7 +17,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   unreadFriendsCount = 0,
 }) => {
   const itemClass = (isActive: boolean) =>
-    `flex-1 min-h-[48px] flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-colors ${
+    `min-w-0 w-full min-h-[48px] flex flex-col items-center justify-center py-1 px-0.5 rounded-xl transition-colors touch-manipulation select-none ${
       isActive
         ? 'text-[var(--accent-primary)] font-bold'
         : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -26,53 +26,65 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   return (
     <nav
       aria-label="Primary bottom navigation"
-      className="fixed bottom-0 left-0 right-0 z-40 bg-[var(--bg-glass)] backdrop-blur-xl border-t border-[var(--border-subtle)] px-1.5 pt-1 pb-[max(0.4rem,env(safe-area-inset-bottom))] transition-colors"
+      data-testid="bottom-nav"
+      className="fixed bottom-0 left-0 right-0 w-full max-w-[100vw] overflow-hidden z-40 bg-[var(--bg-glass)] backdrop-blur-xl border-t border-[var(--border-subtle)] px-1 sm:px-2 pt-1 pb-[max(0.4rem,env(safe-area-inset-bottom))] transition-colors"
     >
-      <div className="max-w-xl mx-auto flex items-center justify-between gap-0.5">
+      <div className="w-full max-w-xl mx-auto grid grid-cols-6 items-center gap-0.5">
         {/* 1. HOME */}
         <button
           type="button"
+          data-testid="nav-home-btn"
           onClick={() => onTabChange('home')}
           className={itemClass(activeTab === 'home')}
         >
-          <Home className={`w-5 h-5 ${activeTab === 'home' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
-          <span className="text-[10px] tracking-tight mt-0.5">HOME</span>
+          <Home className={`w-5 h-5 shrink-0 ${activeTab === 'home' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
+          <span className="text-[9px] sm:text-[10px] leading-tight tracking-tight mt-0.5 truncate max-w-full">
+            HOME
+          </span>
         </button>
 
-        {/* 2. SHORTS */}
+        {/* 2. SMALL VIDEO */}
         <button
           type="button"
+          data-testid="nav-small-btn"
           onClick={() => onTabChange('shorts')}
           className={itemClass(activeTab === 'shorts')}
+          aria-label="Small Video"
         >
-          <Flame className={`w-5 h-5 ${activeTab === 'shorts' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
-          <span className="text-[10px] tracking-tight mt-0.5">SHORTS</span>
+          <Flame className={`w-5 h-5 shrink-0 ${activeTab === 'shorts' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
+          <span className="text-[9px] sm:text-[10px] leading-tight tracking-tight mt-0.5 truncate max-w-full">
+            SMALL
+          </span>
         </button>
 
         {/* 3. FRIENDS */}
         <button
           type="button"
+          data-testid="nav-friends-btn"
           onClick={() => onTabChange('friends')}
           className={`relative ${itemClass(activeTab === 'friends')}`}
         >
-          <Users className={`w-5 h-5 ${activeTab === 'friends' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
-          <span className="text-[10px] tracking-tight mt-0.5">FRIENDS</span>
+          <Users className={`w-5 h-5 shrink-0 ${activeTab === 'friends' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
+          <span className="text-[9px] sm:text-[10px] leading-tight tracking-tight mt-0.5 truncate max-w-full">
+            FRIENDS
+          </span>
           {unreadFriendsCount > 0 && (
-            <span className="absolute top-1.5 right-3 w-2 h-2 bg-[var(--accent-gold)] rounded-full" />
+            <span className="absolute top-1.5 right-2.5 w-2 h-2 bg-[var(--accent-gold)] rounded-full" />
           )}
         </button>
 
         {/* 4. CREATE (+) */}
         <button
           type="button"
+          data-testid="nav-create-btn"
           onClick={onOpenCreate}
-          className="flex-1 min-h-[48px] flex flex-col items-center justify-center py-0.5"
-          title="Create Post, Story, Upload Video, Create Short"
+          className="min-w-0 w-full min-h-[48px] flex flex-col items-center justify-center py-0.5 touch-manipulation select-none"
+          title="Create Post, Story, Upload Video, Create Small Video"
         >
-          <span className="w-10 h-10 rounded-2xl bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)] border border-[var(--accent-gold-border)] flex items-center justify-center shadow-sm active:scale-95 transition-all">
+          <span className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)] border border-[var(--accent-gold-border)] flex items-center justify-center shadow-sm active:scale-95 transition-all shrink-0">
             <Plus className="w-5 h-5 stroke-[2.75px]" />
           </span>
-          <span className="text-[9px] font-bold text-[var(--accent-primary)] tracking-tight mt-0.5">
+          <span className="text-[9px] font-bold text-[var(--accent-primary)] leading-tight tracking-tight mt-0.5 truncate max-w-full">
             CREATE
           </span>
         </button>
@@ -80,21 +92,27 @@ export const BottomNav: React.FC<BottomNavProps> = ({
         {/* 5. VIDEO */}
         <button
           type="button"
+          data-testid="nav-video-btn"
           onClick={() => onTabChange('video')}
           className={itemClass(activeTab === 'video')}
         >
-          <PlaySquare className={`w-5 h-5 ${activeTab === 'video' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
-          <span className="text-[10px] tracking-tight mt-0.5">VIDEO</span>
+          <PlaySquare className={`w-5 h-5 shrink-0 ${activeTab === 'video' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
+          <span className="text-[9px] sm:text-[10px] leading-tight tracking-tight mt-0.5 truncate max-w-full">
+            VIDEO
+          </span>
         </button>
 
         {/* 6. MENU */}
         <button
           type="button"
+          data-testid="nav-menu-btn"
           onClick={() => onTabChange('menu')}
           className={itemClass(activeTab === 'menu' || activeTab === 'profile')}
         >
-          <Menu className={`w-5 h-5 ${activeTab === 'menu' || activeTab === 'profile' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
-          <span className="text-[10px] tracking-tight mt-0.5">MENU</span>
+          <Menu className={`w-5 h-5 shrink-0 ${activeTab === 'menu' || activeTab === 'profile' ? 'stroke-[2.5px]' : 'stroke-[1.75px]'}`} />
+          <span className="text-[9px] sm:text-[10px] leading-tight tracking-tight mt-0.5 truncate max-w-full">
+            MENU
+          </span>
         </button>
       </div>
     </nav>

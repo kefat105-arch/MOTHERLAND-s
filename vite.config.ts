@@ -11,14 +11,14 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
+        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
           id: '/',
           name: 'MOTHERLAND — Social Media Super App',
           short_name: 'MOTHERLAND',
-          description: 'MOTHERLAND — Sovereign social media platform with unified feeds, video theater, individual accounts, and YouTube integration.',
-          theme_color: '#080a11',
-          background_color: '#080a11',
+          description: 'MOTHERLAND — Sovereign social media platform with unified feeds, Small Videos, Cinema Theater, individual accounts, and YouTube integration.',
+          theme_color: '#006A4E',
+          background_color: '#006A4E',
           display: 'standalone',
           start_url: '/',
           scope: '/',

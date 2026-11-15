@@ -1,0 +1,17 @@
+{
+  "filename": "backup_pre_demo_cleanup_2026-11-15T09-54-40-761Z.json",
+  "filePath": "/app/applet/data/backups/backup_pre_demo_cleanup_2026-11-15T09-54-40-761Z.json",
+  "reason": "pre_demo_cleanup",
+  "createdAt": "2026-11-15T09:54:40.764Z",
+  "byteSize": 28303,
+  "sha256": "de7c5ee1c29e4f647877316f34c16b25d9583b2ebf98fac511e99c7b481420e1",
+  "schemaVersion": 3,
+  "counts": {
+    "users": 9,
+    "posts": 5,
+    "stories": 0,
+    "sessions": 6,
+    "mediaAssets": 0,
+    "conversations": 0
+  }
+}
