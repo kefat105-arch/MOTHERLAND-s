@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Shield, Users, UserPlus, UserCheck, MessageSquare, Loader2, ExternalLink } from 'lucide-react';
 import { api } from '../api';
-import type { Post, UserProfile } from '../types';
+import type { PlatformSource, Post, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
 
 export interface CreatorProfileTarget {
@@ -9,7 +9,7 @@ export interface CreatorProfileTarget {
   displayName?: string;
   username?: string;
   avatar?: string;
-  source: 'motherland' | 'youtube';
+  source: PlatformSource;
   channelId?: string;
   subscriberCount?: string;
 }

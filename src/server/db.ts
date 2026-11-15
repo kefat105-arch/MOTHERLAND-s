@@ -44,6 +44,9 @@ import type {
   RelationshipStatus,
   DeviceSessionInfo,
   MediaAssetRecord,
+  ServerRegistryEntry,
+  ServerSwitchHistoryEntry,
+  AdminConfigChatMessage,
 } from '../types';
 
 export interface UserAccount {
@@ -183,6 +186,10 @@ export interface DatabaseSchema {
   reports?: UserReport[];
   otpCodes: OtpRecord[];
   youtubeOAuth?: Record<string, YouTubeOAuthRecord>;
+  servers?: ServerRegistryEntry[];
+  serverHistory?: ServerSwitchHistoryEntry[];
+  adminConfigMessages?: AdminConfigChatMessage[];
+  bdServicePrefs?: Record<string, { favorites: string[]; recent: string[] }>;
 }
 
 export const DEFAULT_PBKDF2_ITERATIONS = 120000;
@@ -619,6 +626,10 @@ function getInitialDbData(): DatabaseSchema {
     reports: [],
     otpCodes: [],
     youtubeOAuth: {},
+    servers: [],
+    serverHistory: [],
+    adminConfigMessages: [],
+    bdServicePrefs: {},
   };
 }
 
@@ -677,6 +688,57 @@ export class MotherlandDatabase {
     }
     if (!this.data.youtubeOAuth || typeof this.data.youtubeOAuth !== 'object') {
       this.data.youtubeOAuth = {};
+    }
+    if (!Array.isArray(this.data.servers)) this.data.servers = [];
+    if (!Array.isArray(this.data.serverHistory)) this.data.serverHistory = [];
+    if (!Array.isArray(this.data.adminConfigMessages)) this.data.adminConfigMessages = [];
+    if (!this.data.bdServicePrefs || typeof this.data.bdServicePrefs !== 'object') {
+      this.data.bdServicePrefs = {};
+    }
+    this.ensureDefaultServerRegistryEntries();
+  }
+
+  private ensureDefaultServerRegistryEntries(): void {
+    const now = new Date().toISOString();
+    if (!Array.isArray(this.data.servers)) this.data.servers = [];
+
+    if (!this.data.servers.some((s) => s.id === 'srv_motherland_local')) {
+      const hasPrimary = this.data.servers.some((s) => s.isPrimary && !s.isolated);
+      this.data.servers.push({
+        id: 'srv_motherland_local',
+        name: 'MOTHERLAND Core Engine',
+        baseUrl: 'http://127.0.0.1:3000',
+        healthPath: '/api/health',
+        wsUrl: 'ws://127.0.0.1:3000/ws',
+        environment: 'local',
+        assignedServices: ['main_app', 'video', 'messaging', 'calls', 'bd_services'],
+        enabled: true,
+        isPrimary: !hasPrimary,
+        isolated: false,
+        lastHealthStatus: 'healthy',
+        notes: 'Primary active MOTHERLAND API, WebRTC WAVE signaling & persistent JSON engine.',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    if (!this.data.servers.some((s) => s.id === 'srv_dream_world')) {
+      this.data.servers.push({
+        id: 'srv_dream_world',
+        name: 'Dream World Dedicated Game Server',
+        baseUrl: 'https://dream-world-open.onrender.com',
+        healthPath: '/health',
+        wsUrl: 'wss://dream-world-open.onrender.com/ws/game',
+        environment: 'isolated_game',
+        assignedServices: ['dream_world'],
+        enabled: true,
+        isPrimary: false,
+        isolated: true,
+        lastHealthStatus: 'unknown',
+        notes: 'Strictly isolated external game server for Dream World. Never mixes with core MOTHERLAND social routing.',
+        createdAt: now,
+        updatedAt: now,
+      });
     }
   }
 
@@ -1445,6 +1507,38 @@ export class MotherlandDatabase {
     return post;
   }
 
+  public updatePost(
+    postId: string,
+    actorId: string,
+    actorRole: UserAccount['role'] | undefined,
+    updates: { content?: string; audience?: 'public' | 'friends' | 'only_me'; hashtags?: string[] }
+  ): { ok: boolean; statusCode: number; error?: string; post?: Post } {
+    const post = this.data.posts.find((p) => p.id === postId);
+    if (!post) {
+      return { ok: false, statusCode: 404, error: 'Post not found' };
+    }
+    if (post.author.id !== actorId && actorRole !== 'owner') {
+      return { ok: false, statusCode: 403, error: 'Unauthorized to edit this post' };
+    }
+    if (typeof updates.content === 'string') {
+      const trimmed = updates.content.trim();
+      if (!trimmed && !post.mediaUrl && (!post.images || post.images.length === 0)) {
+        return { ok: false, statusCode: 400, error: 'Post must contain text or media' };
+      }
+      post.content = trimmed.slice(0, 10000);
+    }
+    if (updates.audience && ['public', 'friends', 'only_me'].includes(updates.audience)) {
+      post.audience = updates.audience;
+    }
+    if (Array.isArray(updates.hashtags)) {
+      post.hashtags = updates.hashtags.map((h) => String(h).slice(0, 48));
+    }
+    post.isEdited = true;
+    post.editedAt = new Date().toISOString();
+    this.save();
+    return { ok: true, statusCode: 200, post: this.hydratePostForUser(post, actorId) };
+  }
+
   public deletePost(postId: string): boolean {
     const idx = this.data.posts.findIndex((p) => p.id === postId);
     if (idx !== -1) {
@@ -1459,22 +1553,109 @@ export class MotherlandDatabase {
     return false;
   }
 
-  // Comments
-  public getComments(postId: string): any[] {
-    return this.data.postComments[postId] || [];
+  // Comments (Threaded replies, edit, delete & per-user likes)
+  public getComments(postId: string, viewerId?: string): any[] {
+    const raw = this.data.postComments[postId] || [];
+    return raw.map((c: any) => {
+      const likedBy: string[] = Array.isArray(c.likedBy) ? c.likedBy : [];
+      return {
+        ...c,
+        likesCount: Math.max(likedBy.length, Number(c.likesCount) || 0),
+        isLiked: viewerId ? likedBy.includes(viewerId) : Boolean(c.isLiked),
+      };
+    });
   }
 
   public addComment(postId: string, comment: any): any {
     if (!this.data.postComments[postId]) {
       this.data.postComments[postId] = [];
     }
-    this.data.postComments[postId].push(comment);
+    const stored = { ...comment, likedBy: Array.isArray(comment.likedBy) ? comment.likedBy : [] };
+    this.data.postComments[postId].push(stored);
     const post = this.data.posts.find((p) => p.id === postId);
     if (post) {
       post.stats.comments = this.data.postComments[postId].length;
     }
     this.save();
-    return comment;
+    return stored;
+  }
+
+  public editComment(
+    postId: string,
+    commentId: string,
+    actorId: string,
+    actorRole: UserAccount['role'] | undefined,
+    text: string
+  ): { ok: boolean; statusCode: number; error?: string; comment?: any } {
+    const list = this.data.postComments[postId] || [];
+    const target = list.find((c: any) => c.id === commentId);
+    if (!target) return { ok: false, statusCode: 404, error: 'Comment not found' };
+    if (target.userId !== actorId && actorRole !== 'owner') {
+      return { ok: false, statusCode: 403, error: 'Unauthorized to edit this comment' };
+    }
+    target.text = text.trim().slice(0, 2000);
+    target.isEdited = true;
+    target.editedAt = new Date().toISOString();
+    this.save();
+    return {
+      ok: true,
+      statusCode: 200,
+      comment: {
+        ...target,
+        isLiked: Array.isArray(target.likedBy) ? target.likedBy.includes(actorId) : false,
+      },
+    };
+  }
+
+  public deleteComment(
+    postId: string,
+    commentId: string,
+    actorId: string,
+    actorRole: UserAccount['role'] | undefined
+  ): { ok: boolean; statusCode: number; error?: string; totalComments?: number } {
+    const list = this.data.postComments[postId] || [];
+    const target = list.find((c: any) => c.id === commentId);
+    if (!target) return { ok: false, statusCode: 404, error: 'Comment not found' };
+    const post = this.data.posts.find((p) => p.id === postId);
+    const isPostOwner = post?.author.id === actorId;
+    if (target.userId !== actorId && !isPostOwner && actorRole !== 'owner') {
+      return { ok: false, statusCode: 403, error: 'Unauthorized to delete this comment' };
+    }
+    this.data.postComments[postId] = list.filter((c: any) => c.id !== commentId && c.parentId !== commentId);
+    if (post) {
+      post.stats.comments = this.data.postComments[postId].length;
+    }
+    this.save();
+    return { ok: true, statusCode: 200, totalComments: this.data.postComments[postId].length };
+  }
+
+  public toggleCommentLike(
+    postId: string,
+    commentId: string,
+    userId: string
+  ): { ok: boolean; comment?: any; isLiked?: boolean; likesCount?: number } {
+    const list = this.data.postComments[postId] || [];
+    const target = list.find((c: any) => c.id === commentId);
+    if (!target) return { ok: false };
+    if (!Array.isArray(target.likedBy)) target.likedBy = [];
+    const idx = target.likedBy.indexOf(userId);
+    let isLiked = false;
+    if (idx >= 0) {
+      target.likedBy.splice(idx, 1);
+      target.likesCount = Math.max(0, (Number(target.likesCount) || 1) - 1);
+      isLiked = false;
+    } else {
+      target.likedBy.push(userId);
+      target.likesCount = Math.max(target.likedBy.length, (Number(target.likesCount) || 0) + 1);
+      isLiked = true;
+    }
+    this.save();
+    return {
+      ok: true,
+      isLiked,
+      likesCount: target.likesCount,
+      comment: { ...target, isLiked },
+    };
   }
 
   // Stories (Strict 24-Hour UTC Expiration — never triggered by midnight or affecting posts/accounts)
@@ -3049,6 +3230,250 @@ export class MotherlandDatabase {
     this.data.reports.unshift(report);
     this.save();
     return report;
+  }
+
+  // ==========================================
+  // SERVER REGISTRY & OWNER CONFIG CHAT
+  // ==========================================
+  public getServers(): ServerRegistryEntry[] {
+    if (!Array.isArray(this.data.servers)) this.data.servers = [];
+    this.ensureDefaultServerRegistryEntries();
+    return this.data.servers;
+  }
+
+  public getServerById(id: string): ServerRegistryEntry | undefined {
+    return this.getServers().find((s) => s.id === id);
+  }
+
+  public recordServerHistory(entry: Omit<ServerSwitchHistoryEntry, 'id' | 'createdAt'>): ServerSwitchHistoryEntry {
+    if (!Array.isArray(this.data.serverHistory)) this.data.serverHistory = [];
+    const rec: ServerSwitchHistoryEntry = {
+      ...entry,
+      id: `srvh_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      createdAt: new Date().toISOString(),
+    };
+    this.data.serverHistory.unshift(rec);
+    if (this.data.serverHistory.length > 100) {
+      this.data.serverHistory = this.data.serverHistory.slice(0, 100);
+    }
+    return rec;
+  }
+
+  public getServerHistory(): ServerSwitchHistoryEntry[] {
+    if (!Array.isArray(this.data.serverHistory)) this.data.serverHistory = [];
+    return this.data.serverHistory;
+  }
+
+  public upsertServer(
+    payload: Partial<ServerRegistryEntry> & { id?: string; name: string; baseUrl: string },
+    actor: UserAccount
+  ): ServerRegistryEntry {
+    this.getServers();
+    const now = new Date().toISOString();
+    const existing = payload.id ? this.data.servers!.find((s) => s.id === payload.id) : undefined;
+    if (existing) {
+      if (existing.isolated && payload.assignedServices && payload.assignedServices.some((svc) => svc !== 'dream_world')) {
+        throw new Error('Dream World server must remain isolated for Dream World only.');
+      }
+      existing.name = payload.name || existing.name;
+      existing.baseUrl = payload.baseUrl || existing.baseUrl;
+      if (payload.healthPath !== undefined) existing.healthPath = payload.healthPath;
+      if (payload.wsUrl !== undefined) existing.wsUrl = payload.wsUrl;
+      if (payload.environment !== undefined) existing.environment = payload.environment;
+      if (Array.isArray(payload.assignedServices) && !existing.isolated) {
+        existing.assignedServices = payload.assignedServices;
+      }
+      if (typeof payload.enabled === 'boolean') existing.enabled = payload.enabled;
+      if (payload.notes !== undefined) existing.notes = payload.notes;
+      existing.updatedAt = now;
+      this.recordServerHistory({
+        action: 'update',
+        serverId: existing.id,
+        serverName: existing.name,
+        actorId: actor.id,
+        actorUsername: actor.username,
+        summary: `Updated server configuration (${existing.baseUrl})`,
+      });
+      this.save();
+      return existing;
+    }
+
+    const entry: ServerRegistryEntry = {
+      id: payload.id || `srv_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      name: payload.name,
+      baseUrl: payload.baseUrl,
+      healthPath: payload.healthPath || '/health',
+      wsUrl: payload.wsUrl,
+      environment: payload.environment || 'production',
+      assignedServices: Array.isArray(payload.assignedServices) && payload.assignedServices.length > 0
+        ? payload.assignedServices.filter((svc) => svc !== 'dream_world')
+        : ['main_app'],
+      enabled: payload.enabled !== false,
+      isPrimary: false,
+      isolated: false,
+      lastHealthStatus: 'unknown',
+      notes: payload.notes,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.data.servers!.push(entry);
+    this.recordServerHistory({
+      action: 'create',
+      serverId: entry.id,
+      serverName: entry.name,
+      actorId: actor.id,
+      actorUsername: actor.username,
+      summary: `Registered server ${entry.name} (${entry.baseUrl})`,
+    });
+    this.save();
+    return entry;
+  }
+
+  public updateServerHealth(
+    id: string,
+    status: 'healthy' | 'degraded' | 'offline',
+    latencyMs: number | null
+  ): ServerRegistryEntry | undefined {
+    const srv = this.getServerById(id);
+    if (!srv) return undefined;
+    srv.lastHealthStatus = status;
+    srv.lastLatencyMs = latencyMs;
+    srv.lastCheckedAt = new Date().toISOString();
+    this.save();
+    return srv;
+  }
+
+  public setPrimaryServer(
+    id: string,
+    actor: UserAccount
+  ): { ok: boolean; error?: string; server?: ServerRegistryEntry; previousPrimaryId?: string } {
+    const servers = this.getServers();
+    const target = servers.find((s) => s.id === id);
+    if (!target) return { ok: false, error: 'Server not found' };
+    if (target.isolated || target.id === 'srv_dream_world') {
+      return { ok: false, error: 'Isolated Dream World server cannot become primary MOTHERLAND engine.' };
+    }
+    if (!target.enabled) {
+      return { ok: false, error: 'Enable this server before promoting it to Primary.' };
+    }
+    const prevPrimary = servers.find((s) => s.isPrimary && !s.isolated);
+    for (const s of servers) {
+      if (!s.isolated) {
+        s.isPrimary = s.id === target.id;
+      }
+    }
+    target.updatedAt = new Date().toISOString();
+    this.recordServerHistory({
+      action: 'set_primary',
+      serverId: target.id,
+      serverName: target.name,
+      previousPrimaryId: prevPrimary?.id,
+      newPrimaryId: target.id,
+      actorId: actor.id,
+      actorUsername: actor.username,
+      summary: `Switched primary server to ${target.name} (${target.baseUrl})`,
+    });
+    this.save();
+    return { ok: true, server: target, previousPrimaryId: prevPrimary?.id };
+  }
+
+  public rollbackPrimaryServer(actor: UserAccount): { ok: boolean; error?: string; server?: ServerRegistryEntry } {
+    const history = this.getServerHistory();
+    const lastSwitch = history.find((h) => (h.action === 'set_primary' || h.action === 'rollback') && h.previousPrimaryId);
+    const targetId = lastSwitch?.previousPrimaryId || 'srv_motherland_local';
+    const target = this.getServerById(targetId);
+    if (!target || target.isolated) {
+      return { ok: false, error: 'No eligible previous primary server found for rollback.' };
+    }
+    target.enabled = true;
+    const prevPrimary = this.getServers().find((s) => s.isPrimary && !s.isolated);
+    for (const s of this.getServers()) {
+      if (!s.isolated) s.isPrimary = s.id === target.id;
+    }
+    this.recordServerHistory({
+      action: 'rollback',
+      serverId: target.id,
+      serverName: target.name,
+      previousPrimaryId: prevPrimary?.id,
+      newPrimaryId: target.id,
+      actorId: actor.id,
+      actorUsername: actor.username,
+      summary: `Rolled back primary server to ${target.name}`,
+    });
+    this.save();
+    return { ok: true, server: target };
+  }
+
+  public deleteServer(id: string, actor: UserAccount): { ok: boolean; error?: string } {
+    if (id === 'srv_dream_world' || id === 'srv_motherland_local') {
+      return { ok: false, error: 'Built-in core or isolated Dream World server cannot be deleted (you can disable instead).' };
+    }
+    const list = this.getServers();
+    const idx = list.findIndex((s) => s.id === id);
+    if (idx === -1) return { ok: false, error: 'Server not found' };
+    const target = list[idx];
+    if (target.isPrimary) {
+      return { ok: false, error: 'Switch primary server before deleting the active primary entry.' };
+    }
+    list.splice(idx, 1);
+    this.recordServerHistory({
+      action: 'delete',
+      serverId: target.id,
+      serverName: target.name,
+      actorId: actor.id,
+      actorUsername: actor.username,
+      summary: `Removed server ${target.name}`,
+    });
+    this.save();
+    return { ok: true };
+  }
+
+  public getAdminConfigMessages(): AdminConfigChatMessage[] {
+    if (!Array.isArray(this.data.adminConfigMessages)) this.data.adminConfigMessages = [];
+    return this.data.adminConfigMessages;
+  }
+
+  public addAdminConfigMessage(msg: AdminConfigChatMessage): AdminConfigChatMessage {
+    if (!Array.isArray(this.data.adminConfigMessages)) this.data.adminConfigMessages = [];
+    this.data.adminConfigMessages.push(msg);
+    if (this.data.adminConfigMessages.length > 150) {
+      this.data.adminConfigMessages = this.data.adminConfigMessages.slice(-150);
+    }
+    this.save();
+    return msg;
+  }
+
+  // ==========================================
+  // BANGLADESH SERVICES PREFS
+  // ==========================================
+  public getBdServicePrefs(userId: string): { favorites: string[]; recent: string[] } {
+    if (!this.data.bdServicePrefs) this.data.bdServicePrefs = {};
+    const pref = this.data.bdServicePrefs[userId];
+    return {
+      favorites: Array.isArray(pref?.favorites) ? pref.favorites : [],
+      recent: Array.isArray(pref?.recent) ? pref.recent : [],
+    };
+  }
+
+  public toggleBdServiceFavorite(userId: string, serviceId: string): { favorites: string[]; isFavorite: boolean } {
+    if (!this.data.bdServicePrefs) this.data.bdServicePrefs = {};
+    const current = this.getBdServicePrefs(userId);
+    const exists = current.favorites.includes(serviceId);
+    const nextFavs = exists
+      ? current.favorites.filter((id) => id !== serviceId)
+      : [serviceId, ...current.favorites].slice(0, 50);
+    this.data.bdServicePrefs[userId] = { favorites: nextFavs, recent: current.recent };
+    this.save();
+    return { favorites: nextFavs, isFavorite: !exists };
+  }
+
+  public recordBdServiceRecent(userId: string, serviceId: string): string[] {
+    if (!this.data.bdServicePrefs) this.data.bdServicePrefs = {};
+    const current = this.getBdServicePrefs(userId);
+    const nextRecent = [serviceId, ...current.recent.filter((id) => id !== serviceId)].slice(0, 20);
+    this.data.bdServicePrefs[userId] = { favorites: current.favorites, recent: nextRecent };
+    this.save();
+    return nextRecent;
   }
 }
 

@@ -3,10 +3,6 @@ import {
   X,
   ArrowLeft,
   Heart,
-  ThumbsDown,
-  MessageCircle,
-  Share2,
-  Bookmark,
   MoreVertical,
   Volume2,
   VolumeX,
@@ -34,8 +30,9 @@ import {
 } from '../utils/youtubePlayerBridge';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import { recordWatchedSuppression } from '../services/watchSuppression';
-import { FireLikeIcon } from './fire/MotherlandIcons';
+import { FireLikeIcon, FireDislikeIcon, TalkIcon, VaultIcon, BoostIcon } from './fire/MotherlandIcons';
 import { FireRichText } from './fire/FireRichText';
+import type { CreatorProfileTarget } from './CreatorProfileModal';
 
 interface ShortsPlayerModalProps {
   isOpen: boolean;
@@ -47,6 +44,7 @@ interface ShortsPlayerModalProps {
   hasMoreShorts?: boolean;
   exhaustedNotice?: string;
   onOpenComments: (info: { postId?: string; youtubeVideoId?: string; title?: string }) => void;
+  onOpenCreator?: (target: CreatorProfileTarget) => void;
 }
 
 function formatShortTime(sec: number): string {
@@ -66,9 +64,17 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   hasMoreShorts = true,
   exhaustedNotice = '',
   onOpenComments,
+  onOpenCreator,
 }) => {
+  const filterStrictShorts = (list: ShortVideo[]) =>
+    list.filter((s) =>
+      typeof s.durationSeconds === 'number'
+        ? s.durationSeconds > 0 && s.durationSeconds <= 180
+        : s.source !== 'youtube'
+    );
+
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
-  const [items, setItems] = useState<ShortVideo[]>(shorts);
+  const [items, setItems] = useState<ShortVideo[]>(() => filterStrictShorts(shorts));
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -108,7 +114,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   useBackHandler('shorts-player-modal', isOpen, onClose, 70);
 
   useEffect(() => {
-    setItems(shorts);
+    setItems(filterStrictShorts(shorts));
   }, [shorts]);
 
   useEffect(() => {
@@ -184,14 +190,15 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     };
   }, [isOpen, currentIndex, isPlaying, items, duration, currentTime]);
 
-  // Preload next Short thumbnail so switching feels instant
+  // Preload next 2 Shorts thumbnails & next native video asset for instant playback
   useEffect(() => {
     if (!isOpen) return;
-    const nextItem = items[currentIndex + 1];
-    if (nextItem?.thumbnailUrl) {
-      const img = new Image();
-      img.src = nextItem.thumbnailUrl;
-    }
+    [items[currentIndex + 1], items[currentIndex + 2]].forEach((nextItem) => {
+      if (nextItem?.thumbnailUrl) {
+        const img = new Image();
+        img.src = nextItem.thumbnailUrl;
+      }
+    });
   }, [isOpen, currentIndex, items]);
 
   const currentShort = items[currentIndex] || items[0];
@@ -628,6 +635,17 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             />
           )}
 
+          {nextShort && !nextShort.youtubeId && nextShort.videoUrl && (
+            <video
+              key={`preload_${nextShort.id}`}
+              src={nextShort.videoUrl}
+              preload="auto"
+              muted
+              playsInline
+              className="hidden"
+            />
+          )}
+
           {/* Full-Stage Transparent Touch & Tap Capture Layer */}
           <div
             data-testid="shorts-gesture-surface"
@@ -710,20 +728,35 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
         >
           <div className="pr-16 space-y-2">
             <div className="flex items-center gap-2">
-              {currentShort.creator.avatar ? (
-                <img
-                  src={currentShort.creator.avatar}
-                  alt={currentShort.creator.name}
-                  className="w-9 h-9 rounded-full object-cover border border-[#D0AF72]/50"
-                />
-              ) : (
-                <div className="w-9 h-9 rounded-full bg-white/15 border border-[#D0AF72]/40 flex items-center justify-center text-xs font-bold text-white">
-                  {currentShort.creator.name.slice(0, 1).toUpperCase()}
-                </div>
-              )}
-              <span className="font-bold text-sm text-white truncate max-w-[155px]">
-                {currentShort.creator.name}
-              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenCreator?.({
+                    userId: currentShort.creator.id,
+                    displayName: currentShort.creator.name,
+                    username: currentShort.creator.username,
+                    avatar: currentShort.creator.avatar,
+                    source: currentShort.source,
+                    channelId: currentShort.creator.id,
+                  })
+                }
+                className="flex items-center gap-2 min-w-0 text-left hover:opacity-90 cursor-pointer"
+              >
+                {currentShort.creator.avatar ? (
+                  <img
+                    src={currentShort.creator.avatar}
+                    alt={currentShort.creator.name}
+                    className="w-9 h-9 rounded-full object-cover border border-[#D0AF72]/50"
+                  />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-white/15 border border-[#D0AF72]/40 flex items-center justify-center text-xs font-bold text-white">
+                    {currentShort.creator.name.slice(0, 1).toUpperCase()}
+                  </div>
+                )}
+                <span className="font-bold text-sm text-white truncate max-w-[155px]">
+                  {currentShort.creator.name}
+                </span>
+              </button>
               <button
                 type="button"
                 onClick={toggleFollow}
@@ -761,8 +794,6 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                   <Shield className="w-3.5 h-3.5" /> MOTHERLAND Shorts
                 </span>
               )}
-              <span>·</span>
-              <span>Swipe up / down to browse</span>
             </div>
           </div>
 
@@ -844,11 +875,11 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                 type="button"
                 onClick={toggleDislike}
                 className={`w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform ${
-                  isDisliked ? 'text-[#D0AF72] border-[#D0AF72]/50' : 'text-white'
+                  isDisliked ? 'bg-orange-500/20 border-orange-400/50' : 'text-white'
                 }`}
                 aria-label="Dislike short"
               >
-                <ThumbsDown className={`w-5 h-5 ${isDisliked ? 'fill-current' : ''}`} />
+                <FireDislikeIcon size={20} active={isDisliked} />
               </button>
               <span className="text-[10px] font-semibold mt-0.5 drop-shadow">
                 {isDisliked ? 'Disliked' : 'Dislike'}
@@ -867,9 +898,9 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                 })
               }
               className="w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform"
-              aria-label="Comments"
+              aria-label="Talk"
             >
-              <MessageCircle className="w-5 h-5" />
+              <TalkIcon size={20} />
             </button>
             <span className="text-[10px] font-semibold mt-0.5 tabular-nums drop-shadow">
               {currentShort.stats.comments.toLocaleString()}
@@ -899,14 +930,14 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                 }
               }}
               className={`w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform ${
-                isSaved ? 'text-[#D0AF72] border-[#D0AF72]/50' : 'text-white'
+                isSaved ? 'bg-orange-500/20 border-orange-400/50' : 'text-white'
               }`}
-              aria-label="Save short"
+              aria-label="Vault short"
             >
-              <Bookmark className={`w-5 h-5 ${isSaved ? 'fill-current' : ''}`} />
+              <VaultIcon size={20} active={isSaved} />
             </button>
             <span className="text-[10px] font-semibold mt-0.5 drop-shadow">
-              {isSaved ? 'Saved' : 'Save'}
+              {isSaved ? 'Vaulted' : 'Vault'}
             </span>
           </div>
 
@@ -915,16 +946,16 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
               type="button"
               onClick={handleShare}
               className="w-11 h-11 rounded-full bg-black/50 backdrop-blur-md border border-white/15 flex items-center justify-center active:scale-90 transition-transform"
-              aria-label="Share short"
+              aria-label="Boost short"
             >
               {copiedId === currentShort.id ? (
-                <Check className="w-5 h-5 text-[#2B8A86]" />
+                <Check className="w-5 h-5 text-orange-400" />
               ) : (
-                <Share2 className="w-5 h-5" />
+                <BoostIcon size={20} />
               )}
             </button>
             <span className="text-[10px] font-semibold mt-0.5 drop-shadow">
-              {copiedId === currentShort.id ? 'Copied' : 'Share'}
+              {copiedId === currentShort.id ? 'Copied' : 'Boost'}
             </span>
           </div>
 

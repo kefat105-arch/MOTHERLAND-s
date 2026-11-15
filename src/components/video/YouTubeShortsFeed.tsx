@@ -10,10 +10,6 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  ThumbsUp,
-  ThumbsDown,
-  MessageCircle,
-  Share2,
   Volume2,
   VolumeX,
   Play,
@@ -30,32 +26,17 @@ import {
   Send,
 } from 'lucide-react';
 import { UnifiedVideo } from '../../types/video';
-import { searchYouTube } from '../../services/youtubeService';
+import { api } from '../../api';
 import {
   filterUnsuppressed,
   recordWatchedSuppression,
+  recordShownFeedIds,
   WATCH_SUPPRESSED_EVENT,
 } from '../../services/watchSuppression';
-import { FireLikeIcon, TalkIcon, BoostIcon } from '../fire/MotherlandIcons';
+import { FireLikeIcon, FireDislikeIcon, TalkIcon, BoostIcon } from '../fire/MotherlandIcons';
 import { FireEmojiPicker } from '../fire/FireEmojiPicker';
 import { FireRichText } from '../fire/FireRichText';
 import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
-
-const YT_SHORTS_CACHE_KEY = 'motherland_yt_shorts_cache_v1';
-
-function readCachedYtShorts(): UnifiedVideo[] {
-  try {
-    const raw = localStorage.getItem(YT_SHORTS_CACHE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed?.items)) {
-      return filterUnsuppressed(parsed.items);
-    }
-    return [];
-  } catch {
-    return [];
-  }
-}
 
 interface YouTubeShortsFeedProps {
   onBackToHome?: () => void;
@@ -68,8 +49,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   onOpenDetails,
   refreshSignal = 0,
 }) => {
-  const initialCached = readCachedYtShorts();
-  const [shorts, setShorts] = useState<UnifiedVideo[]>(initialCached);
+  const [shorts, setShorts] = useState<UnifiedVideo[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
@@ -79,17 +59,18 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   const [subscribedMap, setSubscribedMap] = useState<Record<string, boolean>>({});
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
-  const [commentList, setCommentList] = useState<Array<{ id: string; user: string; text: string; time: string }>>([
-    { id: 'c1', user: 'Tanvir Hossain', text: 'This Short is super creative! Love the edit 🔥', time: '2h ago' },
-    { id: 'c2', user: 'Sadia Rahman', text: 'Watching on Motherland Super App, great quality! 🇧🇩', time: '5h ago' },
-  ]);
+  const [commentList, setCommentList] = useState<Array<{ id: string; user: string; text: string; time: string }>>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsNotice, setCommentsNotice] = useState('');
   const [newComment, setNewComment] = useState('');
   const [firePickerOpen, setFirePickerOpen] = useState(false);
 
   // Pagination
+  const [page, setPage] = useState(1);
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
+  const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(initialCached.length === 0);
+  const [initialLoading, setInitialLoading] = useState(true);
 
   // Gesture handling refs
   const touchStartY = useRef<number>(0);
@@ -100,54 +81,78 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
 
-  // Load YouTube Shorts cleanly (instant hydration + silent refresh)
-  const loadInitialShorts = useCallback(async (showSpinnerIfEmpty = false) => {
-    if (showSpinnerIfEmpty && shorts.length === 0) {
-      setInitialLoading(true);
+  const mapFeedItemToShort = (item: any): UnifiedVideo | null => {
+    if (typeof item.durationSeconds !== 'number' || item.durationSeconds <= 0 || item.durationSeconds > 180) {
+      return null;
     }
+    const videoId = String(item.youtubeId || item.id || '').trim();
+    if (!videoId) return null;
+    return {
+      id: item.id || `yt_${videoId}`,
+      platform: 'youtube',
+      videoId,
+      title: item.title || 'YouTube Short',
+      creatorName: item.channel?.title || 'Creator',
+      creatorAvatar: item.channel?.avatar || '',
+      originalVideoUrl: `https://youtube.com/shorts/${videoId}`,
+      embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
+      thumbnailUrl: item.thumbnailUrl || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      duration: item.duration || '',
+      publishedAt: item.publishedAt,
+      playbackAvailability: 'playable_embed',
+      aspectRatio: '9:16',
+      description: item.description,
+      sourceMetadata: {
+        isOfficialEmbed: true,
+        likes: item.stats?.likes ?? 0,
+        comments: item.stats?.comments ?? 0,
+      },
+    };
+  };
+
+  // Load YouTube Shorts fresh from backend strict-duration Shorts feed (no stale local cache)
+  const loadInitialShorts = useCallback(async () => {
+    setInitialLoading(true);
     try {
-      const res = await searchYouTube({
-        query: 'Bangladesh shorts viral comedy trending 2026',
-        regionCode: 'BD',
-        safeSearch: 'none',
-        pageSize: 24,
+      const res = await api.getYouTubeFeed({
+        type: 'shorts',
+        category: 'shorts',
+        page: 1,
+        pageSize: 16,
       });
 
       const validShorts: UnifiedVideo[] = [];
-      for (const v of res.videos) {
-        if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
-          seenIdsRef.current.add(v.id);
-          seenIdsRef.current.add(v.videoId);
-          validShorts.push({
-            ...v,
-            aspectRatio: '9:16',
-          });
+      const initialLikes: Record<string, number> = {};
+      for (const item of res.items || []) {
+        const mapped = mapFeedItemToShort(item);
+        if (!mapped) continue;
+        if (!seenIdsRef.current.has(mapped.id) && !seenIdsRef.current.has(mapped.videoId)) {
+          seenIdsRef.current.add(mapped.id);
+          seenIdsRef.current.add(mapped.videoId);
+          validShorts.push(mapped);
+          initialLikes[mapped.videoId] = Number(item.stats?.likes ?? 0);
         }
       }
 
       const unsuppressed = filterUnsuppressed(validShorts);
-      if (unsuppressed.length > 0) {
-        setShorts(unsuppressed);
-        setCurrentIndex(0);
-        try {
-          localStorage.setItem(YT_SHORTS_CACHE_KEY, JSON.stringify({ items: unsuppressed.slice(0, 20), savedAt: Date.now() }));
-        } catch {
-          // ignore
-        }
-      }
-      setNextPageToken(res.nextPageToken);
+      setShorts(unsuppressed);
+      setLikeCountMap(initialLikes);
+      setCurrentIndex(0);
+      setPage(1);
+      setNextPageToken(res.nextPageToken || undefined);
+      setHasMore(Boolean(res.nextPageToken) || (res as any).hasMore !== false);
+      recordShownFeedIds('shorts', unsuppressed.map((s) => s.videoId));
     } catch (err) {
       console.warn('Failed loading initial shorts:', err);
     } finally {
       setInitialLoading(false);
     }
-  }, [shorts.length]);
+  }, []);
 
   useEffect(() => {
     seenIdsRef.current.clear();
-    loadInitialShorts(initialCached.length === 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshSignal]);
+    loadInitialShorts();
+  }, [refreshSignal, loadInitialShorts]);
 
   // Listen for live watch suppression events
   useEffect(() => {
@@ -177,38 +182,49 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
 
   // Fetch more shorts when approaching end of list
   const fetchMoreShorts = useCallback(async () => {
-    if (isLoadingMore || !nextPageToken) return;
+    if (isLoadingMore || !hasMore) return;
     setIsLoadingMore(true);
 
     try {
-      const res = await searchYouTube({
-        query: 'Bangladesh shorts viral comedy music 2026',
-        pageToken: nextPageToken,
-        regionCode: 'BD',
-        safeSearch: 'none',
-        pageSize: 24,
+      const nextPage = page + 1;
+      const res = await api.getYouTubeFeed({
+        type: 'shorts',
+        category: 'shorts',
+        pageToken: nextPageToken || undefined,
+        page: nextPage,
+        pageSize: 16,
       });
 
       const newShorts: UnifiedVideo[] = [];
-      for (const v of res.videos) {
-        if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
-          seenIdsRef.current.add(v.id);
-          seenIdsRef.current.add(v.videoId);
-          newShorts.push({
-            ...v,
-            aspectRatio: '9:16',
-          });
+      const extraLikes: Record<string, number> = {};
+      for (const item of res.items || []) {
+        const mapped = mapFeedItemToShort(item);
+        if (!mapped) continue;
+        if (!seenIdsRef.current.has(mapped.id) && !seenIdsRef.current.has(mapped.videoId)) {
+          seenIdsRef.current.add(mapped.id);
+          seenIdsRef.current.add(mapped.videoId);
+          newShorts.push(mapped);
+          extraLikes[mapped.videoId] = Number(item.stats?.likes ?? 0);
         }
       }
 
-      setShorts((prev) => [...prev, ...filterUnsuppressed(newShorts)]);
-      setNextPageToken(res.nextPageToken);
+      const unsuppressedNew = filterUnsuppressed(newShorts);
+      if (unsuppressedNew.length > 0) {
+        setShorts((prev) => [...prev, ...unsuppressedNew]);
+        setLikeCountMap((prev) => ({ ...extraLikes, ...prev }));
+        recordShownFeedIds('shorts', unsuppressedNew.map((s) => s.videoId));
+      }
+      setPage(nextPage);
+      setNextPageToken(res.nextPageToken || undefined);
+      if (!res.nextPageToken && (res as any).hasMore === false) {
+        setHasMore(false);
+      }
     } catch (err) {
       console.warn('Pagination load shorts error:', err);
     } finally {
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, nextPageToken]);
+  }, [isLoadingMore, hasMore, nextPageToken, page]);
 
   // Navigate to next short
   const goToNextShort = useCallback(() => {
@@ -299,12 +315,39 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
 
   const activeShort = shorts[currentIndex];
 
+  const openRealComments = async () => {
+    setCommentsOpen(true);
+    if (!activeShort?.videoId) return;
+    setCommentsLoading(true);
+    setCommentsNotice('');
+    setCommentList([]);
+    try {
+      const res = await api.getYouTubeComments(activeShort.videoId);
+      if (res.commentsDisabled) {
+        setCommentsNotice(res.message || 'Comments are turned off for this video.');
+      } else {
+        setCommentList(
+          (res.items || []).map((c) => ({
+            id: c.id,
+            user: c.authorDisplayName || 'YouTube User',
+            text: c.textDisplay || '',
+            time: c.publishedAt ? new Date(c.publishedAt).toLocaleDateString() : '',
+          }))
+        );
+      }
+    } catch {
+      setCommentsNotice('Could not load YouTube comments.');
+    } finally {
+      setCommentsLoading(false);
+    }
+  };
+
   const toggleLike = (id: string) => {
     const isLiked = !!likedMap[id];
     setLikedMap((prev) => ({ ...prev, [id]: !isLiked }));
     setLikeCountMap((prev) => ({
       ...prev,
-      [id]: (prev[id] || 1200) + (isLiked ? -1 : 1),
+      [id]: Math.max(0, (prev[id] ?? 0) + (isLiked ? -1 : 1)),
     }));
     if (dislikedMap[id]) {
       setDislikedMap((prev) => ({ ...prev, [id]: false }));
@@ -332,10 +375,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   const handleAddComment = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newComment.trim()) return;
-    setCommentList((prev) => [
-      { id: 'c_' + Date.now(), user: 'You (Motherland)', text: newComment.trim(), time: 'Just now' },
-      ...prev,
-    ]);
+    setCommentsNotice('Posting public comments on YouTube videos requires Google OAuth channel authentication on YouTube.');
     setNewComment('');
   };
 
@@ -411,7 +451,6 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
       <div className="relative z-20 p-3 sm:p-4 flex items-center justify-between bg-gradient-to-b from-black/70 via-black/30 to-transparent">
         <div className="flex items-center gap-2">
           <span className="px-2.5 py-1 rounded-full bg-red-600/90 text-white text-[10px] font-black tracking-wider uppercase flex items-center gap-1 shadow-md">
-            <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
             Shorts
           </span>
           <span className="text-[11px] font-mono text-slate-300 drop-shadow-md">
@@ -457,8 +496,8 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
           >
             <FireLikeIcon className="w-6 h-6" active={Boolean(likedMap[activeShort.videoId])} />
           </div>
-          <span className="text-[11px] font-bold text-white drop-shadow-md">
-            {likeCountMap[activeShort.videoId] || 1200}
+          <span className="text-[11px] font-bold text-white drop-shadow-md tabular-nums">
+            {(likeCountMap[activeShort.videoId] ?? 0).toLocaleString()}
           </span>
         </button>
 
@@ -470,25 +509,27 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
           <div
             className={`w-11 h-11 rounded-full flex items-center justify-center backdrop-blur-md transition-all shadow-lg active:scale-90 ${
               dislikedMap[activeShort.videoId]
-                ? 'bg-slate-700 text-white'
+                ? 'bg-orange-500/35 border border-orange-400 text-white'
                 : 'bg-black/50 hover:bg-black/70 text-white border border-white/20'
             }`}
           >
-            <ThumbsDown className="w-5 h-5" />
+            <FireDislikeIcon className="w-5 h-5" active={Boolean(dislikedMap[activeShort.videoId])} />
           </div>
           <span className="text-[10px] font-semibold text-slate-300 drop-shadow-md">Dislike</span>
         </button>
 
         {/* Talk (Comments) Button */}
         <button
-          onClick={() => setCommentsOpen(true)}
+          onClick={openRealComments}
           className="flex flex-col items-center gap-1 group"
           title="Talk"
         >
           <div className="w-11 h-11 rounded-full bg-black/50 hover:bg-black/70 text-white border border-white/20 flex items-center justify-center backdrop-blur-md transition-all shadow-lg active:scale-90">
             <TalkIcon className="w-6 h-6" />
           </div>
-          <span className="text-[11px] font-bold text-white drop-shadow-md">{commentList.length}</span>
+          <span className="text-[11px] font-bold text-white drop-shadow-md tabular-nums">
+            {Number(activeShort.sourceMetadata?.comments ?? commentList.length).toLocaleString()}
+          </span>
         </button>
 
         {/* Boost (Share) Button */}
@@ -543,10 +584,10 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
           <span className="truncate">Original Sound • {activeShort.creatorName}</span>
         </div>
 
-        {/* Navigation Swipe Hint & Buttons (Swipe or click) */}
+        {/* Navigation Buttons */}
         <div className="pt-2 flex items-center justify-between text-slate-400 border-t border-white/10">
           <span className="text-[10px] font-mono flex items-center gap-1 text-slate-400">
-            <span>👆 Swipe UP for next Short</span>
+            <span>YouTube Shorts</span>
           </span>
 
           <div className="flex items-center gap-1">
@@ -554,15 +595,15 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
               onClick={goToPreviousShort}
               disabled={currentIndex === 0}
               className="p-1.5 rounded-lg bg-black/40 hover:bg-black/60 disabled:opacity-30 text-white"
-              title="Previous Short (Swipe Down)"
+              title="Previous Short"
             >
               <ChevronUp className="w-4 h-4" />
             </button>
             <button
               onClick={goToNextShort}
-              disabled={currentIndex === shorts.length - 1}
+              disabled={currentIndex >= shorts.length - 1 && !hasMore}
               className="p-1.5 rounded-lg bg-black/40 hover:bg-black/60 disabled:opacity-30 text-white"
-              title="Next Short (Swipe Up)"
+              title="Next Short"
             >
               <ChevronDown className="w-4 h-4" />
             </button>
@@ -597,17 +638,30 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
 
             {/* Comments List */}
             <div className="flex-1 overflow-y-auto space-y-3 py-3 pr-1">
-              {commentList.map((c) => (
-                <div key={c.id} className="text-xs space-y-0.5">
-                  <div className="flex items-center justify-between text-slate-400 text-[10px]">
-                    <span className="font-bold text-white">{c.user}</span>
-                    <span>{c.time}</span>
-                  </div>
-                  <p className="text-slate-200">
-                    <FireRichText text={c.text} emojiSize="sm" />
-                  </p>
+              {commentsNotice && (
+                <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-400/25 rounded-xl p-2.5">
+                  {commentsNotice}
+                </p>
+              )}
+              {commentsLoading ? (
+                <div className="py-8 flex justify-center">
+                  <Loader2 className="w-5 h-5 text-red-500 animate-spin" />
                 </div>
-              ))}
+              ) : commentList.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-6">No comments loaded yet.</p>
+              ) : (
+                commentList.map((c) => (
+                  <div key={c.id} className="text-xs space-y-0.5">
+                    <div className="flex items-center justify-between text-slate-400 text-[10px]">
+                      <span className="font-bold text-white">{c.user}</span>
+                      <span>{c.time}</span>
+                    </div>
+                    <p className="text-slate-200">
+                      <FireRichText text={c.text} emojiSize="sm" />
+                    </p>
+                  </div>
+                ))
+              )}
             </div>
 
             {/* Comment Composer */}

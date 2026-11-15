@@ -29,8 +29,15 @@ import type {
   UserPrivacySettings,
   NotificationPreferences,
   DeviceSessionInfo,
+  ServerRegistryEntry,
+  ServerSwitchHistoryEntry,
+  AdminConfigChatMessage,
 } from './types';
-import { getSuppressedIdsHeaderValue } from './services/watchSuppression';
+import {
+  getSuppressedIdsHeaderValue,
+  getRecentlyShownIds,
+  getSessionSeed,
+} from './services/watchSuppression';
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'motherland_auth_token';
@@ -133,6 +140,18 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
     const suppressedHeader = getSuppressedIdsHeaderValue();
     if (suppressedHeader) {
       headers.set('x-suppressed-ids', suppressedHeader);
+    }
+    const scope = url.includes('/shorts') || url.includes('type=shorts')
+      ? 'shorts'
+      : url.includes('/videos/') || url.includes('/youtube/feed')
+        ? 'video'
+        : 'home';
+    const recentExcluded = getRecentlyShownIds(scope);
+    if (recentExcluded.length > 0 && !headers.has('x-exclude-ids')) {
+      headers.set('x-exclude-ids', recentExcluded.slice(0, 80).join(','));
+    }
+    if (!headers.has('x-feed-seed')) {
+      headers.set('x-feed-seed', getSessionSeed());
     }
   }
   return fetch(url, {
@@ -696,18 +715,67 @@ export const api = {
     return parseJsonOrThrow(res);
   },
 
-  async addPostComment(postId: string, text: string) {
+  async addPostComment(postId: string, text: string, parentId?: string) {
     const res = await authFetch(`${API_BASE}/posts/${postId}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, ...(parentId ? { parentId } : {}) }),
     });
+    return parseJsonOrThrow(res);
+  },
+
+  async editPostComment(postId: string, commentId: string, text: string) {
+    const res = await authFetch(
+      `${API_BASE}/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      }
+    );
+    return parseJsonOrThrow(res);
+  },
+
+  async deletePostComment(postId: string, commentId: string) {
+    const res = await authFetch(
+      `${API_BASE}/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`,
+      { method: 'DELETE' }
+    );
+    return parseJsonOrThrow(res);
+  },
+
+  async togglePostCommentLike(postId: string, commentId: string) {
+    const res = await authFetch(
+      `${API_BASE}/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}/like`,
+      { method: 'POST' }
+    );
     return parseJsonOrThrow(res);
   },
 
   async toggleSavePost(postId: string): Promise<{ isSaved: boolean }> {
     const res = await authFetch(`${API_BASE}/posts/${postId}/save`, {
       method: 'POST',
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async updatePost(
+    postId: string,
+    payload: { content?: string; audience?: 'public' | 'friends' | 'only_me'; hashtags?: string[] }
+  ): Promise<{ post: Post }> {
+    const res = await authFetch(`${API_BASE}/posts/${encodeURIComponent(postId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async reportPost(postId: string, payload: { reason: string; details?: string }): Promise<{ success: boolean }> {
+    const res = await authFetch(`${API_BASE}/posts/${encodeURIComponent(postId)}/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
     return parseJsonOrThrow(res);
   },
@@ -749,13 +817,31 @@ export const api = {
   },
 
   // Videos & Watch History / Suppression / Saved Collection / Drafts
-  async getShorts(includeWatched = false): Promise<{ shorts: ShortVideo[] }> {
-    const qs = includeWatched ? '?includeWatched=1' : '';
-    const res = await authFetch(`${API_BASE}/videos/shorts${qs}`);
+  async getShorts(
+    includeWatched = false,
+    page = 1,
+    pageSize = 12,
+    pageToken = ''
+  ): Promise<{ shorts: ShortVideo[]; page?: number; nextPageToken?: string | null; hasMore?: boolean }> {
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+    });
+    if (includeWatched) params.set('includeWatched', '1');
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await authFetch(`${API_BASE}/videos/shorts?${params.toString()}`);
     return res.json();
   },
 
-  async createShort(data: { videoUrl: string; thumbnailUrl?: string; title: string; caption?: string; hashtags?: string[] }) {
+  async createShort(data: {
+    videoUrl: string;
+    thumbnailUrl?: string;
+    title: string;
+    caption?: string;
+    hashtags?: string[];
+    durationSeconds: number;
+    aspectRatio?: string;
+  }) {
     const res = await authFetch(`${API_BASE}/videos/shorts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1203,5 +1289,115 @@ export const api = {
       body: JSON.stringify(data),
     });
     return parseJsonOrThrow(res);
+  },
+
+  // Multi-Server Registry & Owner Config Chat
+  async getServers(): Promise<{
+    servers: ServerRegistryEntry[];
+    primaryServerId: string;
+    dreamWorldServer?: ServerRegistryEntry;
+  }> {
+    const res = await authFetch(`${API_BASE}/servers`);
+    return parseJsonOrThrow(res);
+  },
+
+  async createServer(payload: Partial<ServerRegistryEntry> & { name: string; baseUrl: string }): Promise<{ server: ServerRegistryEntry }> {
+    const res = await authFetch(`${API_BASE}/servers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async updateServer(id: string, payload: Partial<ServerRegistryEntry>): Promise<{ server: ServerRegistryEntry }> {
+    const res = await authFetch(`${API_BASE}/servers/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async deleteServer(id: string): Promise<{ success: boolean }> {
+    const res = await authFetch(`${API_BASE}/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    return parseJsonOrThrow(res);
+  },
+
+  async testServerHealth(id: string): Promise<{
+    server?: ServerRegistryEntry;
+    probeUrl: string;
+    httpStatus: number;
+    latencyMs: number;
+    healthStatus: 'healthy' | 'degraded' | 'offline';
+    error?: string;
+  }> {
+    const res = await authFetch(`${API_BASE}/servers/${encodeURIComponent(id)}/test`, { method: 'POST' });
+    return parseJsonOrThrow(res);
+  },
+
+  async setPrimaryServer(id: string): Promise<{ server: ServerRegistryEntry; previousPrimaryId?: string }> {
+    const res = await authFetch(`${API_BASE}/servers/${encodeURIComponent(id)}/set-primary`, { method: 'POST' });
+    return parseJsonOrThrow(res);
+  },
+
+  async rollbackPrimaryServer(): Promise<{ server: ServerRegistryEntry }> {
+    const res = await authFetch(`${API_BASE}/servers/rollback`, { method: 'POST' });
+    return parseJsonOrThrow(res);
+  },
+
+  async getServerHistory(): Promise<{ history: ServerSwitchHistoryEntry[] }> {
+    const res = await authFetch(`${API_BASE}/servers/history`);
+    return parseJsonOrThrow(res);
+  },
+
+  async getAdminServerChat(): Promise<{ messages: AdminConfigChatMessage[] }> {
+    const res = await authFetch(`${API_BASE}/admin/servers/chat`);
+    return parseJsonOrThrow(res);
+  },
+
+  async sendAdminServerChat(text: string, confirm = false): Promise<{
+    ownerMessage: AdminConfigChatMessage;
+    systemMessage: AdminConfigChatMessage;
+    servers: ServerRegistryEntry[];
+  }> {
+    const res = await authFetch(`${API_BASE}/admin/servers/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, confirm }),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  // Bangladesh Services Prefs & Eligibility
+  async getBdServicePrefs(): Promise<{ favorites: string[]; recent: string[] }> {
+    const res = await authFetch(`${API_BASE}/bd-services/prefs`);
+    if (!res.ok) return { favorites: [], recent: [] };
+    return res.json();
+  },
+
+  async toggleBdServiceFavorite(serviceId: string): Promise<{ favorites: string[]; isFavorite: boolean }> {
+    const res = await authFetch(`${API_BASE}/bd-services/favorite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serviceId }),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async recordBdServiceRecent(serviceId: string): Promise<{ recent: string[] }> {
+    const res = await authFetch(`${API_BASE}/bd-services/recent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serviceId }),
+    });
+    if (!res.ok) return { recent: [] };
+    return res.json();
+  },
+
+  async getBdServiceEligibility(): Promise<{ authenticated: boolean; ageYears: number | null; loanEligible: boolean | null; isMinor: boolean }> {
+    const res = await authFetch(`${API_BASE}/bd-services/eligibility`);
+    if (!res.ok) return { authenticated: false, ageYears: null, loanEligible: null, isMinor: false };
+    return res.json();
   },
 };

@@ -1,14 +1,10 @@
 import React, { useState, useRef } from 'react';
 import {
-  Heart,
-  MessageCircle,
   Share2,
   Bookmark,
   Shield,
   Youtube,
   MoreHorizontal,
-  Flame,
-  Smile,
   Volume2,
   VolumeX,
   Trash2,
@@ -17,11 +13,20 @@ import {
   ChevronRight,
   X,
   Repeat2,
+  Pencil,
+  Flag,
+  Ban,
 } from 'lucide-react';
 import type { Post, ReactionType, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import { FIRE_REACTIONS } from '../data/fireEmojiCatalog';
-import { FireLikeIcon } from './fire/MotherlandIcons';
+import {
+  FireLikeIcon,
+  TalkIcon,
+  BoostIcon,
+  VaultIcon,
+  FIRE_ACTION_BOX_CLASS,
+} from './fire/MotherlandIcons';
 import { FireRichText } from './fire/FireRichText';
 
 interface PostCardProps {
@@ -32,6 +37,10 @@ interface PostCardProps {
   onToggleSave: (postId: string) => void;
   onSharePost?: (postId: string) => Promise<void> | void;
   onDeletePost?: (postId: string) => void;
+  onEditPost?: (postId: string, content: string, audience?: Post['audience']) => Promise<void> | void;
+  onReportPost?: (postId: string, reason: string) => Promise<void> | void;
+  onBlockUser?: (userId: string) => Promise<void> | void;
+  onOpenCreator?: (creator: { id: string; name: string; username?: string; avatar?: string; source?: 'motherland' | 'youtube' }) => void;
 }
 
 export const PostCard: React.FC<PostCardProps> = ({
@@ -42,12 +51,22 @@ export const PostCard: React.FC<PostCardProps> = ({
   onToggleSave,
   onSharePost,
   onDeletePost,
+  onEditPost,
+  onReportPost,
+  onBlockUser,
+  onOpenCreator,
 }) => {
   const [showReactionsPicker, setShowReactionsPicker] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [copiedLink, setCopiedLink] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(post.content || '');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState('Spam or misleading');
+  const [reportFeedback, setReportFeedback] = useState('');
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
   const [sharedFeedback, setSharedFeedback] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
@@ -114,7 +133,19 @@ export const PostCard: React.FC<PostCardProps> = ({
       <article className="ml-glass rounded-2xl overflow-hidden transition-colors mb-4">
         {/* Post Header */}
         <div className="p-3.5 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-3 min-w-0">
+          <button
+            type="button"
+            onClick={() =>
+              onOpenCreator?.({
+                id: post.author.id,
+                name: post.author.displayName,
+                username: post.author.username,
+                avatar: post.author.avatar,
+                source: post.source === 'youtube' ? 'youtube' : 'motherland',
+              })
+            }
+            className="flex items-center gap-3 min-w-0 text-left hover:opacity-90 cursor-pointer"
+          >
             <img
               src={post.author.avatar}
               alt={post.author.displayName}
@@ -122,7 +153,7 @@ export const PostCard: React.FC<PostCardProps> = ({
             />
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-bold text-sm text-[var(--text-primary)] truncate">
+                <span className="font-bold text-sm text-[var(--text-primary)] truncate hover:underline">
                   {post.author.displayName}
                 </span>
                 {post.author.isVerified && (
@@ -135,6 +166,7 @@ export const PostCard: React.FC<PostCardProps> = ({
                 <span>@{post.author.username}</span>
                 <span>·</span>
                 <span>{new Date(post.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+                {post.isEdited && <span className="text-[10px] italic text-[var(--text-muted)]">(Edited)</span>}
                 <span>·</span>
                 <span className="inline-flex items-center gap-1 font-semibold">
                   {post.source === 'youtube' ? (
@@ -149,7 +181,7 @@ export const PostCard: React.FC<PostCardProps> = ({
                 </span>
               </div>
             </div>
-          </div>
+          </button>
 
           {/* Options Menu */}
           <div className="relative">
@@ -166,7 +198,7 @@ export const PostCard: React.FC<PostCardProps> = ({
             </button>
 
             {menuOpen && (
-              <div className="absolute right-0 top-10 z-30 w-44 ml-glass-elevated rounded-xl shadow-xl py-1 text-xs text-[var(--text-primary)]">
+              <div className="absolute right-0 top-10 z-30 w-48 ml-glass-elevated rounded-xl shadow-xl py-1 text-xs text-[var(--text-primary)]">
                 <button
                   type="button"
                   onClick={() => {
@@ -178,6 +210,50 @@ export const PostCard: React.FC<PostCardProps> = ({
                   <Bookmark className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
                   <span>{isSaved ? 'Unsave Post' : 'Save Post'}</span>
                 </button>
+
+                {isAuthor && onEditPost && post.source === 'motherland' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditText(post.content || '');
+                      setIsEditing(true);
+                      setMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                    <span>Edit Post</span>
+                  </button>
+                )}
+
+                {!isAuthor && currentUser && onReportPost && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReportOpen(true);
+                      setMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2 text-amber-400"
+                  >
+                    <Flag className="w-3.5 h-3.5" />
+                    <span>Report Post</span>
+                  </button>
+                )}
+
+                {!isAuthor && currentUser && onBlockUser && post.source === 'motherland' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onBlockUser(post.author.id);
+                      setMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2.5 hover:bg-[var(--danger-soft)] text-[var(--danger)] flex items-center gap-2"
+                  >
+                    <Ban className="w-3.5 h-3.5" />
+                    <span>Block @{post.author.username}</span>
+                  </button>
+                )}
+
                 {isAuthor && onDeletePost && !confirmDeleteOpen && (
                   <button
                     type="button"
@@ -218,8 +294,43 @@ export const PostCard: React.FC<PostCardProps> = ({
           </div>
         </div>
 
-        {/* Post Text */}
-        {post.content && (
+        {/* Inline Edit Post Composer */}
+        {isEditing ? (
+          <div className="px-4 pb-3 space-y-2">
+            <textarea
+              rows={3}
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              className="w-full rounded-xl p-2.5 text-sm bg-[var(--bg-surface-alt)] border border-[var(--accent-primary)] text-[var(--text-primary)] focus:outline-none"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsEditing(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-[var(--text-secondary)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingEdit || !editText.trim()}
+                onClick={async () => {
+                  if (!onEditPost) return;
+                  setSavingEdit(true);
+                  try {
+                    await onEditPost(post.id, editText.trim());
+                    setIsEditing(false);
+                  } finally {
+                    setSavingEdit(false);
+                  }
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] text-xs font-bold disabled:opacity-50"
+              >
+                {savingEdit ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        ) : post.content ? (
           <div className="px-4 pb-3">
             <div className="text-[var(--text-primary)] text-sm leading-relaxed">
               <FireRichText text={post.content} emojiSize="sm" />
@@ -233,6 +344,56 @@ export const PostCard: React.FC<PostCardProps> = ({
                 ))}
               </div>
             )}
+          </div>
+        ) : null}
+
+        {reportOpen && (
+          <div className="mx-4 mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/35 space-y-2 text-xs">
+            <p className="font-bold text-[var(--text-primary)]">Report this post</p>
+            <div className="flex flex-wrap gap-1.5">
+              {['Spam or misleading', 'Harassment', 'Harmful content', 'Fraud / Scam'].map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => setReportReason(r)}
+                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold ${
+                    reportReason === r
+                      ? 'bg-amber-500 text-black border-amber-500'
+                      : 'bg-[var(--bg-surface)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                  }`}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setReportOpen(false)}
+                className="px-2.5 py-1 rounded-lg text-[var(--text-secondary)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!onReportPost) return;
+                  await onReportPost(post.id, reportReason);
+                  setReportOpen(false);
+                  setReportFeedback('Report submitted. Thank you.');
+                  setTimeout(() => setReportFeedback(''), 3000);
+                }}
+                className="px-3 py-1 rounded-lg bg-amber-500 text-black font-bold"
+              >
+                Submit Report
+              </button>
+            </div>
+          </div>
+        )}
+
+        {reportFeedback && (
+          <div className="mx-4 mb-2 px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 text-xs font-semibold">
+            {reportFeedback}
           </div>
         )}
 
@@ -445,9 +606,9 @@ export const PostCard: React.FC<PostCardProps> = ({
           <button
             type="button"
             onClick={() => onOpenComments(post.id, post.source === 'youtube' ? post.externalId : undefined)}
-            className="min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-surface-alt)] hover:text-[var(--text-primary)]"
+            className={`${FIRE_ACTION_BOX_CLASS} min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]`}
           >
-            <MessageCircle className="w-4 h-4" />
+            <TalkIcon size={17} />
             <span>Comment</span>
           </button>
 
@@ -456,12 +617,12 @@ export const PostCard: React.FC<PostCardProps> = ({
             <button
               type="button"
               onClick={() => setShareMenuOpen((s) => !s)}
-              className="min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-surface-alt)] hover:text-[var(--text-primary)]"
+              className={`${FIRE_ACTION_BOX_CLASS} min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]`}
             >
               {copiedLink || sharedFeedback ? (
                 <Check className="w-4 h-4 text-[var(--accent-primary)]" />
               ) : (
-                <Share2 className="w-4 h-4" />
+                <BoostIcon size={17} />
               )}
               <span>{sharedFeedback ? 'Shared' : copiedLink ? 'Copied' : 'Share'}</span>
             </button>
@@ -494,13 +655,13 @@ export const PostCard: React.FC<PostCardProps> = ({
           <button
             type="button"
             onClick={() => onToggleSave(post.id)}
-            className={`min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs ${
+            className={`${FIRE_ACTION_BOX_CLASS} min-h-[40px] flex items-center gap-1.5 px-3 py-1.5 text-xs ${
               isSaved
-                ? 'text-[var(--accent-gold)] font-semibold'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-alt)] hover:text-[var(--text-primary)]'
+                ? 'text-[var(--accent-gold)] font-semibold border-amber-500/40 bg-amber-500/10'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
-            <Bookmark className={`w-4 h-4 ${isSaved ? 'fill-current' : ''}`} />
+            <VaultIcon size={17} active={Boolean(isSaved)} />
             <span>{isSaved ? 'Saved' : 'Save'}</span>
           </button>
         </div>

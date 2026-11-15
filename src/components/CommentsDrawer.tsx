@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Send, ThumbsUp, MessageSquare, AlertCircle, Loader2 } from 'lucide-react';
+import { X, Send, ThumbsUp, MessageSquare, AlertCircle, Loader2, CornerDownRight, Pencil, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import type { PostComment, YouTubeCommentThread, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import { FireRichText } from './fire/FireRichText';
 import { FireEmojiPicker } from './fire/FireEmojiPicker';
 import { FireDraftPreview, FirePickerTrigger } from './fire/FireComposerBar';
+import { FireLikeIcon } from './fire/MotherlandIcons';
 
 interface CommentsDrawerProps {
   isOpen: boolean;
@@ -15,6 +16,7 @@ interface CommentsDrawerProps {
   title?: string;
   currentUser: UserProfile | null;
   onOpenAuth?: () => void;
+  onOpenCreator?: (creator: { id: string; name: string; username?: string; avatar?: string; source?: 'motherland' | 'youtube' }) => void;
 }
 
 export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
@@ -25,6 +27,7 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
   title,
   currentUser,
   onOpenAuth,
+  onOpenCreator,
 }) => {
   const [motherlandComments, setMotherlandComments] = useState<PostComment[]>([]);
   const [youtubeComments, setYoutubeComments] = useState<YouTubeCommentThread[]>([]);
@@ -33,6 +36,9 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
   const [noticeMsg, setNoticeMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [inputComment, setInputComment] = useState('');
+  const [replyingTo, setReplyingTo] = useState<PostComment | null>(null);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [dragY, setDragY] = useState(0);
@@ -97,10 +103,11 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
     if (postId) {
       setIsSubmitting(true);
       try {
-        const res = await api.addPostComment(postId, inputComment);
+        const res = await api.addPostComment(postId, inputComment, replyingTo?.id);
         if (res.comment) {
           setMotherlandComments((prev) => [...prev, res.comment]);
           setInputComment('');
+          setReplyingTo(null);
         }
       } catch (err) {
         console.error('Failed to submit comment:', err);
@@ -109,6 +116,44 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
       }
     } else if (isYouTube) {
       setNoticeMsg('Posting comments to YouTube requires Google OAuth authorization.');
+    }
+  };
+
+  const handleLikeComment = async (commentId: string) => {
+    if (!postId || !currentUser) return;
+    try {
+      const res = await api.togglePostCommentLike(postId, commentId);
+      setMotherlandComments((prev) =>
+        prev.map((c) =>
+          c.id === commentId ? { ...c, likesCount: res.likesCount, isLiked: res.isLiked } : c
+        )
+      );
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveEditComment = async (commentId: string) => {
+    if (!postId || !editingText.trim()) return;
+    try {
+      const res = await api.editPostComment(postId, commentId, editingText.trim());
+      if (res.comment) {
+        setMotherlandComments((prev) => prev.map((c) => (c.id === commentId ? res.comment : c)));
+      }
+      setEditingCommentId(null);
+      setEditingText('');
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    if (!postId) return;
+    try {
+      await api.deletePostComment(postId, commentId);
+      setMotherlandComments((prev) => prev.filter((c) => c.id !== commentId && c.parentId !== commentId));
+    } catch {
+      // ignore
     }
   };
 
@@ -279,32 +324,141 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
               </>
             )
           ) : (
-            /* MOTHERLAND Comments */
+            /* MOTHERLAND Threaded Comments */
             motherlandComments.length === 0 ? (
               <div className="py-12 text-center text-xs text-[var(--text-secondary)]">
                 Be the first to comment on this MOTHERLAND post!
               </div>
             ) : (
-              motherlandComments.map((cmt) => (
-                <div key={cmt.id} className="flex gap-3">
-                  <img
-                    src={cmt.userAvatar}
-                    alt={cmt.userDisplayName}
-                    className="w-8 h-8 rounded-xl object-cover flex-shrink-0 border border-[var(--border-subtle)]"
-                  />
-                  <div className="flex-1 bg-[var(--bg-surface-alt)] p-3 rounded-2xl border border-[var(--border-subtle)]">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-[var(--text-primary)]">{cmt.userDisplayName}</span>
-                      <span className="text-[10px] text-[var(--text-muted)]">
-                        {new Date(cmt.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+              motherlandComments
+                .filter((c) => !c.parentId)
+                .map((cmt) => {
+                  const replies = motherlandComments.filter((r) => r.parentId === cmt.id);
+                  const renderCommentCard = (item: PostComment, isReply = false) => {
+                    const isMine = currentUser?.id === item.userId || currentUser?.role === 'owner';
+                    return (
+                      <div key={item.id} className={`flex gap-2.5 ${isReply ? 'mt-2.5 pl-3 border-l border-[var(--border-subtle)]' : ''}`}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenCreator?.({
+                              id: item.userId,
+                              name: item.userDisplayName,
+                              username: item.userUsername,
+                              avatar: item.userAvatar,
+                              source: 'motherland',
+                            })
+                          }
+                          className="shrink-0 cursor-pointer"
+                        >
+                          <img
+                            src={item.userAvatar}
+                            alt={item.userDisplayName}
+                            className={`${isReply ? 'w-6 h-6' : 'w-8 h-8'} rounded-xl object-cover border border-[var(--border-subtle)]`}
+                          />
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <div className="bg-[var(--bg-surface-alt)] p-2.5 rounded-2xl border border-[var(--border-subtle)]">
+                            <div className="flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenCreator?.({
+                                    id: item.userId,
+                                    name: item.userDisplayName,
+                                    username: item.userUsername,
+                                    avatar: item.userAvatar,
+                                    source: 'motherland',
+                                  })
+                                }
+                                className="text-xs font-bold text-[var(--text-primary)] hover:underline cursor-pointer truncate"
+                              >
+                                {item.userDisplayName}
+                              </button>
+                              <span className="text-[10px] text-[var(--text-muted)] shrink-0">
+                                {new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {item.isEdited ? ' · edited' : ''}
+                              </span>
+                            </div>
+
+                            {editingCommentId === item.id ? (
+                              <div className="mt-1.5 space-y-1.5">
+                                <input
+                                  type="text"
+                                  value={editingText}
+                                  onChange={(e) => setEditingText(e.target.value)}
+                                  className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface)] border border-[var(--accent-primary)] text-xs text-[var(--text-primary)]"
+                                />
+                                <div className="flex justify-end gap-1.5 text-[11px]">
+                                  <button type="button" onClick={() => setEditingCommentId(null)} className="text-[var(--text-secondary)]">
+                                    Cancel
+                                  </button>
+                                  <button type="button" onClick={() => handleSaveEditComment(item.id)} className="font-bold text-[var(--accent-primary)]">
+                                    Save
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-xs text-[var(--text-secondary)] mt-1 leading-relaxed">
+                                <FireRichText text={item.text} emojiSize="sm" />
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 mt-1 px-1 text-[11px] text-[var(--text-muted)]">
+                            <button
+                              type="button"
+                              onClick={() => handleLikeComment(item.id)}
+                              className={`inline-flex items-center gap-1 cursor-pointer ${
+                                item.isLiked ? 'text-orange-400 font-bold' : 'hover:text-[var(--text-primary)]'
+                              }`}
+                            >
+                              <FireLikeIcon size={13} active={Boolean(item.isLiked)} />
+                              <span>{item.likesCount > 0 ? item.likesCount : 'Like'}</span>
+                            </button>
+                            {currentUser && !isReply && (
+                              <button
+                                type="button"
+                                onClick={() => setReplyingTo(item)}
+                                className="inline-flex items-center gap-1 hover:text-[var(--text-primary)] cursor-pointer"
+                              >
+                                <CornerDownRight className="w-3 h-3" /> Reply
+                              </button>
+                            )}
+                            {isMine && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingCommentId(item.id);
+                                    setEditingText(item.text);
+                                  }}
+                                  className="inline-flex items-center gap-1 hover:text-[var(--text-primary)] cursor-pointer"
+                                >
+                                  <Pencil className="w-3 h-3" /> Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteComment(item.id)}
+                                  className="inline-flex items-center gap-1 text-[var(--danger)] hover:underline cursor-pointer"
+                                >
+                                  <Trash2 className="w-3 h-3" /> Delete
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  };
+
+                  return (
+                    <div key={cmt.id}>
+                      {renderCommentCard(cmt, false)}
+                      {replies.map((r) => renderCommentCard(r, true))}
                     </div>
-                    <div className="text-xs text-[var(--text-secondary)] mt-1 leading-relaxed">
-                      <FireRichText text={cmt.text} emojiSize="sm" />
-                    </div>
-                  </div>
-                </div>
-              ))
+                  );
+                })
             )
           )}
         </div>
@@ -312,6 +466,14 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
         {/* Comment Input Footer */}
         {!commentsDisabled && (
           <div className="p-3 bg-[var(--bg-elevated)] border-t border-[var(--border-subtle)] space-y-2 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+            {replyingTo && (
+              <div className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-[var(--accent-primary-soft)] text-xs text-[var(--accent-primary)]">
+                <span>Replying to <strong>{replyingTo.userDisplayName}</strong></span>
+                <button type="button" onClick={() => setReplyingTo(null)} className="cursor-pointer">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             {currentUser && !isYouTube && <FireDraftPreview value={inputComment} />}
             <div className="flex items-center gap-2">
               {currentUser ? (
@@ -334,6 +496,8 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
                     placeholder={
                       isYouTube
                         ? 'Google sign-in required to comment on YouTube'
+                        : replyingTo
+                        ? `Write a reply to ${replyingTo.userDisplayName}...`
                         : 'Write a comment on MOTHERLAND...'
                     }
                     disabled={isYouTube}

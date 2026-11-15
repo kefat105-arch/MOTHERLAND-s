@@ -18,6 +18,8 @@ import {
   UserPlus,
   WifiOff,
   History,
+  Globe,
+  Server,
 } from 'lucide-react';
 import { api } from '../api';
 import type { UserProfile, YouTubeOAuthStatus } from '../types';
@@ -40,6 +42,8 @@ interface MenuViewProps {
   onOpenSocialApps: () => void;
   onOpenPlatformHub: () => void;
   onOpenWatchHistory?: () => void;
+  onOpenBdServices?: () => void;
+  onOpenServerManagement?: () => void;
   onUserUpdated?: (user: UserProfile) => void;
   onOpenAuth: () => void;
   onLogout: () => void;
@@ -61,6 +65,8 @@ export const MenuView: React.FC<MenuViewProps> = ({
   onOpenSocialApps,
   onOpenPlatformHub,
   onOpenWatchHistory,
+  onOpenBdServices,
+  onOpenServerManagement,
   onUserUpdated,
   onOpenAuth,
   onLogout,
@@ -363,6 +369,28 @@ export const MenuView: React.FC<MenuViewProps> = ({
           </p>
         </button>
 
+        {onOpenBdServices && (
+          <button
+            type="button"
+            onClick={onOpenBdServices}
+            data-testid="menu-bd-services-btn"
+            className="col-span-2 ml-glass rounded-2xl p-3.5 flex items-center justify-between text-left hover:border-emerald-500/40 transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <Globe className="w-5 h-5 text-emerald-500" />
+              <div>
+                <p className="text-xs font-bold text-[var(--text-primary)]">
+                  BANGLADESH SERVICES (বাংলাদেশ)
+                </p>
+                <p className="text-[10px] text-[var(--text-secondary)]">
+                  NID, e-Passport, Education, MFS, Banking, Health &amp; Emergency
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-[var(--text-muted)]" />
+          </button>
+        )}
+
         {onOpenWatchHistory && (
           <button
             type="button"
@@ -370,7 +398,7 @@ export const MenuView: React.FC<MenuViewProps> = ({
             className="col-span-2 ml-glass rounded-2xl p-3.5 flex items-center justify-between text-left hover:border-[var(--accent-primary-border)] transition-all"
           >
             <div className="flex items-center gap-3">
-              <History className="w-5 h-5 text-[var(--accent-teal)] text-[var(--accent-primary)]" />
+              <History className="w-5 h-5 text-[var(--accent-primary)]" />
               <div>
                 <p className="text-xs font-bold text-[var(--text-primary)]">Watch History</p>
                 <p className="text-[10px] text-[var(--text-secondary)]">
@@ -419,6 +447,30 @@ export const MenuView: React.FC<MenuViewProps> = ({
           </div>
           <ChevronRight className="w-4 h-4 text-[var(--text-muted)]" />
         </button>
+
+        {onOpenServerManagement && (
+          <button
+            type="button"
+            onClick={onOpenServerManagement}
+            data-testid="menu-server-management-btn"
+            className="w-full p-4 flex items-center justify-between text-left hover:bg-[var(--bg-surface-alt)] transition-colors min-h-[56px]"
+          >
+            <div className="flex items-center gap-3">
+              <Server className="w-5 h-5 text-[var(--accent-primary)]" />
+              <div>
+                <p className="text-sm font-bold text-[var(--text-primary)]">
+                  {currentUser?.role === 'owner' ? 'Multi-Server Registry & Config Chat' : 'Server Infrastructure Status'}
+                </p>
+                <p className="text-[11px] text-[var(--text-secondary)]">
+                  {currentUser?.role === 'owner'
+                    ? 'Primary server routing, health checks, Dream World & Owner chat'
+                    : 'View active server health & Dream World status'}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-[var(--text-muted)]" />
+          </button>
+        )}
 
         <button
           type="button"

@@ -11,6 +11,16 @@ export const WATCH_SUPPRESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 export const WATCH_SUPPRESSED_EVENT = 'motherland:watch-suppressed';
 
 let activeWatchUserId: string | null = null;
+let sessionSeed = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+export function getSessionSeed(): string {
+  return sessionSeed;
+}
+
+export function rotateSessionSeed(): string {
+  sessionSeed = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  return sessionSeed;
+}
 
 // In-memory session-only tracker of recently displayed items (clears on app reload)
 const sessionShownFeedIds: Record<string, string[]> = {

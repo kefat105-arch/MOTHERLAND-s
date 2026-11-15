@@ -62,6 +62,10 @@ interface ProfileViewProps {
   onToggleSave: (postId: string) => void;
   onSharePost?: (postId: string) => Promise<void> | void;
   onDeletePost: (postId: string) => void;
+  onEditPost?: (postId: string, content: string, audience?: Post['audience']) => Promise<void> | void;
+  onReportPost?: (postId: string, reason: string) => Promise<void> | void;
+  onBlockUser?: (userId: string) => Promise<void> | void;
+  onOpenCreator?: (creator: { id: string; name: string; username?: string; avatar?: string; source?: 'motherland' | 'youtube' }) => void;
   onOpenAuthModal?: () => void;
   onLogout?: () => void;
   onAccountDeleted?: () => void;
@@ -94,6 +98,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onToggleSave,
   onSharePost,
   onDeletePost,
+  onEditPost,
+  onReportPost,
+  onBlockUser,
+  onOpenCreator,
   onOpenAuthModal,
   onLogout,
   onAccountDeleted,
@@ -528,6 +536,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                       onDeletePost(id);
                       setProfilePosts((prev) => prev.filter((p) => p.id !== id));
                     }}
+                    onEditPost={async (id, content, audience) => {
+                      await onEditPost?.(id, content, audience);
+                      setProfilePosts((prev) =>
+                        prev.map((p) => (p.id === id ? { ...p, content, ...(audience ? { audience } : {}), isEdited: true } : p))
+                      );
+                    }}
+                    onReportPost={onReportPost}
+                    onBlockUser={onBlockUser}
+                    onOpenCreator={onOpenCreator}
                   />
                 ))}
                 {hasMoreProfilePosts && (
@@ -740,6 +757,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                         setSavedPostsList((prev) => prev.filter((p) => p.id !== id));
                       }}
                       onDeletePost={onDeletePost}
+                      onEditPost={onEditPost}
+                      onReportPost={onReportPost}
+                      onBlockUser={onBlockUser}
+                      onOpenCreator={onOpenCreator}
                     />
                   ));
                 })()}

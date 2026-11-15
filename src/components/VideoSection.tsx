@@ -29,8 +29,21 @@ import {
 import { api } from '../api';
 import type { ShortVideo, LongVideo, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
-import { FireLikeIcon } from './fire/MotherlandIcons';
-import { filterUnsuppressed, WATCH_SUPPRESSED_EVENT } from '../services/watchSuppression';
+import {
+  FireLikeIcon,
+  FireDislikeIcon,
+  TalkIcon,
+  VaultIcon,
+  BoostIcon,
+  FIRE_ACTION_BOX_CLASS,
+  FIRE_ACTION_BOX_ACTIVE_CLASS,
+} from './fire/MotherlandIcons';
+import {
+  filterUnsuppressed,
+  recordShownFeedIds,
+  WATCH_SUPPRESSED_EVENT,
+} from '../services/watchSuppression';
+import type { CreatorProfileTarget } from './CreatorProfileModal';
 
 interface VideoSectionProps {
   currentUser: UserProfile | null;
@@ -48,6 +61,7 @@ interface VideoSectionProps {
   onOpenShortsPlayer: (shortsList: ShortVideo[], startIndex: number) => void;
   onOpenUploadVideo: () => void;
   onOpenWatchHistory?: () => void;
+  onOpenCreator?: (target: CreatorProfileTarget) => void;
   refreshSignal?: number;
 }
 
@@ -76,6 +90,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   onOpenShortsPlayer,
   onOpenUploadVideo,
   onOpenWatchHistory,
+  onOpenCreator,
   refreshSignal = 0,
 }) => {
   // Search & Category State
@@ -100,10 +115,18 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const [isLoadingMoreLive, setIsLoadingMoreLive] = useState(false);
 
   // Feeds State (Zero autoplay on homepage load)
-  const [shortsCarousel, setShortsCarousel] = useState<ShortVideo[]>(() => filterUnsuppressed(initialShorts));
+  const filterEligibleShorts = (list: ShortVideo[]) =>
+    filterUnsuppressed(list).filter((s) =>
+      typeof s.durationSeconds === 'number'
+        ? s.durationSeconds > 0 && s.durationSeconds <= 180
+        : s.source !== 'youtube'
+    );
+
+  const [shortsCarousel, setShortsCarousel] = useState<ShortVideo[]>(() => filterEligibleShorts(initialShorts));
   const [longVideosList, setLongVideosList] = useState<LongVideo[]>(() => filterUnsuppressed(initialLongVideos));
   const [longPage, setLongPage] = useState(1);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
+  const [hasMoreVideos, setHasMoreVideos] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [youtubeFeedNotice, setYoutubeFeedNotice] = useState('');
 
@@ -173,7 +196,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   }, [initialLongVideos]);
 
   useEffect(() => {
-    const unsuppressed = filterUnsuppressed(initialShorts);
+    const unsuppressed = filterEligibleShorts(initialShorts);
     if (unsuppressed.length > 0) {
       setShortsCarousel((prev) => {
         const existingIds = new Set(prev.map((s) => s.id));
@@ -226,36 +249,46 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           seen.add(key);
         }
       }
-      if (merged.length > 0) setLongVideosList(filterUnsuppressed(merged));
+      if (merged.length > 0) {
+        const cleaned = filterUnsuppressed(merged);
+        setLongVideosList(cleaned);
+        setNextPageToken((ytLong as any).nextPageToken || null);
+        setHasMoreVideos(Boolean((ytLong as any).nextPageToken) || (ytLong as any).hasMore !== false);
+        recordShownFeedIds('video', cleaned.map((v) => v.youtubeId || v.id));
+      }
       if (Array.isArray(ytShorts.items) && ytShorts.items.length > 0) {
-        const nextYtShorts: ShortVideo[] = ytShorts.items.map((item: any) => ({
-          id: item.id,
-          source: 'youtube',
-          youtubeId: item.youtubeId,
-          videoUrl: '',
-          thumbnailUrl: item.thumbnailUrl,
-          title: item.title,
-          caption: item.description,
-          hashtags: ['Shorts'],
-          creator: {
-            id: item.channel?.id || 'yt',
-            name: item.channel?.title || 'Creator',
-            username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
-            avatar: item.channel?.avatar || '',
-            isVerified: true,
-          },
-          stats: {
-            likes: item.stats?.likes || 0,
-            comments: item.stats?.comments || 0,
-            shares: 0,
-            views: item.stats?.views || 0,
-          },
-          createdAt: item.publishedAt || 'Recently',
-        }));
+        const nextYtShorts: ShortVideo[] = ytShorts.items
+          .filter((item: any) => typeof item.durationSeconds === 'number' && item.durationSeconds > 0 && item.durationSeconds <= 180)
+          .map((item: any) => ({
+            id: item.id,
+            source: 'youtube',
+            youtubeId: item.youtubeId,
+            videoUrl: '',
+            thumbnailUrl: item.thumbnailUrl,
+            title: item.title,
+            caption: item.description,
+            durationSeconds: item.durationSeconds,
+            aspectRatio: '9:16',
+            hashtags: ['Shorts'],
+            creator: {
+              id: item.channel?.id || 'yt',
+              name: item.channel?.title || 'Creator',
+              username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
+              avatar: item.channel?.avatar || '',
+              isVerified: true,
+            },
+            stats: {
+              likes: item.stats?.likes || 0,
+              comments: item.stats?.comments || 0,
+              shares: 0,
+              views: item.stats?.views || 0,
+            },
+            createdAt: item.publishedAt || 'Recently',
+          }));
         setShortsCarousel((prev) => {
-          const localOnly = filterUnsuppressed(prev.filter((s) => s.source !== 'youtube'));
+          const localOnly = filterEligibleShorts(prev.filter((s) => s.source !== 'youtube'));
           const sSeen = new Set(localOnly.map((s) => s.youtubeId || s.id));
-          return [...localOnly, ...filterUnsuppressed(nextYtShorts).filter((s) => !sSeen.has(s.youtubeId || s.id))];
+          return [...localOnly, ...filterEligibleShorts(nextYtShorts).filter((s) => !sSeen.has(s.youtubeId || s.id))];
         });
       }
     });
@@ -301,8 +334,11 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 seen.add(yt.youtubeId || yt.id);
               }
             }
-            setLongVideosList(filterUnsuppressed(combined));
+            const filteredLong = filterUnsuppressed(combined);
+            setLongVideosList(filteredLong);
+            recordShownFeedIds('video', filteredLong.map((v) => v.youtubeId || v.id));
             setNextPageToken(longRes.nextPageToken || null);
+            setHasMoreVideos(Boolean(longRes.nextPageToken) || (longRes as any).hasMore !== false);
             setYoutubeFeedNotice('');
           } else {
             setYoutubeFeedNotice(
@@ -324,34 +360,38 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           pageSize: 12,
         });
         if (mounted && shortsRes.items && shortsRes.items.length > 0) {
-          const ytShorts: ShortVideo[] = shortsRes.items.map((item: any) => ({
-            id: item.id,
-            source: 'youtube',
-            youtubeId: item.youtubeId,
-            videoUrl: '',
-            thumbnailUrl: item.thumbnailUrl,
-            title: item.title,
-            caption: item.description,
-            hashtags: ['Shorts'],
-            creator: {
-              id: item.channel?.id || 'yt',
-              name: item.channel?.title || 'Creator',
-              username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
-              avatar: item.channel?.avatar || '',
-              isVerified: true,
-            },
-            stats: {
-              likes: item.stats?.likes || 0,
-              comments: item.stats?.comments || 0,
-              shares: Math.floor((item.stats?.likes || 0) / 10),
-              views: item.stats?.views || 0,
-            },
-            createdAt: item.publishedAt || new Date().toISOString(),
-          }));
+          const ytShorts: ShortVideo[] = shortsRes.items
+            .filter((item: any) => typeof item.durationSeconds === 'number' && item.durationSeconds > 0 && item.durationSeconds <= 180)
+            .map((item: any) => ({
+              id: item.id,
+              source: 'youtube',
+              youtubeId: item.youtubeId,
+              videoUrl: '',
+              thumbnailUrl: item.thumbnailUrl,
+              title: item.title,
+              caption: item.description,
+              durationSeconds: item.durationSeconds,
+              aspectRatio: '9:16',
+              hashtags: ['Shorts'],
+              creator: {
+                id: item.channel?.id || 'yt',
+                name: item.channel?.title || 'Creator',
+                username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
+                avatar: item.channel?.avatar || '',
+                isVerified: true,
+              },
+              stats: {
+                likes: item.stats?.likes || 0,
+                comments: item.stats?.comments || 0,
+                shares: Math.floor((item.stats?.likes || 0) / 10),
+                views: item.stats?.views || 0,
+              },
+              createdAt: item.publishedAt || new Date().toISOString(),
+            }));
 
           setShortsCarousel((prev) => {
             const seen = new Set(prev.map((s) => s.youtubeId || s.id));
-            return [...filterUnsuppressed(prev), ...filterUnsuppressed(ytShorts).filter((s) => !seen.has(s.youtubeId || s.id))];
+            return [...filterEligibleShorts(prev), ...filterEligibleShorts(ytShorts).filter((s) => !seen.has(s.youtubeId || s.id))];
           });
         }
       } catch {
@@ -451,13 +491,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
       });
 
       if (feedRes.items && feedRes.items.length > 0) {
-        setLongVideosList(
-          filterUnsuppressed(cat.id === 'all' ? [...initialLongVideos, ...feedRes.items] : feedRes.items)
+        const filteredCat = filterUnsuppressed(
+          cat.id === 'all' ? [...initialLongVideos, ...feedRes.items] : feedRes.items
         );
+        setLongVideosList(filteredCat);
+        recordShownFeedIds('video', filteredCat.map((v) => v.youtubeId || v.id));
         setNextPageToken(feedRes.nextPageToken || null);
+        setHasMoreVideos(Boolean(feedRes.nextPageToken) || (feedRes as any).hasMore !== false);
         setLongPage(1);
       } else if (cat.id === 'all') {
         setLongVideosList(filterUnsuppressed(initialLongVideos));
+        setHasMoreVideos(false);
       }
     } catch (err) {
       console.error('Category switch error:', err);
@@ -467,7 +511,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   };
 
   const loadMoreVideos = useCallback(async () => {
-    if (isLoadingMore) return;
+    if (isLoadingMore || !hasMoreVideos) return;
     setIsLoadingMore(true);
     try {
       if (searchQuery.trim()) {
@@ -491,6 +535,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           });
         }
         setNextPageToken(ytRes.nextPageToken || null);
+        setHasMoreVideos(Boolean(ytRes.nextPageToken));
       } else {
         const nextPage = longPage + 1;
         const feedRes = await api.getYouTubeFeed({
@@ -503,10 +548,15 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         if (feedRes.items && feedRes.items.length > 0) {
           setLongVideosList((prev) => {
             const seen = new Set(prev.map((x) => x.youtubeId || x.id));
-            return [...prev, ...filterUnsuppressed(feedRes.items).filter((x: LongVideo) => !seen.has(x.youtubeId || x.id))];
+            const unique = filterUnsuppressed(feedRes.items).filter((x: LongVideo) => !seen.has(x.youtubeId || x.id));
+            recordShownFeedIds('video', unique.map((v: LongVideo) => v.youtubeId || v.id));
+            return [...prev, ...unique];
           });
           setNextPageToken(feedRes.nextPageToken || null);
+          setHasMoreVideos(Boolean(feedRes.nextPageToken) || (feedRes as any).hasMore !== false);
           setLongPage(nextPage);
+        } else {
+          setHasMoreVideos(false);
         }
       }
     } catch {
@@ -514,11 +564,11 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
     } finally {
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, searchQuery, nextPageToken, longPage, selectedCategory]);
+  }, [isLoadingMore, hasMoreVideos, searchQuery, nextPageToken, longPage, selectedCategory]);
 
   // Infinite scroll on Video Homepage
   useEffect(() => {
-    if (!isVisible || isWatchPageOpen || isLiveViewOpen) return;
+    if (!isVisible || isWatchPageOpen || isLiveViewOpen || !hasMoreVideos) return;
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
@@ -595,18 +645,49 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
       </div>
 
       <div className="p-3 flex gap-2.5">
-        <img
-          src={video.channel.avatar}
-          alt={video.channel.title}
-          className="w-8 h-8 rounded-full object-cover flex-shrink-0 border border-[var(--border-subtle)] mt-0.5"
-        />
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenCreator?.({
+              userId: video.channel.id,
+              displayName: video.channel.title,
+              avatar: video.channel.avatar,
+              source: video.source,
+              channelId: video.channel.id,
+              subscriberCount: video.channel.subscriberCount,
+            });
+          }}
+          className="flex-shrink-0 cursor-pointer"
+          aria-label={`View ${video.channel.title} profile`}
+        >
+          <img
+            src={video.channel.avatar}
+            alt={video.channel.title}
+            className="w-8 h-8 rounded-full object-cover border border-[var(--border-subtle)] mt-0.5 hover:ring-2 hover:ring-[var(--accent-primary)] transition"
+          />
+        </button>
         <div className="min-w-0 flex-1">
           <h3 className="text-xs sm:text-sm font-bold text-[var(--text-primary)] line-clamp-2 leading-snug group-hover:text-[var(--accent-primary)] transition-colors">
             {video.title}
           </h3>
-          <div className="text-[11px] text-[var(--text-secondary)] mt-1 truncate">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenCreator?.({
+                userId: video.channel.id,
+                displayName: video.channel.title,
+                avatar: video.channel.avatar,
+                source: video.source,
+                channelId: video.channel.id,
+                subscriberCount: video.channel.subscriberCount,
+              });
+            }}
+            className="text-[11px] text-[var(--text-secondary)] hover:text-[var(--accent-primary)] mt-1 truncate block text-left"
+          >
             {video.channel.title}
-          </div>
+          </button>
           <div className="text-[11px] text-[var(--text-muted)] tabular-nums">
             {video.stats.views.toLocaleString()} views · {video.publishedAt}
           </div>
@@ -670,37 +751,117 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
             />
           </div>
 
-          {/* Desktop-only scrollable metadata under pinned player */}
+          {/* Desktop-only scrollable metadata under pinned player: Creator Card -> Title/Stats -> Description -> Fire Actions */}
           <div className="hidden lg:block flex-1 overflow-y-auto pt-3.5 pb-6 space-y-3 pr-1">
-            <h1 className="text-xl font-extrabold text-[var(--text-primary)] leading-snug">
-              {watchingVideo.title}
-            </h1>
-            <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] tabular-nums flex-wrap">
-              {watchingVideo.isLive ? (
-                <span className="text-[var(--danger)] font-bold">
-                  LIVE · {watchingVideo.liveViewers?.toLocaleString() || 0} watching
-                </span>
-              ) : (
-                <span>{watchingVideo.stats.views.toLocaleString()} views</span>
-              )}
-              <span>·</span>
-              <span>{watchingVideo.publishedAt}</span>
-              <span>·</span>
-              <span className="inline-flex items-center gap-1 font-semibold">
-                {watchingVideo.source === 'youtube' ? (
-                  <>
-                    <Youtube className="w-3.5 h-3.5 text-red-500" /> YouTube
-                  </>
-                ) : (
-                  <>
-                    <Shield className="w-3.5 h-3.5 text-[var(--accent-primary)]" /> MOTHERLAND
-                  </>
-                )}
-              </span>
+            {/* 1. Channel / Creator Card */}
+            <div data-testid="watch-desktop-creator-card" className="p-3.5 rounded-2xl ml-glass flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenCreator?.({
+                    userId: watchingVideo.channel.id,
+                    displayName: watchingVideo.channel.title,
+                    avatar: watchingVideo.channel.avatar,
+                    source: watchingVideo.source,
+                    channelId: watchingVideo.channel.id,
+                    subscriberCount: watchingVideo.channel.subscriberCount,
+                  })
+                }
+                className="flex items-center gap-3 min-w-0 text-left group cursor-pointer"
+              >
+                <img
+                  src={watchingVideo.channel.avatar}
+                  alt={watchingVideo.channel.title}
+                  className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)] group-hover:ring-2 group-hover:ring-[var(--accent-primary)] transition"
+                />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 font-bold text-sm text-[var(--text-primary)] group-hover:text-[var(--accent-primary)] truncate">
+                    <span>{watchingVideo.channel.title}</span>
+                    {watchingVideo.channel.isVerified && (
+                      <span className="w-3.5 h-3.5 rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] flex items-center justify-center text-[8px] font-bold">
+                        ✓
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-[var(--text-secondary)]">
+                    {watchingVideo.channel.subscriberCount || 'Creator Channel'}
+                  </span>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setSubscribedMap((m) => ({
+                    ...m,
+                    [watchingVideo.channel.id]: !isSubscribed,
+                  }))
+                }
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors flex-shrink-0 ${
+                  isSubscribed
+                    ? 'bg-[var(--bg-surface-alt)] text-[var(--text-primary)] border border-[var(--border-subtle)]'
+                    : 'bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)]'
+                }`}
+              >
+                {isSubscribed && <Bell className="w-3.5 h-3.5 text-[var(--accent-gold)]" />}
+                <span>{isSubscribed ? 'Supporting ✓' : 'Support'}</span>
+              </button>
             </div>
 
-            {/* Action Buttons */}
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
+            {/* 2. Title & Stats */}
+            <div data-testid="watch-desktop-title-block">
+              <h1 className="text-xl font-extrabold text-[var(--text-primary)] leading-snug">
+                {watchingVideo.title}
+              </h1>
+              <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] mt-1.5 tabular-nums flex-wrap">
+                {watchingVideo.isLive ? (
+                  <span className="text-[var(--danger)] font-bold">
+                    LIVE · {watchingVideo.liveViewers?.toLocaleString() || 0} watching
+                  </span>
+                ) : (
+                  <span>{watchingVideo.stats.views.toLocaleString()} views</span>
+                )}
+                <span>·</span>
+                <span>{watchingVideo.publishedAt}</span>
+                <span>·</span>
+                <span className="inline-flex items-center gap-1 font-semibold">
+                  {watchingVideo.source === 'youtube' ? (
+                    <>
+                      <Youtube className="w-3.5 h-3.5 text-red-500" /> YouTube
+                    </>
+                  ) : (
+                    <>
+                      <Shield className="w-3.5 h-3.5 text-[var(--accent-primary)]" /> MOTHERLAND
+                    </>
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* 3. Description */}
+            {watchingVideo.description && (
+              <div data-testid="watch-desktop-description" className="p-3.5 rounded-2xl ml-glass">
+                <p
+                  className={`text-xs text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap ${
+                    showFullDesc ? '' : 'line-clamp-3'
+                  }`}
+                >
+                  {watchingVideo.description}
+                </p>
+                {watchingVideo.description.length > 140 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowFullDesc((d) => !d)}
+                    className="mt-1.5 text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1"
+                  >
+                    <span>{showFullDesc ? 'Show less' : 'Read more'}</span>
+                    {showFullDesc ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 4. Fire Action Buttons */}
+            <div data-testid="watch-desktop-actions" className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
               <button
                 type="button"
                 onClick={() => {
@@ -708,10 +869,8 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                   setLikedMap((m) => ({ ...m, [watchingVideo.id]: next }));
                   if (next && isDisliked) setDislikedMap((m) => ({ ...m, [watchingVideo.id]: false }));
                 }}
-                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors flex-shrink-0 ${
-                  isLiked
-                    ? 'bg-orange-500/15 border-orange-500/35 text-orange-400'
-                    : 'ml-glass text-[var(--text-primary)] hover:opacity-90'
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
+                  isLiked ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                 }`}
               >
                 <FireLikeIcon size={18} active={isLiked} />
@@ -726,13 +885,11 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                     setDislikedMap((m) => ({ ...m, [watchingVideo.id]: next }));
                     if (next && isLiked) setLikedMap((m) => ({ ...m, [watchingVideo.id]: false }));
                   }}
-                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors flex-shrink-0 ${
-                    isDisliked
-                      ? 'bg-[var(--accent-gold-soft)] border-[var(--accent-gold-border)] text-[var(--accent-gold)]'
-                      : 'ml-glass text-[var(--text-primary)] hover:opacity-90'
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
+                    isDisliked ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                   }`}
                 >
-                  <ThumbsDown className={`w-4 h-4 ${isDisliked ? 'fill-current' : ''}`} />
+                  <FireDislikeIcon size={18} active={isDisliked} />
                 </button>
               )}
 
@@ -745,10 +902,10 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                     title: watchingVideo.title,
                   })
                 }
-                className="min-h-[40px] px-4 rounded-xl text-xs font-bold ml-glass text-[var(--text-primary)] flex items-center gap-1.5 flex-shrink-0"
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${FIRE_ACTION_BOX_CLASS}`}
               >
-                <MessageCircle className="w-4 h-4 text-[var(--accent-primary)]" />
-                <span className="tabular-nums">{watchingVideo.stats.comments.toLocaleString()} Comments</span>
+                <TalkIcon size={18} />
+                <span className="tabular-nums">{watchingVideo.stats.comments.toLocaleString()} Talk</span>
               </button>
 
               <button
@@ -773,23 +930,21 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                       .catch(() => {});
                   }
                 }}
-                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors flex-shrink-0 ${
-                  isSaved
-                    ? 'bg-[var(--accent-gold-soft)] border-[var(--accent-gold-border)] text-[var(--accent-gold)]'
-                    : 'ml-glass text-[var(--text-primary)]'
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
+                  isSaved ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                 }`}
               >
-                <Bookmark className={`w-4 h-4 ${isSaved ? 'fill-current' : ''}`} />
-                <span>{isSaved ? 'Saved' : 'Save'}</span>
+                <VaultIcon size={18} active={isSaved} />
+                <span>{isSaved ? 'Vaulted' : 'Vault'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => handleShareVideo(watchingVideo)}
-                className="min-h-[40px] px-4 rounded-xl text-xs font-bold ml-glass text-[var(--text-primary)] flex items-center gap-1.5 flex-shrink-0"
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${FIRE_ACTION_BOX_CLASS}`}
               >
-                {copiedShare ? <Check className="w-4 h-4 text-[var(--accent-primary)]" /> : <Share2 className="w-4 h-4" />}
-                <span>{copiedShare ? 'Copied' : 'Share'}</span>
+                {copiedShare ? <Check className="w-4 h-4 text-orange-400" /> : <BoostIcon size={18} />}
+                <span>{copiedShare ? 'Copied' : 'Boost'}</span>
               </button>
 
               <button
@@ -829,10 +984,32 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 )}
               </div>
             )}
+          </div>
+        </div>
 
-            {/* Channel Card */}
-            <div className="p-3.5 rounded-2xl ml-glass flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
+        {/* Scrollable Body below Pinned Player (Mobile: Metadata + Up Next | Desktop Right Column: Up Next) */}
+        <div
+          data-testid="watch-scrollable-details"
+          className="flex-1 overflow-y-auto px-3 sm:px-4 lg:pl-0 lg:col-span-4 lg:pt-3 pb-8 space-y-4"
+        >
+          {/* Mobile-only Metadata Block: Creator Card -> Title/Stats -> Description -> Fire Actions */}
+          <div className="lg:hidden pt-3.5 space-y-3">
+            {/* 1. Mobile Creator Card */}
+            <div data-testid="watch-mobile-creator-card" className="p-3.5 rounded-2xl ml-glass flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenCreator?.({
+                    userId: watchingVideo.channel.id,
+                    displayName: watchingVideo.channel.title,
+                    avatar: watchingVideo.channel.avatar,
+                    source: watchingVideo.source,
+                    channelId: watchingVideo.channel.id,
+                    subscriberCount: watchingVideo.channel.subscriberCount,
+                  })
+                }
+                className="flex items-center gap-3 min-w-0 text-left group cursor-pointer"
+              >
                 <img
                   src={watchingVideo.channel.avatar}
                   alt={watchingVideo.channel.title}
@@ -851,7 +1028,8 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                     {watchingVideo.channel.subscriberCount || 'Creator Channel'}
                   </span>
                 </div>
-              </div>
+              </button>
+
               <button
                 type="button"
                 onClick={() =>
@@ -871,38 +1049,8 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               </button>
             </div>
 
-            {watchingVideo.description && (
-              <div className="p-3.5 rounded-2xl ml-glass">
-                <p
-                  className={`text-xs text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap ${
-                    showFullDesc ? '' : 'line-clamp-3'
-                  }`}
-                >
-                  {watchingVideo.description}
-                </p>
-                {watchingVideo.description.length > 140 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowFullDesc((d) => !d)}
-                    className="mt-1.5 text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1"
-                  >
-                    <span>{showFullDesc ? 'Show less' : 'Read more'}</span>
-                    {showFullDesc ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Scrollable Body below Pinned Player (Mobile: Metadata + Up Next | Desktop Right Column: Up Next) */}
-        <div
-          data-testid="watch-scrollable-details"
-          className="flex-1 overflow-y-auto px-3 sm:px-4 lg:pl-0 lg:col-span-4 lg:pt-3 pb-8 space-y-4"
-        >
-          {/* Mobile-only Metadata Block */}
-          <div className="lg:hidden pt-3.5 space-y-3">
-            <div>
+            {/* 2. Mobile Title & Stats */}
+            <div data-testid="watch-mobile-title-block">
               <h1 className="text-base font-extrabold text-[var(--text-primary)] leading-snug">
                 {watchingVideo.title}
               </h1>
@@ -931,7 +1079,31 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
+            {/* 3. Mobile Description */}
+            {watchingVideo.description && (
+              <div data-testid="watch-mobile-description" className="p-3.5 rounded-2xl ml-glass">
+                <p
+                  className={`text-xs text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap ${
+                    showFullDesc ? '' : 'line-clamp-3'
+                  }`}
+                >
+                  {watchingVideo.description}
+                </p>
+                {watchingVideo.description.length > 140 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowFullDesc((d) => !d)}
+                    className="mt-1.5 text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1"
+                  >
+                    <span>{showFullDesc ? 'Show less' : 'Read more'}</span>
+                    {showFullDesc ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 4. Mobile Fire Action Row */}
+            <div data-testid="watch-mobile-actions" className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
               <button
                 type="button"
                 onClick={() => {
@@ -939,10 +1111,8 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                   setLikedMap((m) => ({ ...m, [watchingVideo.id]: next }));
                   if (next && isDisliked) setDislikedMap((m) => ({ ...m, [watchingVideo.id]: false }));
                 }}
-                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors flex-shrink-0 ${
-                  isLiked
-                    ? 'bg-orange-500/15 border-orange-500/35 text-orange-400'
-                    : 'ml-glass text-[var(--text-primary)]'
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
+                  isLiked ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                 }`}
               >
                 <FireLikeIcon size={18} active={isLiked} />
@@ -957,13 +1127,11 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                     setDislikedMap((m) => ({ ...m, [watchingVideo.id]: next }));
                     if (next && isLiked) setLikedMap((m) => ({ ...m, [watchingVideo.id]: false }));
                   }}
-                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors flex-shrink-0 ${
-                    isDisliked
-                      ? 'bg-[var(--accent-gold-soft)] border-[var(--accent-gold-border)] text-[var(--accent-gold)]'
-                      : 'ml-glass text-[var(--text-primary)]'
+                  className={`min-h-[40px] px-3.5 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
+                    isDisliked ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                   }`}
                 >
-                  <ThumbsDown className={`w-4 h-4 ${isDisliked ? 'fill-current' : ''}`} />
+                  <FireDislikeIcon size={18} active={isDisliked} />
                 </button>
               )}
 
@@ -976,10 +1144,10 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                     title: watchingVideo.title,
                   })
                 }
-                className="min-h-[40px] px-4 rounded-xl text-xs font-bold ml-glass text-[var(--text-primary)] flex items-center gap-1.5 flex-shrink-0"
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${FIRE_ACTION_BOX_CLASS}`}
               >
-                <MessageCircle className="w-4 h-4 text-[var(--accent-primary)]" />
-                <span className="tabular-nums">{watchingVideo.stats.comments.toLocaleString()} Comments</span>
+                <TalkIcon size={18} />
+                <span className="tabular-nums">{watchingVideo.stats.comments.toLocaleString()} Talk</span>
               </button>
 
               <button
@@ -1004,88 +1172,23 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                       .catch(() => {});
                   }
                 }}
-                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors flex-shrink-0 ${
-                  isSaved
-                    ? 'bg-[var(--accent-gold-soft)] border-[var(--accent-gold-border)] text-[var(--accent-gold)]'
-                    : 'ml-glass text-[var(--text-primary)]'
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${
+                  isSaved ? FIRE_ACTION_BOX_ACTIVE_CLASS : FIRE_ACTION_BOX_CLASS
                 }`}
               >
-                <Bookmark className={`w-4 h-4 ${isSaved ? 'fill-current' : ''}`} />
-                <span>{isSaved ? 'Saved' : 'Save'}</span>
+                <VaultIcon size={18} active={isSaved} />
+                <span>{isSaved ? 'Vaulted' : 'Vault'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => handleShareVideo(watchingVideo)}
-                className="min-h-[40px] px-4 rounded-xl text-xs font-bold ml-glass text-[var(--text-primary)] flex items-center gap-1.5 flex-shrink-0"
+                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 flex-shrink-0 ${FIRE_ACTION_BOX_CLASS}`}
               >
-                {copiedShare ? <Check className="w-4 h-4 text-[var(--accent-primary)]" /> : <Share2 className="w-4 h-4" />}
-                <span>{copiedShare ? 'Copied' : 'Share'}</span>
+                {copiedShare ? <Check className="w-4 h-4 text-orange-400" /> : <BoostIcon size={18} />}
+                <span>{copiedShare ? 'Copied' : 'Boost'}</span>
               </button>
             </div>
-
-            <div className="p-3.5 rounded-2xl ml-glass flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <img
-                  src={watchingVideo.channel.avatar}
-                  alt={watchingVideo.channel.title}
-                  className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)]"
-                />
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 font-bold text-sm text-[var(--text-primary)] truncate">
-                    <span>{watchingVideo.channel.title}</span>
-                    {watchingVideo.channel.isVerified && (
-                      <span className="w-3.5 h-3.5 rounded-full bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] flex items-center justify-center text-[8px] font-bold">
-                        ✓
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[11px] text-[var(--text-secondary)]">
-                    {watchingVideo.channel.subscriberCount || 'Creator Channel'}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setSubscribedMap((m) => ({
-                    ...m,
-                    [watchingVideo.channel.id]: !isSubscribed,
-                  }))
-                }
-                className={`min-h-[40px] px-4 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors flex-shrink-0 ${
-                  isSubscribed
-                    ? 'bg-[var(--bg-surface-alt)] text-[var(--text-primary)] border border-[var(--border-subtle)]'
-                    : 'bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)]'
-                }`}
-              >
-                {isSubscribed && <Bell className="w-3.5 h-3.5 text-[var(--accent-gold)]" />}
-                <span>{isSubscribed ? 'Supporting ✓' : 'Support'}</span>
-              </button>
-            </div>
-
-            {watchingVideo.description && (
-              <div className="p-3.5 rounded-2xl ml-glass">
-                <p
-                  className={`text-xs text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap ${
-                    showFullDesc ? '' : 'line-clamp-3'
-                  }`}
-                >
-                  {watchingVideo.description}
-                </p>
-                {watchingVideo.description.length > 140 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowFullDesc((d) => !d)}
-                    className="mt-1.5 text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1"
-                  >
-                    <span>{showFullDesc ? 'Show less' : 'Read more'}</span>
-                    {showFullDesc ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </button>
-                )}
-              </div>
-            )}
           </div>
 
           {/* Up Next Recommendations */}
@@ -1261,8 +1364,8 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   // =========================================================================
   return (
     <div className="max-w-6xl mx-auto px-3 sm:px-4 py-3 pb-28 space-y-5">
-      {/* SECTION 1: Top Search Bar, Upload Button & Swipeable Categories */}
-      <section className="space-y-2.5">
+      {/* SECTION 1: Sticky Top Search Bar, Upload Button & Swipeable Categories */}
+      <section className="sticky top-[57px] z-20 ml-canvas-bg/95 backdrop-blur-md -mx-3 sm:-mx-4 px-3 sm:px-4 pt-2 pb-2.5 border-b border-[var(--border-subtle)] space-y-2.5">
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <div className="flex items-center gap-2 ml-glass rounded-xl px-3 h-11 focus-within:border-[var(--accent-primary)] transition-colors">
@@ -1571,7 +1674,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               <Loader2 className="w-4 h-4 animate-spin" />
               <span>Loading more videos...</span>
             </div>
-          ) : (
+          ) : hasMoreVideos ? (
             <button
               type="button"
               onClick={loadMoreVideos}
@@ -1580,7 +1683,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Load More Videos</span>
             </button>
-          )}
+          ) : longVideosList.length > 0 ? (
+            <p className="text-xs text-[var(--text-muted)]">You have reached the end of available videos</p>
+          ) : null}
         </div>
       </section>
     </div>

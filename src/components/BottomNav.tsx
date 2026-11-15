@@ -1,7 +1,7 @@
 import React from 'react';
 import { Home, Flame, Users, Plus, PlaySquare, Menu } from 'lucide-react';
 
-export type NavTab = 'home' | 'shorts' | 'friends' | 'create' | 'video' | 'menu' | 'profile' | 'youtube';
+export type NavTab = 'home' | 'shorts' | 'friends' | 'create' | 'video' | 'menu' | 'profile' | 'youtube' | 'bd_services';
 
 interface BottomNavProps {
   activeTab: NavTab;

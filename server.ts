@@ -627,11 +627,7 @@ const REAL_YOUTUBE_CATALOG: Record<string, string[]> = {
     'kJQP7kiw5Fk', '7wtfhZwyrcc', 'Bey4XXJAqS8'
   ],
   shorts: [
-    'jNQXAC9IVRw', '2g811Eo7K8U', 'dQw4w9WgXcQ', '0e3GPea1Tyg', 'Bey4XXJAqS8',
-    '5qap5aO4i9A', 'gHzuabZUdac', 'kJQP7kiw5Fk', 'k2qgadSvNyU', 'rUxyKA_-grg',
-    'M7lc1UVf-VE', '9bZkp7q19f0', 'fJ9rUzIMcZQ', 'OPf0YbXqDm0', '2Vv-BfVoq4g',
-    'YQHsXMglC9A', '7wtfhZwyrcc', 'DkeiKbqa02g', 'vRXZj0DzXIA', 'RgKAFK5djSk',
-    'hT_nvWreIhg', 'CevxZvSJLk8', 'LsoLEjrDogU', '4NRXx6U8ABQ'
+    'jNQXAC9IVRw', '2g811Eo7K8U'
   ],
   default: [
     '0e3GPea1Tyg', 'gHzuabZUdac', 'Bey4XXJAqS8', 'kJQP7kiw5Fk', 'JGwWNGJdvx8',
@@ -1087,150 +1083,175 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     }
 
     const items: any[] = [];
+    const seenVideoIds = new Set<string>();
     let nextCursor: FeedCursor | null = null;
     let quotaExceeded = false;
     let exhaustedReason: string | undefined;
+    const maxAttempts = type === 'shorts' ? 4 : 2;
+    let attempts = 0;
 
-    // 1. Try YouTube Data API search.list with videoDuration=short for shorts (or rotated multi-query discovery)
-    if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
-      try {
-        const searchParams: Record<string, string> = {
-          part: 'snippet',
-          type: 'video',
-          q: queryList[cursor.qIdx],
-          maxResults: String(fetchSize),
-        };
-        if (type === 'shorts') searchParams.videoDuration = 'short';
-        if (cursor.pageToken) searchParams.pageToken = cursor.pageToken;
-
-        const searchData = await fetchFromYouTubeApi('search', searchParams);
-        const videoIds = (searchData.items || [])
-          .map((it: any) => it?.id?.videoId)
-          .filter((vid: string | undefined) => Boolean(vid) && !suppressedIds.has(vid!));
-
-        if (videoIds.length > 0) {
-          const statsData = await fetchFromYouTubeApi('videos', {
-            part: 'snippet,contentDetails,statistics',
-            id: videoIds.join(','),
-          });
-          items.push(...(statsData.items || []).map(mapYouTubeVideoDetailsToItem));
-        }
-
-        if (searchData.nextPageToken) {
-          nextCursor = {
-            mode: 'api_search',
-            qIdx: cursor.qIdx,
-            pageToken: searchData.nextPageToken,
-            offset: 0,
-          };
-        } else if (cursor.qIdx + 1 < queryList.length) {
-          nextCursor = {
-            mode: 'api_search',
-            qIdx: cursor.qIdx + 1,
-            pageToken: '',
-            offset: 0,
-          };
-        } else {
-          nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
-        }
-      } catch (searchErr: any) {
-        if (searchErr?.reason === 'quotaExceeded' || searchErr?.reason === 'dailyLimitExceeded' || searchErr?.status === 403) {
-          quotaExceeded = true;
-        }
-        cursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+    const pushEligibleItem = (rawItem: any) => {
+      const mapped = mapYouTubeVideoDetailsToItem(rawItem);
+      if (suppressedIds.has(mapped.id) || suppressedIds.has(mapped.youtubeId)) return;
+      if (seenVideoIds.has(mapped.id)) return;
+      // Strict <= 180s (3 min) verification for Shorts feed
+      if (type === 'shorts') {
+        const dur = Number(mapped.durationSeconds || 0);
+        if (!Number.isFinite(dur) || dur <= 0 || dur > 180) return;
       }
-    }
+      seenVideoIds.add(mapped.id);
+      items.push(mapped);
+    };
 
-    // 2. Try YouTube chart=mostPopular pagination
-    if (items.length === 0 && cursor.mode === 'api_popular') {
-      try {
-        const popParams: Record<string, string> = {
-          part: 'snippet,contentDetails,statistics',
-          chart: 'mostPopular',
-          maxResults: String(fetchSize),
-          regionCode: category === 'bangla' ? 'BD' : 'US',
-        };
-        if (cursor.pageToken) popParams.pageToken = cursor.pageToken;
+    while (items.length < pageSize && attempts < maxAttempts) {
+      attempts++;
+      const prevCount = items.length;
 
-        const popData = await fetchFromYouTubeApi('videos', popParams);
-        if (Array.isArray(popData?.items) && popData.items.length > 0) {
-          const mapped = popData.items
-            .map(mapYouTubeVideoDetailsToItem)
-            .filter((it: any) => !suppressedIds.has(it.id) && !suppressedIds.has(it.youtubeId));
-          items.push(...mapped);
-          if (popData.nextPageToken) {
+      // 1. Try YouTube Data API search.list with videoDuration=short for shorts (or rotated multi-query discovery)
+      if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
+        try {
+          const searchParams: Record<string, string> = {
+            part: 'snippet',
+            type: 'video',
+            q: queryList[cursor.qIdx],
+            maxResults: String(Math.min(25, fetchSize + (type === 'shorts' ? 10 : 0))),
+          };
+          if (type === 'shorts') searchParams.videoDuration = 'short';
+          if (cursor.pageToken) searchParams.pageToken = cursor.pageToken;
+
+          const searchData = await fetchFromYouTubeApi('search', searchParams);
+          const videoIds = (searchData.items || [])
+            .map((it: any) => it?.id?.videoId)
+            .filter((vid: string | undefined) => Boolean(vid) && !suppressedIds.has(vid!) && !seenVideoIds.has(vid!));
+
+          if (videoIds.length > 0) {
+            const statsData = await fetchFromYouTubeApi('videos', {
+              part: 'snippet,contentDetails,statistics',
+              id: videoIds.join(','),
+            });
+            for (const rawItem of statsData.items || []) {
+              pushEligibleItem(rawItem);
+            }
+          }
+
+          if (searchData.nextPageToken) {
             nextCursor = {
-              mode: 'api_popular',
-              qIdx: 0,
-              pageToken: popData.nextPageToken,
+              mode: 'api_search',
+              qIdx: cursor.qIdx,
+              pageToken: searchData.nextPageToken,
+              offset: 0,
+            };
+          } else if (cursor.qIdx + 1 < queryList.length) {
+            nextCursor = {
+              mode: 'api_search',
+              qIdx: cursor.qIdx + 1,
+              pageToken: '',
               offset: 0,
             };
           } else {
+            nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+          }
+        } catch (searchErr: any) {
+          if (searchErr?.reason === 'quotaExceeded' || searchErr?.reason === 'dailyLimitExceeded' || searchErr?.status === 403) {
+            quotaExceeded = true;
+          }
+          nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+        }
+      } else if (cursor.mode === 'api_popular') {
+        // 2. Try YouTube chart=mostPopular pagination (filtered strictly for Shorts <= 180s)
+        try {
+          const popParams: Record<string, string> = {
+            part: 'snippet,contentDetails,statistics',
+            chart: 'mostPopular',
+            maxResults: String(Math.min(25, fetchSize + (type === 'shorts' ? 10 : 0))),
+            regionCode: category === 'bangla' ? 'BD' : 'US',
+          };
+          if (cursor.pageToken) popParams.pageToken = cursor.pageToken;
+
+          const popData = await fetchFromYouTubeApi('videos', popParams);
+          if (Array.isArray(popData?.items) && popData.items.length > 0) {
+            for (const rawItem of popData.items) {
+              pushEligibleItem(rawItem);
+            }
+            if (popData.nextPageToken) {
+              nextCursor = {
+                mode: 'api_popular',
+                qIdx: 0,
+                pageToken: popData.nextPageToken,
+                offset: 0,
+              };
+            } else {
+              nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
+            }
+          } else {
             nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
           }
-        } else {
-          cursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
-        }
-      } catch (popErr: any) {
-        if (popErr?.reason === 'quotaExceeded' || popErr?.reason === 'dailyLimitExceeded') {
-          quotaExceeded = true;
-        }
-        cursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
-      }
-    }
-
-    // 3. Verified catalog videos slice (rotated cleanly by seed + excludeIds + 7-day suppression)
-    if (items.length === 0 && cursor.mode === 'catalog') {
-      const poolKey = type === 'shorts' ? 'shorts' : category;
-      const poolPageNum = Math.floor(cursor.offset / pageSize) + 1;
-      const basePool = seededShuffle(
-        Array.from(new Set(
-          poolKey === 'shorts'
-            ? REAL_YOUTUBE_CATALOG.shorts
-            : REAL_YOUTUBE_CATALOG[poolKey] || REAL_YOUTUBE_CATALOG.default
-        )).filter((vid) => !suppressedIds.has(vid)),
-        `${seed}_${poolKey}`
-      );
-      const deprioritized = [
-        ...basePool.filter((vid) => !excludeIds.has(vid)),
-        ...basePool.filter((vid) => excludeIds.has(vid)),
-      ];
-      const startIdx = (poolPageNum - 1) * fetchSize;
-      const unseenIds = deprioritized.slice(startIdx, startIdx + fetchSize);
-      const hasMoreCatalog = startIdx + unseenIds.length < deprioritized.length;
-
-      if (unseenIds.length > 0) {
-        try {
-          const statsData = await fetchFromYouTubeApi('videos', {
-            part: 'snippet,contentDetails,statistics',
-            id: unseenIds.join(','),
-          });
-          items.push(...(statsData.items || []).map(mapYouTubeVideoDetailsToItem));
-        } catch (catalogErr: any) {
-          if (catalogErr?.reason === 'quotaExceeded' || catalogErr?.reason === 'dailyLimitExceeded') {
+        } catch (popErr: any) {
+          if (popErr?.reason === 'quotaExceeded' || popErr?.reason === 'dailyLimitExceeded') {
             quotaExceeded = true;
-            exhaustedReason = 'YouTube Data API quota temporarily exhausted. Please try again later.';
+          }
+          nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
+        }
+      } else if (cursor.mode === 'catalog') {
+        // 3. Verified catalog videos slice (rotated cleanly by seed + excludeIds + 7-day suppression)
+        const poolKey = type === 'shorts' ? 'shorts' : category;
+        const poolPageNum = Math.floor(cursor.offset / pageSize) + 1;
+        const basePool = seededShuffle(
+          Array.from(new Set(
+            poolKey === 'shorts'
+              ? REAL_YOUTUBE_CATALOG.shorts
+              : REAL_YOUTUBE_CATALOG[poolKey] || REAL_YOUTUBE_CATALOG.default
+          )).filter((vid) => !suppressedIds.has(vid) && !seenVideoIds.has(vid)),
+          `${seed}_${poolKey}`
+        );
+        const deprioritized = [
+          ...basePool.filter((vid) => !excludeIds.has(vid)),
+          ...basePool.filter((vid) => excludeIds.has(vid)),
+        ];
+        const startIdx = (poolPageNum - 1) * fetchSize;
+        const unseenIds = deprioritized.slice(startIdx, startIdx + fetchSize);
+        const hasMoreCatalog = startIdx + unseenIds.length < deprioritized.length;
+
+        if (unseenIds.length > 0) {
+          try {
+            const statsData = await fetchFromYouTubeApi('videos', {
+              part: 'snippet,contentDetails,statistics',
+              id: unseenIds.join(','),
+            });
+            for (const rawItem of statsData.items || []) {
+              pushEligibleItem(rawItem);
+            }
+          } catch (catalogErr: any) {
+            if (catalogErr?.reason === 'quotaExceeded' || catalogErr?.reason === 'dailyLimitExceeded') {
+              quotaExceeded = true;
+              exhaustedReason = 'YouTube Data API quota temporarily exhausted. Please try again later.';
+            }
           }
         }
+
+        if (hasMoreCatalog) {
+          nextCursor = {
+            mode: 'catalog',
+            qIdx: 0,
+            pageToken: '',
+            offset: cursor.offset + pageSize,
+          };
+        } else {
+          nextCursor = null;
+          exhaustedReason = quotaExceeded
+            ? 'YouTube search quota reached and all verified backup clips have been loaded.'
+            : 'You have reached the end of currently available videos.';
+        }
       }
 
-      if (hasMoreCatalog) {
-        nextCursor = {
-          mode: 'catalog',
-          qIdx: 0,
-          pageToken: '',
-          offset: cursor.offset + pageSize,
-        };
-      } else {
-        nextCursor = null;
-        exhaustedReason = quotaExceeded
-          ? 'YouTube search quota reached and all verified backup clips have been loaded.'
-          : 'You have reached the end of currently available videos.';
+      if (!nextCursor) break;
+      if (items.length === prevCount && nextCursor.mode === cursor.mode && nextCursor.qIdx === cursor.qIdx && nextCursor.offset === cursor.offset && !nextCursor.pageToken) {
+        break;
       }
+      cursor = nextCursor;
     }
 
-    const filteredItems = items.filter((it) => !suppressedIds.has(it.id) && !suppressedIds.has(it.youtubeId));
-    const rotatedItems = prioritizeFreshItems(filteredItems, excludeIds, `${seed}_${page}`).slice(0, pageSize);
+    const rotatedItems = prioritizeFreshItems(items, excludeIds, `${seed}_${page}`).slice(0, pageSize);
     const finalItems = await enrichVideoItemsWithChannelMeta(rotatedItems);
     const nextPageToken = nextCursor ? encodeFeedCursor(nextCursor) : null;
     res.json({
@@ -3546,14 +3567,14 @@ app.get('/api/posts/:id/comments', (req: Request, res: Response) => {
   if (post && !db.canViewerSeePost(currentUserId, post)) {
     return res.status(403).json({ error: 'Not authorized to view comments on this post' });
   }
-  const list = db.getComments(req.params.id);
+  const list = db.getComments(req.params.id, currentUserId);
   res.json({ comments: list });
 });
 
 app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const { text } = req.body;
+  const { text, parentId } = req.body;
   if (!text || !text.trim()) {
     return res.status(400).json({ error: 'Comment text cannot be empty' });
   }
@@ -3567,14 +3588,16 @@ app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Not authorized to comment on this post' });
   }
 
+  const cleanParentId = parentId ? String(parentId).trim() : undefined;
   const newComment = {
     id: `cmt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     postId,
+    ...(cleanParentId ? { parentId: cleanParentId } : {}),
     userId: user.id,
     userDisplayName: user.displayName,
     userUsername: user.username,
     userAvatar: user.avatar,
-    text: text.trim(),
+    text: text.trim().slice(0, 2000),
     createdAt: new Date().toISOString(),
     likesCount: 0,
     isLiked: false,
@@ -3594,7 +3617,7 @@ app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
         avatar: user.avatar,
         username: user.username,
       },
-      title: 'New Comment',
+      title: cleanParentId ? 'New Reply on Post' : 'New Comment',
       body: `${user.displayName} commented: "${text.trim().slice(0, 60)}"`,
       targetId: postId,
       targetType: 'post' as const,
@@ -3605,7 +3628,33 @@ app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
     sendWsToUser(post.author.id, 'notification:new', notif);
   }
 
-  res.status(201).json({ comment: newComment, totalComments: db.getComments(postId).length });
+  res.status(201).json({ comment: newComment, totalComments: db.getComments(postId, user.id).length });
+});
+
+app.patch('/api/posts/:postId/comments/:commentId', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const text = String(req.body?.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'Comment text cannot be empty' });
+  const result = db.editComment(req.params.postId, req.params.commentId, user.id, user.role, text);
+  if (!result.ok) return res.status(result.statusCode).json({ error: result.error });
+  res.json({ comment: result.comment });
+});
+
+app.delete('/api/posts/:postId/comments/:commentId', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const result = db.deleteComment(req.params.postId, req.params.commentId, user.id, user.role);
+  if (!result.ok) return res.status(result.statusCode).json({ error: result.error });
+  res.json({ success: true, totalComments: result.totalComments });
+});
+
+app.post('/api/posts/:postId/comments/:commentId/like', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const result = db.toggleCommentLike(req.params.postId, req.params.commentId, user.id);
+  if (!result.ok) return res.status(404).json({ error: 'Comment not found' });
+  res.json({ isLiked: result.isLiked, likesCount: result.likesCount, comment: result.comment });
 });
 
 // Save Post (Per-User Saved State)
@@ -3698,6 +3747,38 @@ app.post('/api/posts/:id/share', (req: Request, res: Response) => {
     shares: sharesCount,
     post: db.hydratePostForUser(sharedPost, user.id),
   });
+});
+
+// Edit Post (Only Creator or Owner)
+app.patch('/api/posts/:id', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const result = db.updatePost(req.params.id, user.id, user.role, req.body || {});
+  if (!result.ok) {
+    return res.status(result.statusCode).json({ error: result.error });
+  }
+  res.json({ post: result.post });
+});
+
+// Report Post
+app.post('/api/posts/:id/report', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const postId = req.params.id;
+  const { reason, details } = req.body || {};
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'Report reason is required' });
+  }
+  const post = db.getAllPosts().find((p) => p.id === postId);
+  const report = db.addUserReport({
+    id: `rep_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+    reporterId: user.id,
+    targetUserId: post?.author.id,
+    reason: String(reason).trim(),
+    details: `[post:${postId}] ${details ? String(details).trim() : ''}`.trim(),
+    createdAt: new Date().toISOString(),
+  });
+  res.status(201).json({ success: true, report });
 });
 
 // Delete Post (Only Creator or Owner)
@@ -3809,42 +3890,103 @@ app.delete('/api/stories/:id', (req: Request, res: Response) => {
   res.json({ success: true, message: 'Story deleted' });
 });
 
-// 4. Videos (Shorts, 16:9 Long Videos, 7-Day Watch Tracking, Saved Videos & Drafts)
+// 4. Videos (Shorts <= 180s strictly, 16:9 Long Videos, 7-Day Watch Tracking, Saved Videos & Drafts)
 app.get('/api/videos/shorts', async (req: Request, res: Response) => {
+  const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
+  const pageSize = Math.min(20, Math.max(4, parseInt((req.query.pageSize as string) || '12', 10)));
+  const rawToken = (req.query.pageToken as string) || '';
+  const includeWatched = req.query.includeWatched === '1';
+
   const allLocal = db
     .getShortVideos()
-    .filter((s) => s.id !== 'short_01' && s.id !== 'short_02');
-  const suppressed = getSuppressedSetFromReq(req);
+    .filter(
+      (s) =>
+        s.id !== 'short_01' &&
+        s.id !== 'short_02' &&
+        (s.durationSeconds === undefined || (s.durationSeconds > 0 && s.durationSeconds <= 180))
+    );
+  const suppressed = includeWatched ? new Set<string>() : getSuppressedSetFromReq(req);
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
+
   const filteredLocal = prioritizeFreshItems(
     allLocal.filter((s) => !suppressed.has(s.id) && !(s.youtubeId && suppressed.has(s.youtubeId))),
     excludeIds,
     `${seed}_local_shorts`
   );
+  const localStart = (page - 1) * pageSize;
+  const localSlice = filteredLocal.slice(localStart, localStart + pageSize);
 
-  // Immediately include fast YouTube Shorts with authentic channel avatars & fresh rotation
   let ytShorts: ShortVideo[] = [];
+  let nextPageToken: string | null = null;
+  let hasMoreYt = false;
+
   try {
-    const unseenPool = seededShuffle(
-      Array.from(new Set(REAL_YOUTUBE_CATALOG.shorts)).filter((vid) => !suppressed.has(vid)),
-      `${seed}_yt_shorts`
-    );
-    const orderedIds = [
-      ...unseenPool.filter((vid) => !excludeIds.has(vid)),
-      ...unseenPool.filter((vid) => excludeIds.has(vid)),
-    ];
-    if (orderedIds.length > 0) {
+    let ytIds: string[] = [];
+    let qIdx = hashSeedNumber(`${seed}_shorts_v2`) % SHORTS_DISCOVERY_QUERIES.length;
+    let ytSearchToken = '';
+
+    if (rawToken.startsWith('mls_')) {
+      try {
+        const parsed = JSON.parse(Buffer.from(rawToken.slice(4), 'base64url').toString('utf-8'));
+        qIdx = Number.isFinite(parsed.qIdx) ? parsed.qIdx : qIdx;
+        ytSearchToken = typeof parsed.pt === 'string' ? parsed.pt : '';
+      } catch {
+        // ignore invalid cursor
+      }
+    } else if (page > 1) {
+      qIdx = (qIdx + (page - 1)) % SHORTS_DISCOVERY_QUERIES.length;
+    }
+
+    try {
+      const searchData = await fetchFromYouTubeApi('search', {
+        part: 'snippet',
+        type: 'video',
+        q: SHORTS_DISCOVERY_QUERIES[qIdx % SHORTS_DISCOVERY_QUERIES.length],
+        videoDuration: 'short',
+        maxResults: '20',
+        ...(ytSearchToken ? { pageToken: ytSearchToken } : {}),
+      });
+      ytIds = (searchData.items || [])
+        .map((it: any) => it?.id?.videoId)
+        .filter((vid: string | undefined) => Boolean(vid) && !suppressed.has(vid!) && !excludeIds.has(vid!));
+
+      if (searchData.nextPageToken) {
+        nextPageToken = 'mls_' + Buffer.from(JSON.stringify({ qIdx, pt: searchData.nextPageToken })).toString('base64url');
+        hasMoreYt = true;
+      } else {
+        const nextQ = (qIdx + 1) % SHORTS_DISCOVERY_QUERIES.length;
+        nextPageToken = 'mls_' + Buffer.from(JSON.stringify({ qIdx: nextQ, pt: '' })).toString('base64url');
+        hasMoreYt = page < SHORTS_DISCOVERY_QUERIES.length;
+      }
+    } catch {
+      const fallbackPool = seededShuffle(
+        Array.from(new Set(REAL_YOUTUBE_CATALOG.shorts)).filter((vid) => !suppressed.has(vid)),
+        `${seed}_yt_shorts`
+      );
+      const startCat = (page - 1) * pageSize;
+      ytIds = fallbackPool.slice(startCat, startCat + pageSize);
+      hasMoreYt = startCat + ytIds.length < fallbackPool.length;
+      if (hasMoreYt) {
+        nextPageToken = 'mls_' + Buffer.from(JSON.stringify({ catPage: page + 1 })).toString('base64url');
+      }
+    }
+
+    if (ytIds.length > 0) {
       const statsData = await fetchFromYouTubeApi('videos', {
         part: 'snippet,contentDetails,statistics',
-        id: orderedIds.slice(0, 15).join(','),
+        id: ytIds.slice(0, 20).join(','),
       });
       const channelMetaMap = await fetchChannelMetaMap(
         (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
       );
       ytShorts = (statsData.items || [])
-        .filter((item: any) => parseIsoDurationToSeconds(item.contentDetails?.duration) <= 180)
+        .filter((item: any) => {
+          const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
+          return Number.isFinite(dur) && dur > 0 && dur <= 180;
+        })
         .map((item: any) => {
+          const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
           const channelId = item.snippet?.channelId || '';
           const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
           return {
@@ -3852,6 +3994,7 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
             source: 'youtube' as const,
             youtubeId: item.id,
             videoUrl: '',
+            durationSeconds: dur,
             thumbnailUrl:
               item.snippet?.thumbnails?.maxres?.url ||
               item.snippet?.thumbnails?.high?.url ||
@@ -3881,20 +4024,24 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
     // Graceful fallback if API key quota is limited
   }
 
-  const seen = new Set(filteredLocal.map((s) => s.youtubeId || s.id));
-  const merged = [...filteredLocal, ...ytShorts.filter((s) => !seen.has(s.id))];
-  res.json({ shorts: merged });
+  const seen = new Set(localSlice.map((s) => s.youtubeId || s.id));
+  const merged = [...localSlice, ...ytShorts.filter((s) => !seen.has(s.id))];
+  const hasMore = localStart + localSlice.length < filteredLocal.length || hasMoreYt;
+  res.json({ shorts: merged, page, nextPageToken, hasMore });
 });
 
 app.post('/api/videos/shorts', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const { videoUrl, thumbnailUrl, title, caption, hashtags, durationSeconds } = req.body;
+  const { videoUrl, thumbnailUrl, title, caption, hashtags, durationSeconds, aspectRatio } = req.body;
   if (!videoUrl) {
     return res.status(400).json({ error: 'Short video requires a valid video URL' });
   }
-  if (durationSeconds && Number(durationSeconds) > 180) {
-    return res.status(400).json({ error: 'Short video must not exceed 3 minutes (180 seconds). Please upload as a regular video.' });
+  const durNum = Number(durationSeconds);
+  if (!Number.isFinite(durNum) || durNum <= 0 || durNum > 180) {
+    return res.status(400).json({
+      error: 'Short video must have a verified duration between 1 second and 180 seconds (3 minutes). Longer videos must be published as regular videos.',
+    });
   }
 
   const newShort: ShortVideo = {
@@ -3905,6 +4052,8 @@ app.post('/api/videos/shorts', (req: Request, res: Response) => {
     title: title || 'Untitled Short',
     caption: caption || '',
     hashtags: Array.isArray(hashtags) ? hashtags : [],
+    durationSeconds: Math.round(durNum),
+    aspectRatio: typeof aspectRatio === 'string' ? aspectRatio : '9:16',
     creator: {
       id: user.id,
       name: user.displayName,
@@ -4289,6 +4438,392 @@ app.post('/api/users/:id/report', (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
   });
   res.status(201).json({ success: true, report });
+});
+
+app.post('/api/users/:id/block', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const targetId = req.params.id;
+  if (targetId === user.id) return res.status(400).json({ error: 'Cannot block yourself' });
+  const isBlocked = db.toggleBlock(user.id, targetId);
+  res.json({ isBlocked });
+});
+
+// ==========================================
+// 5B. MULTI-SERVER REGISTRY & OWNER CONFIG CHAT
+// ==========================================
+function isSafeServerBaseUrl(rawUrl: string, allowLocal = false): { ok: boolean; normalized?: string; error?: string } {
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    const host = parsed.hostname.toLowerCase();
+    if (allowLocal && (host === 'localhost' || host === '127.0.0.1')) {
+      return { ok: parsed.protocol === 'http:' || parsed.protocol === 'https:', normalized: parsed.origin };
+    }
+    if (parsed.protocol !== 'https:') {
+      return { ok: false, error: 'External backend servers must use HTTPS (e.g. https://api.example.com).' };
+    }
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '0.0.0.0' ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host.startsWith('169.254.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal')
+    ) {
+      return { ok: false, error: 'Private/internal network IP ranges cannot be registered as external servers.' };
+    }
+    return { ok: true, normalized: parsed.origin };
+  } catch {
+    return { ok: false, error: 'Invalid server URL format.' };
+  }
+}
+
+app.get('/api/servers', (_req: Request, res: Response) => {
+  const servers = db.getServers();
+  const primary = servers.find((s) => s.isPrimary && !s.isolated && s.enabled) || servers.find((s) => s.id === 'srv_motherland_local');
+  const dreamWorld = servers.find((s) => s.id === 'srv_dream_world');
+  res.json({
+    servers,
+    primaryServerId: primary?.id || 'srv_motherland_local',
+    dreamWorldServer: dreamWorld,
+  });
+});
+
+app.get('/api/servers/history', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin or Owner permission required' });
+  }
+  res.json({ history: db.getServerHistory() });
+});
+
+app.post('/api/servers', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Only MOTHERLAND owner or admin can register servers' });
+  }
+  const { name, baseUrl, healthPath, wsUrl, environment, assignedServices, enabled, notes } = req.body || {};
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Server name is required' });
+  }
+  const urlCheck = isSafeServerBaseUrl(baseUrl, false);
+  if (!urlCheck.ok || !urlCheck.normalized) {
+    return res.status(400).json({ error: urlCheck.error || 'Invalid HTTPS URL' });
+  }
+  if (urlCheck.normalized.includes('dream-world-open.onrender.com')) {
+    return res.status(400).json({ error: 'Dream World server is already configured separately and must remain isolated.' });
+  }
+  const entry = db.upsertServer(
+    {
+      name: String(name).trim().slice(0, 80),
+      baseUrl: urlCheck.normalized,
+      healthPath: typeof healthPath === 'string' && healthPath.startsWith('/') ? healthPath : '/health',
+      wsUrl: typeof wsUrl === 'string' && wsUrl.startsWith('wss://') ? wsUrl.trim() : undefined,
+      environment: ['production', 'staging'].includes(environment) ? environment : 'production',
+      assignedServices: Array.isArray(assignedServices) ? assignedServices : ['main_app'],
+      enabled: enabled !== false,
+      notes: notes ? String(notes).slice(0, 300) : undefined,
+    },
+    user
+  );
+  res.status(201).json({ server: entry });
+});
+
+app.patch('/api/servers/:id', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Owner or admin access required' });
+  }
+  const existing = db.getServerById(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Server not found' });
+
+  let nextUrl = existing.baseUrl;
+  if (req.body?.baseUrl && req.body.baseUrl !== existing.baseUrl) {
+    const check = isSafeServerBaseUrl(req.body.baseUrl, existing.id === 'srv_motherland_local');
+    if (!check.ok || !check.normalized) return res.status(400).json({ error: check.error });
+    nextUrl = check.normalized;
+  }
+  try {
+    const updated = db.upsertServer(
+      {
+        id: existing.id,
+        name: req.body?.name ? String(req.body.name).trim().slice(0, 80) : existing.name,
+        baseUrl: nextUrl,
+        healthPath: typeof req.body?.healthPath === 'string' ? req.body.healthPath : existing.healthPath,
+        wsUrl: req.body?.wsUrl !== undefined ? String(req.body.wsUrl) : existing.wsUrl,
+        assignedServices: Array.isArray(req.body?.assignedServices) ? req.body.assignedServices : existing.assignedServices,
+        enabled: typeof req.body?.enabled === 'boolean' ? req.body.enabled : existing.enabled,
+        notes: req.body?.notes !== undefined ? String(req.body.notes).slice(0, 300) : existing.notes,
+      },
+      user
+    );
+    res.json({ server: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Unable to update server' });
+  }
+});
+
+app.delete('/api/servers/:id', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Owner or admin access required' });
+  }
+  const result = db.deleteServer(req.params.id, user);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ success: true });
+});
+
+app.post('/api/servers/:id/test', async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    return res.status(403).json({ error: 'Owner or admin access required' });
+  }
+  const srv = db.getServerById(req.params.id);
+  if (!srv) return res.status(404).json({ error: 'Server not found' });
+
+  const isLocalCore = srv.id === 'srv_motherland_local';
+  const urlCheck = isSafeServerBaseUrl(srv.baseUrl, isLocalCore);
+  if (!urlCheck.ok) {
+    return res.status(400).json({ error: urlCheck.error });
+  }
+
+  const probeUrl = isLocalCore
+    ? `http://127.0.0.1:${PORT}${srv.healthPath || '/api/health'}`
+    : `${srv.baseUrl.replace(/\/+$/, '')}${srv.healthPath || '/health'}`;
+
+  const startedAt = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6500);
+    const probeRes = await fetch(probeUrl, { method: 'GET', signal: controller.signal });
+    clearTimeout(timer);
+    const latencyMs = Date.now() - startedAt;
+    const status: 'healthy' | 'degraded' = probeRes.ok ? 'healthy' : 'degraded';
+    const updated = db.updateServerHealth(srv.id, status, latencyMs);
+    res.json({
+      server: updated,
+      probeUrl,
+      httpStatus: probeRes.status,
+      latencyMs,
+      healthStatus: status,
+    });
+  } catch (err: any) {
+    const latencyMs = Date.now() - startedAt;
+    const updated = db.updateServerHealth(srv.id, 'offline', null);
+    res.json({
+      server: updated,
+      probeUrl,
+      httpStatus: 0,
+      latencyMs,
+      healthStatus: 'offline',
+      error: err?.name === 'AbortError' ? 'Health probe timed out after 6.5s' : err?.message || 'Connection failed',
+    });
+  }
+});
+
+app.post('/api/servers/:id/set-primary', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner') {
+    return res.status(403).json({ error: 'Only the MOTHERLAND platform owner can switch the primary server.' });
+  }
+  const result = db.setPrimaryServer(req.params.id, user);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ server: result.server, previousPrimaryId: result.previousPrimaryId });
+});
+
+app.post('/api/servers/rollback', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner') {
+    return res.status(403).json({ error: 'Owner permission required for rollback.' });
+  }
+  const result = db.rollbackPrimaryServer(user);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ server: result.server });
+});
+
+app.get('/api/admin/servers/chat', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner') {
+    return res.status(403).json({ error: 'Owner-only Admin Configuration Chat.' });
+  }
+  res.json({ messages: db.getAdminConfigMessages() });
+});
+
+app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  if (user.role !== 'owner') {
+    return res.status(403).json({ error: 'Owner-only Admin Configuration Chat.' });
+  }
+  const rawText = String(req.body?.text || '').trim();
+  const confirmAction = Boolean(req.body?.confirm);
+  if (!rawText) return res.status(400).json({ error: 'Command text is required' });
+
+  const ownerMsg = db.addAdminConfigMessage({
+    id: `acmsg_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+    role: 'owner',
+    senderId: user.id,
+    senderName: user.displayName,
+    text: rawText.slice(0, 1000),
+    createdAt: new Date().toISOString(),
+  });
+
+  const lower = rawText.toLowerCase();
+  const servers = db.getServers();
+  let replyText = '';
+  let parsedIntent: any = { action: 'help' };
+
+  const httpsMatch = rawText.match(/https:\/\/[^\s]+/i);
+
+  if (lower.includes('status') || lower.includes('list') || lower.includes('show servers')) {
+    parsedIntent = { action: 'status' };
+    replyText = servers
+      .map((s) => `• ${s.name} [${s.id}] — ${s.isPrimary ? 'PRIMARY' : s.isolated ? 'ISOLATED' : 'STANDBY'} (${s.enabled ? 'Enabled' : 'Disabled'}, ${s.lastHealthStatus || 'unknown'})${s.lastLatencyMs ? ` ${s.lastLatencyMs}ms` : ''}\n  URL: ${s.baseUrl}`)
+      .join('\n');
+  } else if (lower.includes('rollback') || lower.includes('revert')) {
+    if (!confirmAction) {
+      parsedIntent = { action: 'rollback', requiresConfirmation: true };
+      replyText = 'Rollback requested: this will restore the previous Primary Core Server without touching Dream World. Click "Confirm Switch" below to execute.';
+    } else {
+      const rb = db.rollbackPrimaryServer(user);
+      parsedIntent = { action: 'rollback', confirmed: rb.ok, targetServerId: rb.server?.id };
+      replyText = rb.ok ? `Rollback complete. Primary server is now ${rb.server?.name} (${rb.server?.baseUrl}).` : (rb.error || 'Rollback failed.');
+    }
+  } else if ((lower.includes('add') || lower.includes('register')) && httpsMatch) {
+    const urlCheck = isSafeServerBaseUrl(httpsMatch[0], false);
+    if (!urlCheck.ok || !urlCheck.normalized) {
+      replyText = `Rejected URL: ${urlCheck.error}`;
+    } else {
+      const namePart = rawText.replace(httpsMatch[0], '').replace(/^(add|register)\s+server\s*/i, '').trim() || `Node (${new URL(urlCheck.normalized).hostname})`;
+      const created = db.upsertServer({ name: namePart.slice(0, 60), baseUrl: urlCheck.normalized, assignedServices: ['main_app'] }, user);
+      parsedIntent = { action: 'create', targetServerId: created.id, url: created.baseUrl };
+      replyText = `Registered server "${created.name}" (${created.baseUrl}) with ID ${created.id}. Run health test before making it primary.`;
+    }
+  } else if (lower.includes('switch') || lower.includes('primary') || lower.includes('promote')) {
+    const matched = servers.find(
+      (s) => lower.includes(s.id.toLowerCase()) || lower.includes(s.name.toLowerCase()) || (httpsMatch && s.baseUrl === httpsMatch[0])
+    );
+    if (!matched) {
+      replyText = 'Specify an existing registered server ID or exact server name to switch primary (e.g., "switch primary to srv_...").';
+    } else if (matched.isolated) {
+      replyText = 'Blocked: Dream World server is strictly isolated for Dream World gameplay and cannot become MOTHERLAND primary.';
+    } else if (!confirmAction) {
+      parsedIntent = { action: 'set_primary', targetServerId: matched.id, requiresConfirmation: true };
+      replyText = `Confirmation required: promote "${matched.name}" (${matched.baseUrl}) to Primary MOTHERLAND Server? Dream World remains isolated.`;
+    } else {
+      const resSwitch = db.setPrimaryServer(matched.id, user);
+      parsedIntent = { action: 'set_primary', targetServerId: matched.id, confirmed: resSwitch.ok };
+      replyText = resSwitch.ok
+        ? `Primary server switched to "${resSwitch.server?.name}" (${resSwitch.server?.baseUrl}).`
+        : (resSwitch.error || 'Switch failed.');
+    }
+  } else if (lower.includes('test') || lower.includes('ping') || lower.includes('health')) {
+    const matched = servers.find((s) => lower.includes(s.id.toLowerCase()) || lower.includes(s.name.toLowerCase()));
+    const target = matched || servers[0];
+    const isLocalCore = target.id === 'srv_motherland_local';
+    const probeUrl = isLocalCore ? `http://127.0.0.1:${PORT}${target.healthPath || '/api/health'}` : `${target.baseUrl}${target.healthPath || '/health'}`;
+    const t0 = Date.now();
+    try {
+      const r = await fetch(probeUrl);
+      const ms = Date.now() - t0;
+      db.updateServerHealth(target.id, r.ok ? 'healthy' : 'degraded', ms);
+      replyText = `Health probe for ${target.name}: HTTP ${r.status} in ${ms}ms (${r.ok ? 'HEALTHY' : 'DEGRADED'}).`;
+    } catch (e: any) {
+      db.updateServerHealth(target.id, 'offline', null);
+      replyText = `Health probe for ${target.name} FAILED: ${e?.message || 'Unreachable'}.`;
+    }
+    parsedIntent = { action: 'health_check', targetServerId: target.id };
+  } else {
+    replyText = [
+      'Supported validated owner commands:',
+      '• "status" — list all registered servers & Dream World isolation state',
+      '• "add server <Name> https://your-server.example.com" — register an HTTPS server',
+      '• "test <server name or id>" — run live health & latency probe',
+      '• "switch primary to <server name or id>" — request primary failover (requires confirmation)',
+      '• "rollback primary" — revert to previous primary server (requires confirmation)',
+    ].join('\n');
+  }
+
+  db.recordServerHistory({
+    action: 'chat_command',
+    serverId: parsedIntent.targetServerId || 'registry',
+    serverName: 'Owner Config Chat',
+    actorId: user.id,
+    actorUsername: user.username,
+    summary: `Owner command: "${rawText.slice(0, 120)}"`,
+  });
+
+  const systemMsg = db.addAdminConfigMessage({
+    id: `acmsg_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+    role: 'system',
+    senderName: 'MOTHERLAND Server Controller',
+    text: replyText,
+    parsedIntent,
+    createdAt: new Date().toISOString(),
+  });
+
+  res.json({ ownerMessage: ownerMsg, systemMessage: systemMsg, servers: db.getServers() });
+});
+
+// ==========================================
+// 5C. BANGLADESH SERVICES PREFS & AGE GUARD
+// ==========================================
+app.get('/api/bd-services/prefs', (req: Request, res: Response) => {
+  const userId = (req as any).userId as string | undefined;
+  if (!userId) return res.json({ favorites: [], recent: [] });
+  res.json(db.getBdServicePrefs(userId));
+});
+
+app.post('/api/bd-services/favorite', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const serviceId = String(req.body?.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ error: 'serviceId is required' });
+  res.json(db.toggleBdServiceFavorite(user.id, serviceId));
+});
+
+app.post('/api/bd-services/recent', (req: Request, res: Response) => {
+  const userId = (req as any).userId as string | undefined;
+  if (!userId) return res.json({ recent: [] });
+  const serviceId = String(req.body?.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ error: 'serviceId is required' });
+  const recent = db.recordBdServiceRecent(userId, serviceId);
+  res.json({ recent });
+});
+
+app.get('/api/bd-services/eligibility', (req: Request, res: Response) => {
+  const userId = (req as any).userId as string | undefined;
+  const user = userId ? db.findUserById(userId) : undefined;
+  let ageYears: number | null = null;
+  if (user?.dateOfBirth) {
+    const dob = new Date(user.dateOfBirth);
+    if (!Number.isNaN(dob.getTime())) {
+      const today = new Date();
+      ageYears = today.getFullYear() - dob.getFullYear();
+      const mDiff = today.getMonth() - dob.getMonth();
+      if (mDiff < 0 || (mDiff === 0 && today.getDate() < dob.getDate())) {
+        ageYears -= 1;
+      }
+    }
+  }
+  const isMinor = ageYears !== null && ageYears < 18;
+  res.json({
+    authenticated: Boolean(user),
+    ageYears,
+    loanEligible: ageYears === null ? null : ageYears >= 18,
+    isMinor,
+  });
 });
 
 // 6. Notifications (Categorized: Motherland, YouTube, Google, Facebook, Instagram, Wave)

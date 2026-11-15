@@ -53,7 +53,14 @@ export const CreateModal: React.FC<CreateModalProps> = ({
 
   // Device file attachments
   const [photoFiles, setPhotoFiles] = useState<{ file: File; preview: string }[]>([]);
-  const [singleMediaFile, setSingleMediaFile] = useState<{ file: File; preview: string; isVideo: boolean } | null>(null);
+  const [singleMediaFile, setSingleMediaFile] = useState<{
+    file: File;
+    preview: string;
+    isVideo: boolean;
+    durationSeconds?: number;
+    aspectRatio?: string;
+    isVertical?: boolean;
+  } | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -153,12 +160,37 @@ export const CreateModal: React.FC<CreateModalProps> = ({
   const handleSingleFilePicked = (file?: File) => {
     if (!file) return;
     if (singleMediaFile) URL.revokeObjectURL(singleMediaFile.preview);
+    const preview = URL.createObjectURL(file);
+    const isVideo = file.type.startsWith('video/');
     setSingleMediaFile({
       file,
-      preview: URL.createObjectURL(file),
-      isVideo: file.type.startsWith('video/'),
+      preview,
+      isVideo,
     });
     setErrorMsg('');
+
+    if (isVideo) {
+      const probe = document.createElement('video');
+      probe.preload = 'metadata';
+      probe.src = preview;
+      probe.onloadedmetadata = () => {
+        const dur = Math.round(Number(probe.duration) || 0);
+        const w = probe.videoWidth || 0;
+        const h = probe.videoHeight || 0;
+        const isVert = h > w && w > 0;
+        const aspect = w > 0 && h > 0 ? (isVert ? '9:16' : '16:9') : undefined;
+        setSingleMediaFile((prev) =>
+          prev && prev.preview === preview
+            ? { ...prev, durationSeconds: dur, aspectRatio: aspect, isVertical: isVert }
+            : prev
+        );
+        if (mode === 'short' && dur > 180) {
+          setErrorMsg(
+            `This video is ${Math.floor(dur / 60)}m ${dur % 60}s long. Shorts must be 3 minutes (180 seconds) or shorter — use "Upload Video" for longer videos.`
+          );
+        }
+      };
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -191,7 +223,17 @@ export const CreateModal: React.FC<CreateModalProps> = ({
 
       if (mode === 'short') {
         if (!singleMediaFile || !singleMediaFile.isVideo) {
-          setErrorMsg('Please select a vertical video clip from your device.');
+          setErrorMsg('Please select a vertical video clip (max 3 minutes / 180s) from your device.');
+          setIsSubmitting(false);
+          return;
+        }
+        const dur = Number(singleMediaFile.durationSeconds || 0);
+        if (!Number.isFinite(dur) || dur <= 0 || dur > 180) {
+          setErrorMsg(
+            dur > 180
+              ? `Video is ${dur}s (over 180s limit). Please publish long videos through "Upload Video".`
+              : 'Could not verify video duration (<= 180 seconds required for Shorts). Please wait a moment or pick another clip.'
+          );
           setIsSubmitting(false);
           return;
         }
@@ -201,6 +243,8 @@ export const CreateModal: React.FC<CreateModalProps> = ({
           title: shortTitle.trim() || caption.trim() || 'MOTHERLAND Short',
           caption: caption.trim(),
           hashtags: tags,
+          durationSeconds: dur,
+          aspectRatio: singleMediaFile.aspectRatio || '9:16',
         });
         onShortCreated();
         handleClose();
@@ -598,6 +642,26 @@ export const CreateModal: React.FC<CreateModalProps> = ({
                       >
                         <X className="w-4 h-4" />
                       </button>
+                      {mode === 'short' && singleMediaFile.durationSeconds !== undefined && (
+                        <div className="px-3 py-1.5 bg-black/80 text-xs flex items-center justify-between text-white">
+                          <span>
+                            Duration: {singleMediaFile.durationSeconds}s / 180s max
+                            {singleMediaFile.aspectRatio ? ` • ${singleMediaFile.aspectRatio}` : ''}
+                          </span>
+                          {singleMediaFile.durationSeconds > 180 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleClose();
+                                onOpenVideoPublish();
+                              }}
+                              className="px-2 py-0.5 rounded bg-[#FF0000] text-white font-bold text-[11px]"
+                            >
+                              Upload as Video
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <button
@@ -607,7 +671,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
                     >
                       <Upload className="w-6 h-6 text-[var(--accent-primary)]" />
                       <span className="text-xs font-bold">
-                        {mode === 'story' ? 'Select photo or video from device' : 'Select vertical video clip'}
+                        {mode === 'story' ? 'Select photo or video from device' : 'Select vertical short clip (max 3 min)'}
                       </span>
                     </button>
                   )}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, Search, Crown, UserCheck, Youtube } from 'lucide-react';
+import { Bell, Search, Crown, UserCheck, Youtube, Globe } from 'lucide-react';
 import type { UserProfile } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 import { WaveLogo } from './wave/WaveLogo';
@@ -10,12 +10,14 @@ interface HeaderProps {
   unreadNotifications: number;
   unreadMessages: number;
   isYouTubeActive?: boolean;
+  isBdServicesActive?: boolean;
   onOpenNotifications: () => void;
   onOpenMessages: () => void;
   onOpenSearch: () => void;
   onOpenProfile: () => void;
   onOpenAuth: () => void;
   onOpenYouTube: () => void;
+  onOpenBdServices?: () => void;
   onLogoClick: () => void;
 }
 
@@ -24,17 +26,19 @@ export const Header: React.FC<HeaderProps> = ({
   unreadNotifications,
   unreadMessages,
   isYouTubeActive = false,
+  isBdServicesActive = false,
   onOpenNotifications,
   onOpenMessages,
   onOpenSearch,
   onOpenProfile,
   onOpenAuth,
   onOpenYouTube,
+  onOpenBdServices,
   onLogoClick,
 }) => {
   return (
-    <header className="sticky top-0 z-40 bg-[var(--bg-glass)] backdrop-blur-xl border-b border-[var(--border-subtle)] px-3 sm:px-4 py-1.5 transition-colors shadow-sm">
-      <div className="max-w-6xl mx-auto flex items-center justify-between gap-2">
+    <header className="sticky top-0 z-40 bg-[var(--bg-glass)] backdrop-blur-xl border-b border-[var(--border-subtle)] px-2.5 sm:px-4 py-1.5 transition-colors shadow-sm">
+      <div className="max-w-6xl mx-auto flex items-center justify-between gap-1.5 sm:gap-2">
         {/* MOTHERLAND Logo */}
         <button
           type="button"
@@ -42,17 +46,37 @@ export const Header: React.FC<HeaderProps> = ({
           className="flex items-center text-left min-h-[44px] focus:outline-none group flex-shrink-0"
           aria-label="MOTHERLAND Home"
         >
-          <MotherlandLogo size={38} showText={true} />
+          <MotherlandLogo size={36} showText={true} />
         </button>
 
         {/* Action Controls (Min 44px touch targets on mobile) */}
         <div className="flex items-center gap-1 sm:gap-2">
-          {/* Search */}
+          {/* Bangladesh Services Quick Entry */}
+          {onOpenBdServices && (
+            <button
+              type="button"
+              onClick={onOpenBdServices}
+              data-testid="header-bd-services-btn"
+              title="BANGLADESH SERVICES (বাংলাদেশ)"
+              aria-label="Bangladesh Services"
+              className={`h-10 px-2 sm:px-2.5 rounded-xl border flex items-center justify-center gap-1 text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
+                isBdServicesActive
+                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
+                  : 'bg-[var(--bg-surface)] hover:bg-emerald-500/10 border-[var(--border-subtle)] text-[var(--text-primary)]'
+              }`}
+            >
+              <Globe className={`w-4 h-4 ${isBdServicesActive ? 'text-white' : 'text-emerald-500'}`} />
+              <span className="hidden sm:inline">বাংলাদেশ</span>
+            </button>
+          )}
+
+          {/* Always-Accessible Universal Search */}
           <button
             type="button"
             onClick={onOpenSearch}
-            className="w-10 h-10 rounded-xl bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex items-center justify-center text-[var(--text-primary)] transition-colors"
-            title="Search videos and posts"
+            data-testid="header-search-btn"
+            className="w-10 h-10 rounded-xl bg-[var(--bg-surface)] hover:bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex items-center justify-center text-[var(--text-primary)] transition-colors shrink-0"
+            title="Search videos, shorts, and creators"
             aria-label="Search"
           >
             <Search className="w-4.5 h-4.5" />

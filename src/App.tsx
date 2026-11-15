@@ -15,6 +15,11 @@ import {
   Bookmark,
   ArrowLeft,
   LogIn,
+  History,
+  MessageCircle,
+  Users,
+  Bell,
+  Globe,
 } from 'lucide-react';
 import { api } from './api';
 import type {
@@ -50,60 +55,34 @@ import { SocialAppsHub } from './components/social-apps/SocialAppsHub';
 import { MotherlandLogo } from './components/layout/MotherlandLogo';
 import { YouTubeFullExperience } from './components/video/YouTubeFullExperience';
 import { CallOverlay } from './components/wave/CallOverlay';
+import { PullToRefresh } from './components/common/PullToRefresh';
+import { SearchModal } from './components/SearchModal';
+import { WatchHistoryModal } from './components/WatchHistoryModal';
+import { CreatorProfileModal, CreatorProfileTarget } from './components/CreatorProfileModal';
+import { BangladeshServicesView } from './components/BangladeshServicesView';
+import { ServerManagementModal } from './components/ServerManagementModal';
 import { useWebRTC } from './hooks/useWebRTC';
 import {
   useBackHandler,
   subscribeEdgeSwipeProgress,
 } from './hooks/useBackNavigation';
 import { useRealtime, RealtimeEvent } from './hooks/useRealtime';
-import { filterUnsuppressed, WATCH_SUPPRESSED_EVENT } from './services/watchSuppression';
+import {
+  filterUnsuppressed,
+  recordShownFeedIds,
+  setWatchSuppressionUserId,
+  WATCH_SUPPRESSED_EVENT,
+} from './services/watchSuppression';
 import { parseGoogleOAuthHashRedirect } from './services/youtubeAuthService';
 import { playNotificationChime, playMessageChime } from './utils/motherlandSoundEngine';
 
-const INSTANT_FEED_CACHE_KEY = 'motherland_instant_cache_v1';
+const LEGACY_FEED_CACHE_KEY = 'motherland_instant_cache_v1';
 
-interface InstantFeedCache {
-  posts: Post[];
-  stories: Story[];
-  shorts: ShortVideo[];
-  longVideos: LongVideo[];
-}
-
-function readInstantFeedCache(): InstantFeedCache {
-  if (typeof window === 'undefined') {
-    return { posts: [], stories: [], shorts: [], longVideos: [] };
+function isEligibleShortVideo(short: ShortVideo): boolean {
+  if (typeof short.durationSeconds === 'number') {
+    return short.durationSeconds > 0 && short.durationSeconds <= 180;
   }
-  try {
-    const raw = localStorage.getItem(INSTANT_FEED_CACHE_KEY);
-    if (!raw) return { posts: [], stories: [], shorts: [], longVideos: [] };
-    const parsed = JSON.parse(raw);
-    return {
-      posts: Array.isArray(parsed?.posts) ? filterUnsuppressed(parsed.posts, true) : [],
-      stories: Array.isArray(parsed?.stories) ? parsed.stories : [],
-      shorts: Array.isArray(parsed?.shorts) ? filterUnsuppressed(parsed.shorts) : [],
-      longVideos: Array.isArray(parsed?.longVideos) ? filterUnsuppressed(parsed.longVideos) : [],
-    };
-  } catch {
-    return { posts: [], stories: [], shorts: [], longVideos: [] };
-  }
-}
-
-function writeInstantFeedCache(cache: InstantFeedCache): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(
-      INSTANT_FEED_CACHE_KEY,
-      JSON.stringify({
-        savedAt: Date.now(),
-        posts: cache.posts.slice(0, 15),
-        stories: cache.stories.slice(0, 20),
-        shorts: cache.shorts.slice(0, 20),
-        longVideos: cache.longVideos.slice(0, 20),
-      })
-    );
-  } catch {
-    // ignore storage quota
-  }
+  return short.source !== 'youtube';
 }
 
 export default function App() {
@@ -133,20 +112,19 @@ export default function App() {
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
-  // Core Data (hydrated instantaneously from cache for zero startup lag)
-  const initialCachedRef = useRef<InstantFeedCache>(readInstantFeedCache());
+  // Core Data (always fetched fresh on app launch — never restored from stale feed cache)
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [authToken, setAuthToken] = useState<string>(() => api.getToken() || '');
-  const [posts, setPosts] = useState<Post[]>(initialCachedRef.current.posts);
-  const [stories, setStories] = useState<Story[]>(initialCachedRef.current.stories);
-  const [shorts, setShorts] = useState<ShortVideo[]>(initialCachedRef.current.shorts);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [stories, setStories] = useState<Story[]>([]);
+  const [shorts, setShorts] = useState<ShortVideo[]>([]);
   const [shortsPage, setShortsPage] = useState(1);
   const [shortsNextPageToken, setShortsNextPageToken] = useState<string | null>(null);
   const [shortsHasMore, setShortsHasMore] = useState(true);
   const [shortsExhaustedNotice, setShortsExhaustedNotice] = useState('');
   const [isLoadingMoreShorts, setIsLoadingMoreShorts] = useState(false);
 
-  const [longVideos, setLongVideos] = useState<LongVideo[]>(initialCachedRef.current.longVideos);
+  const [longVideos, setLongVideos] = useState<LongVideo[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
   const [adapters, setAdapters] = useState<PlatformAdapterInfo[]>([]);
@@ -174,9 +152,7 @@ export default function App() {
 
   // Loading States (Never block initial render with a slow splash wall)
   const [isLoadingFeed, setIsLoadingFeed] = useState(false);
-  const [isFetchingInitialPosts, setIsFetchingInitialPosts] = useState(
-    initialCachedRef.current.posts.length === 0
-  );
+  const [isFetchingInitialPosts, setIsFetchingInitialPosts] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [homeFeedPage, setHomeFeedPage] = useState(1);
   const [isLoadingMorePosts, setIsLoadingMorePosts] = useState(false);
@@ -212,6 +188,10 @@ export default function App() {
   const [isPlatformHubOpen, setIsPlatformHubOpen] = useState(false);
   const [isSocialAppsOpen, setIsSocialAppsOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isWatchHistoryOpen, setIsWatchHistoryOpen] = useState(false);
+  const [isServerModalOpen, setIsServerModalOpen] = useState(false);
+  const [creatorTarget, setCreatorTarget] = useState<CreatorProfileTarget | null>(null);
   const [commentsDrawerState, setCommentsDrawerState] = useState<{
     isOpen: boolean;
     postId?: string;
@@ -379,6 +359,11 @@ export default function App() {
 
   // Initial Data Bootstrap (runs in parallel with OAuth hash completion, zero startup splash block)
   useEffect(() => {
+    try {
+      localStorage.removeItem(LEGACY_FEED_CACHE_KEY);
+    } catch {
+      // ignore
+    }
     parseGoogleOAuthHashRedirect()
       .then((gAuth) => {
         if (gAuth) {
@@ -389,11 +374,15 @@ export default function App() {
     bootstrapApp();
   }, []);
 
-  // Live 14-day watched suppression pruning across all feeds & shorts list
+  useEffect(() => {
+    setWatchSuppressionUserId(currentUser?.id || null);
+  }, [currentUser?.id]);
+
+  // Live 7-day watched suppression pruning across all feeds & shorts list
   useEffect(() => {
     const onSuppressed = () => {
       setPosts((prev) => filterUnsuppressed(prev, true));
-      setShorts((prev) => filterUnsuppressed(prev));
+      setShorts((prev) => filterUnsuppressed(prev).filter(isEligibleShortVideo));
       setLongVideos((prev) => filterUnsuppressed(prev));
     };
     window.addEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
@@ -403,8 +392,11 @@ export default function App() {
   const bootstrapApp = async () => {
     try {
       setAuthToken(api.getToken() || '');
+      const userData = await api.getCurrentUser().catch(() => ({ user: null }));
+      const resolvedUser = userData.user || null;
+      setWatchSuppressionUserId(resolvedUser?.id || null);
+
       const [
-        userData,
         ytData,
         adaptData,
         notifData,
@@ -414,23 +406,21 @@ export default function App() {
         convData,
         postsData,
       ] = await Promise.all([
-        api.getCurrentUser().catch(() => ({ user: null })),
         api.getYouTubeStatus().catch(() => ({ configured: false })),
         api.getPlatformAdapters().catch(() => ({ adapters: [] })),
         api.getToken() ? api.getNotifications().catch(() => ({ notifications: [] })) : Promise.resolve({ notifications: [] }),
         api.getStories().catch(() => ({ stories: [] })),
-        api.getShorts().catch(() => ({ shorts: [] })),
+        api.getShorts(false, 1, 12).catch(() => ({ shorts: [], nextPageToken: null, hasMore: true })),
         api.getLongVideos().catch(() => ({ videos: [] })),
         api.getToken() ? api.getConversations().catch(() => ({ totalUnread: 0 })) : Promise.resolve({ totalUnread: 0 }),
         api.getPosts(feedFilter, 'all', 1, 10).catch(() => ({ posts: [], hasMore: false })),
       ]);
 
       const nextStories = storiesData.stories || [];
-      const nextShorts = filterUnsuppressed(shortsData.shorts || []);
+      const nextShorts = filterUnsuppressed(shortsData.shorts || []).filter(isEligibleShortVideo);
       const nextLongVideos = filterUnsuppressed(longData.videos || []);
       const nextPosts = filterUnsuppressed(postsData.posts || [], true);
 
-      const resolvedUser = userData.user || null;
       let resolvedNotifs = notifData.notifications || [];
       let resolvedUnread = (convData as any).totalUnread || 0;
 
@@ -448,25 +438,21 @@ export default function App() {
       setYoutubeStatus(ytData);
       setAdapters(adaptData.adapters || []);
       setNotifications(resolvedNotifs);
+      setUnreadMessagesCount(resolvedUnread);
       setStories(nextStories);
       setShorts(nextShorts);
       setShortsPage(1);
-      setShortsNextPageToken(null);
-      setShortsHasMore(true);
+      setShortsNextPageToken((shortsData as any).nextPageToken || null);
+      setShortsHasMore((shortsData as any).hasMore !== false);
       setShortsExhaustedNotice('');
       setLongVideos(nextLongVideos);
-      setUnreadMessagesCount(resolvedUnread);
       setHomeFeedPage(1);
       setPosts(nextPosts);
       setHasMorePosts((postsData as any).hasMore !== false);
       lastAutoRefreshRef.current = Date.now();
 
-      writeInstantFeedCache({
-        posts: nextPosts,
-        stories: nextStories,
-        shorts: nextShorts,
-        longVideos: nextLongVideos,
-      });
+      recordShownFeedIds('home', nextPosts.map((p) => p.externalId || p.id));
+      recordShownFeedIds('shorts', nextShorts.map((s) => s.youtubeId || s.id));
     } catch (err) {
       console.error('Bootstrap error:', err);
     } finally {
@@ -483,6 +469,7 @@ export default function App() {
         const filtered = filterUnsuppressed(data.posts || [], true);
         setPosts(filtered);
         setHasMorePosts(data.hasMore !== false);
+        recordShownFeedIds('home', filtered.map((p) => p.externalId || p.id));
       }
     } catch (err) {
       console.error('Failed to load posts:', err);
@@ -497,6 +484,7 @@ export default function App() {
       const data = await api.getPosts(feedFilter, 'all', nextPage, 10);
       if (data.posts && data.posts.length > 0) {
         const filtered = filterUnsuppressed(data.posts, true);
+        recordShownFeedIds('home', filtered.map((p) => p.externalId || p.id));
         setPosts((prev) => {
           const seen = new Set(prev.map((p) => p.id));
           return [...prev, ...filtered.filter((p) => !seen.has(p.id))];
@@ -511,57 +499,21 @@ export default function App() {
     }
   };
 
-  // Continuous Cursor-Based Infinite Shorts Loader
+  // Continuous Cursor-Based Infinite Shorts Loader (Strict <=180s)
   const handleLoadMoreShorts = async () => {
     if (isLoadingMoreShorts || !shortsHasMore) return;
     setIsLoadingMoreShorts(true);
     try {
       const nextPage = shortsPage + 1;
-      const res = await api.getYouTubeFeed({
-        type: 'shorts',
-        pageToken: shortsNextPageToken || undefined,
-        page: nextPage,
-        pageSize: 12,
-      });
+      const res = await api.getShorts(false, nextPage, 12, shortsNextPageToken || '');
 
-      if (res.quotaExceeded) {
-        setShortsHasMore(false);
-        setShortsExhaustedNotice(
-          res.exhaustedReason || 'YouTube API quota limit reached for now. Please try again later.'
-        );
-        return;
-      }
-
-      const fetched: ShortVideo[] = filterUnsuppressed(
-        (res.items || []).map((item: any) => ({
-          id: item.id,
-          source: 'youtube' as const,
-          youtubeId: item.youtubeId || item.id,
-          videoUrl: '',
-          thumbnailUrl: item.thumbnailUrl,
-          title: item.title,
-          caption: item.title || '',
-          createdAt: item.publishedAt || new Date().toISOString(),
-          creator: {
-            id: item.channel?.id || 'yt',
-            name: item.channel?.title || 'YouTube Creator',
-            username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, ''),
-            avatar: item.channel?.avatar || '',
-          },
-          stats: {
-            views: item.stats?.views || 0,
-            likes: item.stats?.likes || 0,
-            comments: item.stats?.comments || 0,
-            shares: 0,
-          },
-          hashtags: [],
-        }))
-      );
+      const fetched = filterUnsuppressed(res.shorts || []).filter(isEligibleShortVideo);
 
       if (fetched.length > 0) {
+        recordShownFeedIds('shorts', fetched.map((s) => s.youtubeId || s.id));
         setShorts((prev) => {
-          const existingIds = new Set(prev.map((s) => s.id));
-          const unique = fetched.filter((s) => !existingIds.has(s.id));
+          const existingIds = new Set(prev.map((s) => s.youtubeId || s.id));
+          const unique = fetched.filter((s) => !existingIds.has(s.youtubeId || s.id));
           const merged = [...prev, ...unique];
           setShortsPlayerState((st) => (st.isOpen ? { ...st, list: merged } : st));
           return merged;
@@ -573,7 +525,6 @@ export default function App() {
       setShortsNextPageToken(nextToken);
       if (res.hasMore === false && !nextToken) {
         setShortsHasMore(false);
-        if (res.exhaustedReason) setShortsExhaustedNotice(res.exhaustedReason);
       }
     } catch (err) {
       console.error('Load more shorts error:', err);
@@ -582,7 +533,7 @@ export default function App() {
     }
   };
 
-  // Automatic Background Auto-Refresh (on focus/visibility + every 90s when not actively watching)
+  // Automatic Background Auto-Refresh (on app re-entry / focus + every 90s when not actively watching)
   useEffect(() => {
     const runSilentAutoRefresh = () => {
       if (document.visibilityState !== 'visible') return;
@@ -594,8 +545,14 @@ export default function App() {
         .then((s) => setStories(s.stories || []))
         .catch(() => {});
       api
-        .getShorts()
-        .then((s) => setShorts(filterUnsuppressed(s.shorts || [])))
+        .getShorts(false, 1, 12)
+        .then((s) => {
+          const clean = filterUnsuppressed(s.shorts || []).filter(isEligibleShortVideo);
+          setShorts(clean);
+          setShortsPage(1);
+          setShortsNextPageToken(s.nextPageToken || null);
+          setShortsHasMore(s.hasMore !== false);
+        })
         .catch(() => {});
       if (activeNav === 'video') {
         setVideoRefreshSignal((s) => s + 1);
@@ -607,7 +564,7 @@ export default function App() {
     };
 
     const onFocusOrVisibility = () => {
-      if (document.visibilityState === 'visible' && Date.now() - lastAutoRefreshRef.current > 45000) {
+      if (document.visibilityState === 'visible' && Date.now() - lastAutoRefreshRef.current > 15000) {
         runSilentAutoRefresh();
       }
     };
@@ -730,6 +687,25 @@ export default function App() {
     } catch (err) {
       console.error('Delete post error:', err);
     }
+  };
+
+  const handleEditPost = async (postId: string, content: string, audience?: Post['audience']) => {
+    if (!requireSignedIn()) return;
+    const res = await api.updatePost(postId, { content, ...(audience ? { audience } : {}) });
+    if (res.post) {
+      setPosts((prev) => prev.map((p) => (p.id === postId ? res.post : p)));
+    }
+  };
+
+  const handleReportPost = async (postId: string, reason: string) => {
+    if (!requireSignedIn()) return;
+    await api.reportPost(postId, { reason });
+  };
+
+  const handleBlockUser = async (userId: string) => {
+    if (!requireSignedIn()) return;
+    await api.toggleBlock(userId);
+    setPosts((prev) => prev.filter((p) => p.author.id !== userId));
   };
 
   const handleStoryViewed = async (storyId: string) => {
@@ -898,6 +874,7 @@ export default function App() {
           unreadNotifications={unreadNotificationsCount}
           unreadMessages={unreadMessagesCount}
           isYouTubeActive={false}
+          isBdServicesActive={activeNav === 'bd_services'}
           onOpenNotifications={() => {
             if (requireSignedIn()) {
               refreshNotifications();
@@ -910,10 +887,7 @@ export default function App() {
               setIsMessagesOpen(true);
             }
           }}
-          onOpenSearch={() => {
-            setActiveNav('video');
-            setVideoRefreshSignal((s) => s + 1);
-          }}
+          onOpenSearch={() => setIsSearchOpen(true)}
           onOpenProfile={() => {
             setActiveNav('profile');
             loadPosts(feedFilter, true);
@@ -923,6 +897,10 @@ export default function App() {
           onOpenYouTube={() => {
             setActiveNav('youtube');
             setYtRefreshSignal((s) => s + 1);
+          }}
+          onOpenBdServices={() => {
+            setActiveNav('bd_services');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
           onLogoClick={() => {
             setActiveNav('home');
@@ -935,146 +913,220 @@ export default function App() {
       {/* Main Content Area */}
       <main className={`flex-1 ${activeNav === 'youtube' ? 'pb-0' : hasMiniPlayer ? 'pb-40' : 'pb-24'}`}>
         {/* ========================================================= */}
-        {/* TAB 1: HOME FEED                                          */}
+        {/* TAB 1: HOME FEED (with Facebook-Style Pull-to-Refresh)    */}
         {/* ========================================================= */}
         {activeNav === 'home' && (
-          <div className="max-w-6xl mx-auto px-2.5 sm:px-4 py-3.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-5">
-            {/* Center Feed Column */}
-            <div className="lg:col-span-8 space-y-4">
-              {/* Stories Carousel */}
-              <div className="ml-glass rounded-2xl p-2.5">
-                <StoriesBar
-                  currentUser={currentUser}
-                  stories={stories}
-                  onCreateStory={() => {
-                    if (requireSignedIn()) setCreateModalState({ isOpen: true, initialMode: 'story' });
-                  }}
-                  onStoryViewed={handleStoryViewed}
-                  onDeleteStory={handleDeleteStory}
-                />
-              </div>
-
-              {/* Quick Create Box (or Sign-In Prompt for Guests) */}
-              <div className="ml-glass rounded-2xl p-3.5 space-y-3">
-                {currentUser ? (
-                  <>
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setActiveNav('profile')}
-                        className="flex-shrink-0"
-                      >
-                        <img
-                          src={currentUser.avatar}
-                          alt={currentUser.displayName}
-                          className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)]"
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCreateModalState({ isOpen: true, initialMode: 'post' })}
-                        className="flex-1 min-h-[42px] bg-[var(--bg-surface-alt)] hover:opacity-90 border border-[var(--border-subtle)] rounded-full px-4 py-2 text-left text-xs sm:text-sm text-[var(--text-secondary)] transition-all"
-                      >
-                        What's on your mind, {firstName}?
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[var(--border-subtle)]">
-                      <button
-                        type="button"
-                        onClick={() => setCreateModalState({ isOpen: true, initialMode: 'post' })}
-                        className="min-h-[42px] rounded-xl hover:bg-[var(--bg-surface-alt)] flex items-center justify-center gap-1.5 text-xs font-bold text-[var(--text-primary)] transition-colors"
-                      >
-                        <ImageIcon className="w-4 h-4 text-[var(--accent-primary)]" />
-                        <span>Photo</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setVideoPublishState({ isOpen: true, initialDestination: 'select' })
-                        }
-                        className="min-h-[42px] rounded-xl hover:bg-[var(--bg-surface-alt)] flex items-center justify-center gap-1.5 text-xs font-bold text-[var(--text-primary)] transition-colors"
-                      >
-                        <Film className="w-4 h-4 text-[var(--accent-gold)]" />
-                        <span>Video</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setCreateModalState({ isOpen: true, initialMode: 'story' })}
-                        className="min-h-[42px] rounded-xl hover:bg-[var(--bg-surface-alt)] flex items-center justify-center gap-1.5 text-xs font-bold text-[var(--text-primary)] transition-colors"
-                      >
-                        <Sparkles className="w-4 h-4 text-[var(--accent-primary)]" />
-                        <span>Story</span>
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-bold text-[var(--text-primary)]">
-                        Welcome to MOTHERLAND
-                      </p>
-                      <p className="text-xs text-[var(--text-secondary)]">
-                        Sign in to publish posts, add friends, and chat in real time.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsAuthOpen(true)}
-                      className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap"
-                    >
-                      <LogIn className="w-3.5 h-3.5" />
-                      <span>Sign In</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Feed Filter Tabs (All, For You, MOTHERLAND, Saved) */}
-              <div className="flex items-center justify-between gap-2 px-0.5">
-                <div className="flex items-center gap-1 bg-[var(--bg-glass)] backdrop-blur-md p-1 rounded-xl border border-[var(--border-subtle)] overflow-x-auto no-scrollbar">
-                  {(
-                    [
-                      { key: 'all', label: 'All' },
-                      { key: 'for_you', label: 'For You' },
-                      { key: 'motherland', label: 'MOTHERLAND' },
-                      { key: 'saved', label: 'Saved' },
-                    ] as const
-                  ).map((tab) => (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      data-testid={`feed-tab-${tab.key}`}
-                      onClick={() => {
-                        if (tab.key === 'saved' && !requireSignedIn()) return;
-                        setFeedFilter(tab.key);
-                        loadPosts(tab.key, true);
-                      }}
-                      className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
-                        feedFilter === tab.key
-                          ? 'bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] shadow-sm'
-                          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
+          <PullToRefresh onRefresh={refreshAll} disabled={isRefreshing}>
+            <div className="max-w-6xl mx-auto px-2.5 sm:px-4 py-3.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-5">
+              {/* Center Feed Column */}
+              <div className="lg:col-span-8 space-y-4">
+                {/* Stories Carousel */}
+                <div className="ml-glass rounded-2xl p-2.5">
+                  <StoriesBar
+                    currentUser={currentUser}
+                    stories={stories}
+                    onCreateStory={() => {
+                      if (requireSignedIn()) setCreateModalState({ isOpen: true, initialMode: 'story' });
+                    }}
+                    onStoryViewed={handleStoryViewed}
+                    onDeleteStory={handleDeleteStory}
+                  />
                 </div>
 
-                <button
-                  type="button"
-                  onClick={refreshAll}
-                  disabled={isRefreshing}
-                  className="w-10 h-10 rounded-xl ml-glass hover:bg-[var(--bg-surface-alt)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-center transition-colors flex-shrink-0"
-                  title="Refresh Feed"
+                {/* Quick Create Box (or Sign-In Prompt for Guests) */}
+                <div className="ml-glass rounded-2xl p-3.5 space-y-3">
+                  {currentUser ? (
+                    <>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setActiveNav('profile')}
+                          className="flex-shrink-0"
+                        >
+                          <img
+                            src={currentUser.avatar}
+                            alt={currentUser.displayName}
+                            className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)]"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCreateModalState({ isOpen: true, initialMode: 'post' })}
+                          className="flex-1 min-h-[42px] bg-[var(--bg-surface-alt)] hover:opacity-90 border border-[var(--border-subtle)] rounded-full px-4 py-2 text-left text-xs sm:text-sm text-[var(--text-secondary)] transition-all"
+                        >
+                          What's on your mind, {firstName}?
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[var(--border-subtle)]">
+                        <button
+                          type="button"
+                          onClick={() => setCreateModalState({ isOpen: true, initialMode: 'post' })}
+                          className="min-h-[42px] rounded-xl hover:bg-[var(--bg-surface-alt)] flex items-center justify-center gap-1.5 text-xs font-bold text-[var(--text-primary)] transition-colors"
+                        >
+                          <ImageIcon className="w-4 h-4 text-[var(--accent-primary)]" />
+                          <span>Photo</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setVideoPublishState({ isOpen: true, initialDestination: 'select' })
+                          }
+                          className="min-h-[42px] rounded-xl hover:bg-[var(--bg-surface-alt)] flex items-center justify-center gap-1.5 text-xs font-bold text-[var(--text-primary)] transition-colors"
+                        >
+                          <Film className="w-4 h-4 text-[var(--accent-gold)]" />
+                          <span>Video</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setCreateModalState({ isOpen: true, initialMode: 'story' })}
+                          className="min-h-[42px] rounded-xl hover:bg-[var(--bg-surface-alt)] flex items-center justify-center gap-1.5 text-xs font-bold text-[var(--text-primary)] transition-colors"
+                        >
+                          <Sparkles className="w-4 h-4 text-[var(--accent-primary)]" />
+                          <span>Story</span>
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-bold text-[var(--text-primary)]">
+                          Welcome to MOTHERLAND
+                        </p>
+                        <p className="text-xs text-[var(--text-secondary)]">
+                          Sign in to publish posts, add friends, and chat in real time.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsAuthOpen(true)}
+                        className="min-h-[42px] px-4 py-2 rounded-xl bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] text-[var(--accent-primary-contrast)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Sign In</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Compact Home Social & BANGLADESH SERVICES Quick Access Bar */}
+                <div
+                  data-testid="home-social-bd-bar"
+                  className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5"
                 >
-                  <RefreshCw
-                    className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[var(--accent-primary)]' : ''}`}
-                  />
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveNav('bd_services')}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-500 text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>বাংলাদেশ</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (requireSignedIn()) {
+                        refreshUnreadMessages();
+                        setIsMessagesOpen(true);
+                      }
+                    }}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-primary-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                    <span>Messages</span>
+                    {currentUser && unreadMessagesCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-gold)] text-[#13161C] text-[10px] font-bold">
+                        {unreadMessagesCount}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveNav('friends')}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-primary-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <Users className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                    <span>Friends</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (requireSignedIn()) {
+                        refreshNotifications();
+                        setIsNotificationsOpen(true);
+                      }
+                    }}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-gold-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <Bell className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
+                    <span>Alerts</span>
+                    {currentUser && unreadNotificationsCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[10px] font-bold">
+                        {unreadNotificationsCount}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (requireSignedIn()) setIsWatchHistoryOpen(true);
+                    }}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-primary-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <History className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
+                    <span>Watch History</span>
+                  </button>
+                </div>
+
+                {/* Feed Filter Tabs (All, For You, MOTHERLAND, Saved) */}
+                <div className="flex items-center justify-between gap-2 px-0.5">
+                  <div className="flex items-center gap-1 bg-[var(--bg-glass)] backdrop-blur-md p-1 rounded-xl border border-[var(--border-subtle)] overflow-x-auto no-scrollbar">
+                    {(
+                      [
+                        { key: 'all', label: 'All' },
+                        { key: 'for_you', label: 'For You' },
+                        { key: 'motherland', label: 'MOTHERLAND' },
+                        { key: 'saved', label: 'Saved' },
+                      ] as const
+                    ).map((tab) => (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        data-testid={`feed-tab-${tab.key}`}
+                        onClick={() => {
+                          if (tab.key === 'saved' && !requireSignedIn()) return;
+                          setFeedFilter(tab.key);
+                          loadPosts(tab.key, true);
+                        }}
+                        className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
+                          feedFilter === tab.key
+                            ? 'bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] shadow-sm'
+                            : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={refreshAll}
+                    disabled={isRefreshing}
+                    className="w-10 h-10 rounded-xl ml-glass hover:bg-[var(--bg-surface-alt)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-center transition-colors flex-shrink-0"
+                    title="Refresh Feed"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[var(--accent-primary)]' : ''}`}
+                    />
+                  </button>
+                </div>
 
               {/* Feed Stream with Interspersed Shorts Discovery Carousels */}
               {isFetchingInitialPosts && posts.length === 0 ? (
@@ -1138,6 +1190,19 @@ export default function App() {
                           onToggleSave={handleToggleSave}
                           onSharePost={handleSharePost}
                           onDeletePost={handleDeletePost}
+                          onEditPost={handleEditPost}
+                          onReportPost={handleReportPost}
+                          onBlockUser={handleBlockUser}
+                          onOpenCreator={(c) =>
+                            setCreatorTarget({
+                              userId: c.id,
+                              displayName: c.name,
+                              username: c.username,
+                              avatar: c.avatar,
+                              source: c.source || 'motherland',
+                              channelId: c.id,
+                            })
+                          }
                         />
                         {showShortsAfter && renderHomeShortsStrip(idx)}
                       </React.Fragment>
@@ -1303,7 +1368,8 @@ export default function App() {
                 </button>
               </div>
             </div>
-          </div>
+            </div>
+          </PullToRefresh>
         )}
 
         {/* ========================================================= */}
@@ -1362,6 +1428,10 @@ export default function App() {
                 setVideoPublishState({ isOpen: true, initialDestination: 'select' });
               }
             }}
+            onOpenWatchHistory={() => {
+              if (requireSignedIn()) setIsWatchHistoryOpen(true);
+            }}
+            onOpenCreator={(target) => setCreatorTarget(target)}
             refreshSignal={videoRefreshSignal}
           />
         </div>
@@ -1398,6 +1468,15 @@ export default function App() {
             }}
             onOpenSocialApps={() => setIsSocialAppsOpen(true)}
             onOpenPlatformHub={() => setIsPlatformHubOpen(true)}
+            onOpenWatchHistory={() => {
+              if (requireSignedIn()) setIsWatchHistoryOpen(true);
+            }}
+            onOpenBdServices={() => {
+              setActiveNav('bd_services');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            onOpenServerManagement={() => setIsServerModalOpen(true)}
+            onUserUpdated={(updated) => setCurrentUser(updated)}
             onOpenAuth={() => setIsAuthOpen(true)}
             onLogout={handleLogout}
           />
@@ -1421,6 +1500,19 @@ export default function App() {
             onToggleSave={handleToggleSave}
             onSharePost={handleSharePost}
             onDeletePost={handleDeletePost}
+            onEditPost={handleEditPost}
+            onReportPost={handleReportPost}
+            onBlockUser={handleBlockUser}
+            onOpenCreator={(c) =>
+              setCreatorTarget({
+                userId: c.id,
+                displayName: c.name,
+                username: c.username,
+                avatar: c.avatar,
+                source: c.source || 'motherland',
+                channelId: c.id,
+              })
+            }
             onOpenAuthModal={() => setIsAuthOpen(true)}
             onLogout={handleLogout}
             onAccountDeleted={handleAccountDeleted}
@@ -1434,6 +1526,17 @@ export default function App() {
           <YouTubeFullExperience
             onBackToMotherland={() => setActiveNav('home')}
             refreshSignal={ytRefreshSignal}
+          />
+        )}
+
+        {/* ========================================================= */}
+        {/* TAB 7: BANGLADESH SERVICES (বাংলাদেশ)                     */}
+        {/* ========================================================= */}
+        {activeNav === 'bd_services' && (
+          <BangladeshServicesView
+            currentUser={currentUser}
+            onBack={() => setActiveNav('home')}
+            onOpenAuth={() => setIsAuthOpen(true)}
           />
         )}
       </main>
@@ -1463,16 +1566,19 @@ export default function App() {
           activeTab={shortsPlayerState.isOpen ? 'shorts' : activeNav}
           onTabChange={(tab) => {
             if (tab === 'shorts') {
-              const latestUnsuppressed = filterUnsuppressed(shorts);
+              const latestUnsuppressed = filterUnsuppressed(shorts).filter(isEligibleShortVideo);
               if (latestUnsuppressed.length > 0) {
                 openShortsPlayer(latestUnsuppressed, 0);
               }
               api
-                .getShorts()
+                .getShorts(false, 1, 12)
                 .then((res) => {
-                  const fresh = filterUnsuppressed(res.shorts || []);
+                  const fresh = filterUnsuppressed(res.shorts || []).filter(isEligibleShortVideo);
                   if (fresh.length > 0) {
                     setShorts(fresh);
+                    setShortsPage(1);
+                    setShortsNextPageToken(res.nextPageToken || null);
+                    setShortsHasMore(res.hasMore !== false);
                     setShortsPlayerState((prev) =>
                       prev.isOpen && prev.list.length > 0
                         ? prev
@@ -1492,7 +1598,16 @@ export default function App() {
               window.scrollTo({ top: 0, behavior: 'smooth' });
               loadPosts(feedFilter, true);
               api.getStories().then((s) => setStories(s.stories || [])).catch(() => {});
-              api.getShorts().then((s) => setShorts(filterUnsuppressed(s.shorts || []))).catch(() => {});
+              api
+                .getShorts(false, 1, 12)
+                .then((s) => {
+                  const fresh = filterUnsuppressed(s.shorts || []).filter(isEligibleShortVideo);
+                  setShorts(fresh);
+                  setShortsPage(1);
+                  setShortsNextPageToken(s.nextPageToken || null);
+                  setShortsHasMore(s.hasMore !== false);
+                })
+                .catch(() => {});
             } else if (tab === 'friends') {
               setFriendsRefreshSignal((s) => s + 1);
             } else if (tab === 'video') {
@@ -1566,6 +1681,7 @@ export default function App() {
         onOpenComments={({ postId, youtubeVideoId, title }) =>
           setCommentsDrawerState({ isOpen: true, postId, youtubeVideoId, title })
         }
+        onOpenCreator={(target) => setCreatorTarget(target)}
       />
 
       {/* 6. Comments Drawer */}
@@ -1577,6 +1693,16 @@ export default function App() {
         title={commentsDrawerState.title}
         currentUser={currentUser}
         onOpenAuth={() => setIsAuthOpen(true)}
+        onOpenCreator={(c) =>
+          setCreatorTarget({
+            userId: c.id,
+            displayName: c.name,
+            username: c.username,
+            avatar: c.avatar,
+            source: c.source || 'motherland',
+            channelId: c.id,
+          })
+        }
       />
 
       {/* 7. Messenger Drawer */}
@@ -1639,6 +1765,106 @@ export default function App() {
         onToggleCamera={toggleCamera}
         onSwitchCamera={switchCamera}
         onSwitchToAudioOnly={switchToAudioOnly}
+      />
+
+      {/* 13. Universal Always-Accessible Search Modal */}
+      <SearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        onWatchVideo={(video) => {
+          setIsSearchOpen(false);
+          setActiveWatchVideo(video);
+          setIsWatchMinimized(false);
+          setActiveNav('video');
+        }}
+        onOpenShortsPlayer={(list, idx) => {
+          setIsSearchOpen(false);
+          openShortsPlayer(list, idx);
+        }}
+        onOpenCreator={(user) => {
+          setIsSearchOpen(false);
+          setCreatorTarget({
+            userId: user.id,
+            displayName: user.displayName,
+            username: user.username,
+            avatar: user.avatar,
+            source: 'motherland',
+          });
+        }}
+      />
+
+      {/* 14. Watch History Modal (Revisit 7-Day Suppressed Videos) */}
+      <WatchHistoryModal
+        isOpen={isWatchHistoryOpen}
+        onClose={() => setIsWatchHistoryOpen(false)}
+        onPlayHistoryItem={(item) => {
+          setIsWatchHistoryOpen(false);
+          if (item.videoType === 'short') {
+            openShortsPlayer(
+              [
+                {
+                  id: item.videoId,
+                  source: item.source === 'youtube' ? 'youtube' : 'motherland',
+                  youtubeId: item.youtubeId,
+                  videoUrl: '',
+                  thumbnailUrl: item.thumbnailUrl || '',
+                  title: item.title,
+                  caption: item.title,
+                  hashtags: [],
+                  creator: {
+                    id: 'history',
+                    name: item.channelTitle || 'Creator',
+                    username: 'creator',
+                    avatar: '',
+                  },
+                  stats: { likes: 0, comments: 0, shares: 0, views: 0 },
+                  createdAt: item.lastViewedAt,
+                },
+              ],
+              0
+            );
+          } else {
+            setActiveWatchVideo({
+              id: item.videoId,
+              source: item.source === 'youtube' ? 'youtube' : 'motherland',
+              youtubeId: item.youtubeId,
+              thumbnailUrl: item.thumbnailUrl || '',
+              title: item.title,
+              description: '',
+              duration: item.duration || '0:00',
+              channel: {
+                id: 'history',
+                title: item.channelTitle || 'Creator',
+                avatar: '',
+              },
+              stats: { views: 0, likes: 0, comments: 0 },
+              publishedAt: new Date(item.lastViewedAt).toLocaleDateString(),
+            });
+            setIsWatchMinimized(false);
+            setActiveNav('video');
+          }
+        }}
+      />
+
+      {/* 15. Clickable Creator Profile Modal */}
+      <CreatorProfileModal
+        target={creatorTarget}
+        currentUser={currentUser}
+        onClose={() => setCreatorTarget(null)}
+        onOpenAuth={() => setIsAuthOpen(true)}
+        onOpenChatWithUser={(userId) => {
+          setCreatorTarget(null);
+          if (!requireSignedIn()) return;
+          setChatTargetUserId(userId);
+          setIsMessagesOpen(true);
+        }}
+      />
+
+      {/* 16. Multi-Server Registry & Owner Config Chat Modal */}
+      <ServerManagementModal
+        isOpen={isServerModalOpen}
+        onClose={() => setIsServerModalOpen(false)}
+        currentUser={currentUser}
       />
     </div>
   );

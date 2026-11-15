@@ -77,12 +77,15 @@ export type ReactionType = 'like' | 'love' | 'care' | 'haha' | 'wow' | 'sad' | '
 export interface PostComment {
   id: string;
   postId: string;
+  parentId?: string;
   userId: string;
   userDisplayName: string;
   userUsername: string;
   userAvatar: string;
   text: string;
   createdAt: string;
+  isEdited?: boolean;
+  editedAt?: string;
   likesCount: number;
   isLiked?: boolean;
   replies?: PostComment[];
@@ -130,6 +133,8 @@ export interface Post {
   hashtags: string[];
   audience: 'public' | 'friends' | 'only_me';
   createdAt: string;
+  isEdited?: boolean;
+  editedAt?: string;
   stats: {
     likes: number;
     comments: number;
@@ -172,6 +177,8 @@ export interface ShortVideo {
   title: string;
   caption: string;
   hashtags: string[];
+  durationSeconds?: number;
+  aspectRatio?: string;
   creator: {
     id: string;
     name: string;
@@ -550,4 +557,92 @@ export interface PublishingJob {
     error?: string;
   }[];
   createdAt: string;
+}
+
+export type ManagedServiceDomain =
+  | 'main_app'
+  | 'video'
+  | 'messaging'
+  | 'calls'
+  | 'bd_services'
+  | 'dream_world';
+
+export interface ServerRegistryEntry {
+  id: string;
+  name: string;
+  baseUrl: string;
+  healthPath?: string;
+  wsUrl?: string;
+  environment?: 'production' | 'staging' | 'local' | 'isolated_game';
+  assignedServices: ManagedServiceDomain[];
+  enabled: boolean;
+  isPrimary: boolean;
+  isolated?: boolean;
+  lastHealthStatus?: 'healthy' | 'degraded' | 'offline' | 'unknown';
+  lastLatencyMs?: number | null;
+  lastCheckedAt?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServerSwitchHistoryEntry {
+  id: string;
+  action: 'create' | 'update' | 'delete' | 'set_primary' | 'rollback' | 'toggle' | 'health_check' | 'chat_command';
+  serverId: string;
+  serverName: string;
+  previousPrimaryId?: string;
+  newPrimaryId?: string;
+  actorId: string;
+  actorUsername: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface AdminConfigChatMessage {
+  id: string;
+  role: 'owner' | 'system';
+  senderId?: string;
+  senderName?: string;
+  text: string;
+  parsedIntent?: {
+    action: string;
+    targetServerId?: string;
+    url?: string;
+    requiresConfirmation?: boolean;
+    confirmed?: boolean;
+  };
+  createdAt: string;
+}
+
+export type BangladeshServiceCategoryId =
+  | 'gov_nid_passport'
+  | 'education'
+  | 'utilities'
+  | 'mfs'
+  | 'banking'
+  | 'loan_financing'
+  | 'health_emergency'
+  | 'transport_ticketing'
+  | 'jobs_career'
+  | 'postal_weather';
+
+export interface BangladeshServiceItem {
+  id: string;
+  category: BangladeshServiceCategoryId;
+  titleEn: string;
+  titleBn: string;
+  providerEn: string;
+  providerBn: string;
+  descriptionBn: string;
+  descriptionEn: string;
+  url: string;
+  domain: string;
+  badgeType: 'official_gov' | 'verified_operator' | 'central_bank' | 'emergency';
+  requiresLogin: boolean;
+  officialFeeInfo: string;
+  hotline?: string;
+  requiresAdult?: boolean;
+  allowIframe?: boolean;
+  keywords: string[];
 }

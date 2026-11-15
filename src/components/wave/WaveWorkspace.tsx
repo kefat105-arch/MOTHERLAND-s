@@ -141,6 +141,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
 
   // Left navigation tabs & filters
   const [mainTab, setMainTab] = useState<'chats' | 'groups' | 'requests' | 'calls'>('chats');
+  const [messagingChannel, setMessagingChannel] = useState<'wave' | 'whatsapp' | 'messenger' | 'instagram' | 'tiktok'>('wave');
   const [subFilter, setSubFilter] = useState<'all' | 'unread' | 'pinned' | 'archived'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchedPeople, setSearchedPeople] = useState<UserProfile[]>([]);
@@ -828,6 +829,32 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
             />
           </div>
 
+          {/* Messenger Hub Channel Filter (WAVE + Official External Bridge Status) */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+            {(
+              [
+                { id: 'wave', label: 'WAVE' },
+                { id: 'whatsapp', label: 'WhatsApp' },
+                { id: 'messenger', label: 'Messenger' },
+                { id: 'instagram', label: 'Instagram' },
+                { id: 'tiktok', label: 'TikTok' },
+              ] as const
+            ).map((ch) => (
+              <button
+                key={ch.id}
+                type="button"
+                onClick={() => setMessagingChannel(ch.id)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition whitespace-nowrap cursor-pointer border ${
+                  messagingChannel === ch.id
+                    ? 'bg-[var(--ml-accent-teal)] text-white border-transparent'
+                    : 'bg-[var(--ml-surface-soft)] text-[var(--ml-text-secondary)] border-[var(--ml-border)] hover:text-[var(--ml-text-primary)]'
+                }`}
+              >
+                {ch.label}
+              </button>
+            ))}
+          </div>
+
           {/* Primary Wave Navigation Tabs */}
           <div className="grid grid-cols-4 gap-1 bg-[var(--ml-surface-soft)] p-1 rounded-xl border border-[var(--ml-border)]">
             {[
@@ -840,6 +867,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                 key={t.id}
                 type="button"
                 onClick={() => {
+                  setMessagingChannel('wave');
                   setMainTab(t.id as any);
                   if (t.id === 'calls') {
                     api
@@ -849,7 +877,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                   }
                 }}
                 className={`py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-                  mainTab === t.id
+                  mainTab === t.id && messagingChannel === 'wave'
                     ? 'bg-[var(--ml-accent-teal)] text-white shadow-sm'
                     : 'text-[var(--ml-text-secondary)] hover:text-[var(--ml-text-primary)]'
                 }`}
@@ -859,7 +887,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
             ))}
           </div>
 
-          {(mainTab === 'chats' || mainTab === 'groups') && (
+          {messagingChannel === 'wave' && (mainTab === 'chats' || mainTab === 'groups') && (
             <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
               {(['all', 'unread', 'pinned', 'archived'] as const).map((f) => (
                 <button
@@ -933,8 +961,38 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
             </div>
           )}
 
-          {/* Calls History List */}
-          {mainTab === 'calls' ? (
+          {/* External Messaging Channel Official API Status (Never Fabricates Fake Chats) */}
+          {messagingChannel !== 'wave' ? (
+            <div className="p-4 m-1 rounded-2xl bg-[var(--ml-surface-soft)] border border-[var(--ml-border)] space-y-2.5 text-left">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[var(--ml-accent-teal)] shrink-0" />
+                <h4 className="text-xs font-bold text-[var(--ml-text-primary)] capitalize">
+                  {messagingChannel === 'whatsapp' ? 'WhatsApp Business Cloud API' : `${messagingChannel} Messaging API`}
+                </h4>
+              </div>
+              <p className="text-[11px] text-[var(--ml-text-secondary)] leading-relaxed">
+                {messagingChannel === 'whatsapp'
+                  ? 'Requires verified Meta Business Cloud API webhook & Business Phone Number ID to sync conversations.'
+                  : messagingChannel === 'messenger'
+                  ? 'Requires Meta App Review with pages_messaging OAuth permission to bridge external chats.'
+                  : messagingChannel === 'instagram'
+                  ? 'Requires Instagram Professional account & instagram_manage_messages OAuth token.'
+                  : 'TikTok Third-Party Direct Message API access is restricted to approved official TikTok partner apps.'}
+              </p>
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                  Not Connected (OAuth Required)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMessagingChannel('wave')}
+                  className="text-[11px] font-bold text-[var(--ml-accent-teal)] hover:underline"
+                >
+                  Return to WAVE
+                </button>
+              </div>
+            </div>
+          ) : mainTab === 'calls' ? (
             callsHistory.length === 0 ? (
               <div className="text-center py-12 px-4 text-sm text-[var(--ml-text-muted)]">
                 <Phone className="w-8 h-8 mx-auto mb-2 opacity-35" />
