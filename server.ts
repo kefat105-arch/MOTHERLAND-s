@@ -1275,7 +1275,9 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     }
 
     const items: any[] = [];
+    const deferredItems: any[] = [];
     const seenVideoIds = new Set<string>();
+    const deferredVideoIds = new Set<string>();
     let nextCursor: FeedCursor | null = null;
     let quotaExceeded = false;
     let exhaustedReason: string | undefined;
@@ -1287,12 +1289,18 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     const pushEligibleItem = (rawItem: any) => {
       const mapped = mapYouTubeVideoDetailsToItem(rawItem);
       if (suppressedIds.has(mapped.id) || suppressedIds.has(mapped.youtubeId)) return;
-      if (excludeIds.has(mapped.id) || excludeIds.has(mapped.youtubeId)) return;
       if (seenVideoIds.has(mapped.id)) return;
       // Strict <= 180s (3 min) verification for Shorts feed
       if (type === 'shorts') {
         const dur = Number(mapped.durationSeconds || 0);
         if (!Number.isFinite(dur) || dur <= 0 || dur > 180) return;
+      }
+      if (excludeIds.has(mapped.id) || excludeIds.has(mapped.youtubeId)) {
+        if (!deferredVideoIds.has(mapped.id)) {
+          deferredVideoIds.add(mapped.id);
+          deferredItems.push(mapped);
+        }
+        return;
       }
       seenVideoIds.add(mapped.id);
       items.push(mapped);
@@ -1471,6 +1479,16 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
         break;
       }
       cursor = nextCursor;
+    }
+
+    if (items.length === 0 && deferredItems.length > 0 && (!rawToken || page === 1)) {
+      for (const fallbackItem of deferredItems) {
+        if (items.length >= pageSize) break;
+        if (!seenVideoIds.has(fallbackItem.id)) {
+          seenVideoIds.add(fallbackItem.id);
+          items.push(fallbackItem);
+        }
+      }
     }
 
     const rotatedItems = prioritizeFreshItems(items, excludeIds, `${seed}_${page}`).slice(0, pageSize);
@@ -4071,7 +4089,9 @@ async function getUnifiedFeedYouTubePosts(
   };
 
   const collected: Post[] = [];
+  const deferredRawItems: any[] = [];
   const seenIds = new Set<string>();
+  const deferredSeenIds = new Set<string>();
   let nextCursor: FeedCursor | null = null;
   let quotaExceeded = false;
   let errorMessage: string | undefined;
@@ -4083,8 +4103,14 @@ async function getUnifiedFeedYouTubePosts(
       const vid = String(rawItem?.id || '');
       if (!vid) continue;
       if (suppressedIds.has(vid) || suppressedIds.has(`yt_feed_${vid}`)) continue;
-      if (excludeIds.has(vid) || excludeIds.has(`yt_feed_${vid}`)) continue;
       if (seenIds.has(vid)) continue;
+      if (excludeIds.has(vid) || excludeIds.has(`yt_feed_${vid}`)) {
+        if (!deferredSeenIds.has(vid)) {
+          deferredSeenIds.add(vid);
+          deferredRawItems.push(rawItem);
+        }
+        continue;
+      }
       seenIds.add(vid);
       collected.push(mapYouTubeRawItemToUnifiedPost(rawItem));
     }
@@ -4190,11 +4216,15 @@ async function getUnifiedFeedYouTubePosts(
         }
       }
     } else {
-      // Verified catalog videos slice (never repeats already-shown IDs)
-      const uniquePool = Array.from(new Set(REAL_YOUTUBE_CATALOG.default)).filter(
-        (vid) => !suppressedIds.has(vid) && !excludeIds.has(vid) && !seenIds.has(vid)
+      // Verified catalog videos slice (prioritize unseen items, deprioritize previously shown instead of returning empty)
+      const baseCatalog = Array.from(new Set(REAL_YOUTUBE_CATALOG.default)).filter(
+        (vid) => !suppressedIds.has(vid) && !seenIds.has(vid)
       );
-      const rotatedPool = seed ? seededShuffle(uniquePool, `${seed}_unified`) : uniquePool;
+      const unexcludedCatalog = baseCatalog.filter((vid) => !excludeIds.has(vid));
+      const excludedCatalog = baseCatalog.filter((vid) => excludeIds.has(vid));
+      const rotatedFresh = seed ? seededShuffle(unexcludedCatalog, `${seed}_unified`) : unexcludedCatalog;
+      const rotatedFallback = seed ? seededShuffle(excludedCatalog, `${seed}_unified_fb`) : excludedCatalog;
+      const rotatedPool = [...rotatedFresh, ...rotatedFallback];
       const start = Math.max(0, cursor.offset);
       const ids = rotatedPool.slice(start, start + pageSize);
       const hasMoreCatalog = start + ids.length < rotatedPool.length;
@@ -4232,6 +4262,7 @@ async function getUnifiedFeedYouTubePosts(
     if (!nextCursor) break;
     if (
       collected.length === prevCount &&
+      deferredRawItems.length === 0 &&
       nextCursor.mode === cursor.mode &&
       nextCursor.qIdx === cursor.qIdx &&
       (nextCursor.rIdx || 0) === (cursor.rIdx || 0) &&
@@ -4241,6 +4272,18 @@ async function getUnifiedFeedYouTubePosts(
       break;
     }
     cursor = nextCursor;
+  }
+
+  // If fresh unseen items ran low (e.g. after repeated Home tab navigations), gracefully top up
+  // with non-suppressed deferred items rather than starving the homepage to empty.
+  if (collected.length < pageSize && deferredRawItems.length > 0 && (!rawYtCursor || page === 1 || collected.length === 0)) {
+    for (const rawItem of deferredRawItems) {
+      if (collected.length >= pageSize) break;
+      const vid = String(rawItem?.id || '');
+      if (!vid || seenIds.has(vid)) continue;
+      seenIds.add(vid);
+      collected.push(mapYouTubeRawItemToUnifiedPost(rawItem));
+    }
   }
 
   const enriched = await enrichPostsWithChannelMeta(collected);
@@ -4904,12 +4947,48 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
   }
 
   const ytShorts: ShortVideo[] = [];
+  const deferredYtShorts: ShortVideo[] = [];
   const seenYtIds = new Set<string>(localSlice.map((s) => s.youtubeId || s.id));
+  const deferredYtIds = new Set<string>(seenYtIds);
   let nextCursor: FeedCursor | null = null;
   let quotaExceeded = false;
   let exhaustedReason: string | undefined;
   const maxAttempts = 6;
   let attempts = 0;
+
+  const mapRawShort = (item: any, dur: number, channelMetaMap: Map<string, CachedChannelMeta>): ShortVideo => {
+    const channelId = item.snippet?.channelId || '';
+    const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
+    return {
+      id: item.id,
+      source: 'youtube' as const,
+      youtubeId: item.id,
+      videoUrl: '',
+      durationSeconds: dur,
+      thumbnailUrl:
+        item.snippet?.thumbnails?.maxres?.url ||
+        item.snippet?.thumbnails?.high?.url ||
+        item.snippet?.thumbnails?.medium?.url ||
+        `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+      title: item.snippet?.title || 'Unavailable',
+      caption: item.snippet?.description || item.snippet?.title || '',
+      hashtags: ['Shorts'],
+      creator: {
+        id: channelId,
+        name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
+        username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
+        avatar: chMeta?.avatar || '',
+        isVerified: Boolean(item.snippet?.channelTitle),
+      },
+      stats: {
+        views: Number(item.statistics?.viewCount || 0),
+        likes: Number(item.statistics?.likeCount || 0),
+        comments: Number(item.statistics?.commentCount || 0),
+        shares: 0,
+      },
+      createdAt: item.snippet?.publishedAt || new Date().toISOString(),
+    };
+  };
 
   while (ytShorts.length < pageSize && attempts < maxAttempts) {
     attempts++;
@@ -4925,9 +5004,12 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
           maxResults: '25',
           ...(cursor.pageToken ? { pageToken: cursor.pageToken } : {}),
         });
-        const ytIds = (searchData.items || [])
+        const allCandidateIds = (searchData.items || [])
           .map((it: any) => it?.id?.videoId)
-          .filter((vid: string | undefined) => Boolean(vid) && !suppressed.has(vid!) && !excludeIds.has(vid!) && !seenYtIds.has(vid!));
+          .filter((vid: string | undefined) => Boolean(vid) && !suppressed.has(vid!) && !seenYtIds.has(vid!));
+        const freshYtIds = allCandidateIds.filter((vid: string) => !excludeIds.has(vid));
+        const excludedYtIds = allCandidateIds.filter((vid: string) => excludeIds.has(vid));
+        const ytIds = [...freshYtIds, ...excludedYtIds];
 
         if (ytIds.length > 0) {
           const statsData = await fetchFromYouTubeApi('videos', {
@@ -4938,41 +5020,19 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
             (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
           );
           for (const item of statsData.items || []) {
-            if (seenYtIds.has(item.id)) continue;
+            if (seenYtIds.has(item.id) || suppressed.has(item.id)) continue;
             const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
             if (!Number.isFinite(dur) || dur <= 0 || dur > 180) continue;
+            const mappedShort = mapRawShort(item, dur, channelMetaMap);
+            if (excludeIds.has(item.id)) {
+              if (!deferredYtIds.has(item.id)) {
+                deferredYtIds.add(item.id);
+                deferredYtShorts.push(mappedShort);
+              }
+              continue;
+            }
             seenYtIds.add(item.id);
-            const channelId = item.snippet?.channelId || '';
-            const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
-            ytShorts.push({
-              id: item.id,
-              source: 'youtube' as const,
-              youtubeId: item.id,
-              videoUrl: '',
-              durationSeconds: dur,
-              thumbnailUrl:
-                item.snippet?.thumbnails?.maxres?.url ||
-                item.snippet?.thumbnails?.high?.url ||
-                item.snippet?.thumbnails?.medium?.url ||
-                `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-              title: item.snippet?.title || 'Unavailable',
-              caption: item.snippet?.description || item.snippet?.title || '',
-              hashtags: ['Shorts'],
-              creator: {
-                id: channelId,
-                name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
-                username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
-                avatar: chMeta?.avatar || '',
-                isVerified: Boolean(item.snippet?.channelTitle),
-              },
-              stats: {
-                views: Number(item.statistics?.viewCount || 0),
-                likes: Number(item.statistics?.likeCount || 0),
-                comments: Number(item.statistics?.commentCount || 0),
-                shares: 0,
-              },
-              createdAt: item.snippet?.publishedAt || new Date().toISOString(),
-            });
+            ytShorts.push(mappedShort);
           }
         }
 
@@ -5005,41 +5065,19 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
           (popData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
         );
         for (const item of popData.items || []) {
-          if (seenYtIds.has(item.id) || suppressed.has(item.id) || excludeIds.has(item.id)) continue;
+          if (seenYtIds.has(item.id) || suppressed.has(item.id)) continue;
           const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
           if (!Number.isFinite(dur) || dur <= 0 || dur > 180) continue;
+          const mappedShort = mapRawShort(item, dur, channelMetaMap);
+          if (excludeIds.has(item.id)) {
+            if (!deferredYtIds.has(item.id)) {
+              deferredYtIds.add(item.id);
+              deferredYtShorts.push(mappedShort);
+            }
+            continue;
+          }
           seenYtIds.add(item.id);
-          const channelId = item.snippet?.channelId || '';
-          const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
-          ytShorts.push({
-            id: item.id,
-            source: 'youtube' as const,
-            youtubeId: item.id,
-            videoUrl: '',
-            durationSeconds: dur,
-            thumbnailUrl:
-              item.snippet?.thumbnails?.maxres?.url ||
-              item.snippet?.thumbnails?.high?.url ||
-              item.snippet?.thumbnails?.medium?.url ||
-              `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-            title: item.snippet?.title || 'Unavailable',
-            caption: item.snippet?.description || item.snippet?.title || '',
-            hashtags: ['Shorts'],
-            creator: {
-              id: channelId,
-              name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
-              username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
-              avatar: chMeta?.avatar || '',
-              isVerified: Boolean(item.snippet?.channelTitle),
-            },
-            stats: {
-              views: Number(item.statistics?.viewCount || 0),
-              likes: Number(item.statistics?.likeCount || 0),
-              comments: Number(item.statistics?.commentCount || 0),
-              shares: 0,
-            },
-            createdAt: item.snippet?.publishedAt || new Date().toISOString(),
-          });
+          ytShorts.push(mappedShort);
         }
         if (popData.nextPageToken) {
           nextCursor = { mode: 'api_popular', qIdx: 0, rIdx, pageToken: popData.nextPageToken, offset: 0 };
@@ -5059,12 +5097,12 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
         }
       }
     } else {
-      const fallbackPool = seededShuffle(
-        Array.from(new Set(REAL_YOUTUBE_CATALOG.shorts)).filter(
-          (vid) => !suppressed.has(vid) && !excludeIds.has(vid) && !seenYtIds.has(vid)
-        ),
-        `${seed}_yt_shorts`
+      const baseCatalog = Array.from(new Set(REAL_YOUTUBE_CATALOG.shorts)).filter(
+        (vid) => !suppressed.has(vid) && !seenYtIds.has(vid)
       );
+      const freshCatalog = seededShuffle(baseCatalog.filter((vid) => !excludeIds.has(vid)), `${seed}_yt_shorts`);
+      const excludedCatalog = seededShuffle(baseCatalog.filter((vid) => excludeIds.has(vid)), `${seed}_yt_shorts_fb`);
+      const fallbackPool = [...freshCatalog, ...excludedCatalog];
       const sliceIds = fallbackPool.slice(cursor.offset, cursor.offset + pageSize);
       if (sliceIds.length > 0) {
         try {
@@ -5076,41 +5114,19 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
             (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
           );
           for (const item of statsData.items || []) {
-            if (seenYtIds.has(item.id)) continue;
+            if (seenYtIds.has(item.id) || suppressed.has(item.id)) continue;
             const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
             if (!Number.isFinite(dur) || dur <= 0 || dur > 180) continue;
+            const mappedShort = mapRawShort(item, dur, channelMetaMap);
+            if (excludeIds.has(item.id)) {
+              if (!deferredYtIds.has(item.id)) {
+                deferredYtIds.add(item.id);
+                deferredYtShorts.push(mappedShort);
+              }
+              continue;
+            }
             seenYtIds.add(item.id);
-            const channelId = item.snippet?.channelId || '';
-            const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
-            ytShorts.push({
-              id: item.id,
-              source: 'youtube' as const,
-              youtubeId: item.id,
-              videoUrl: '',
-              durationSeconds: dur,
-              thumbnailUrl:
-                item.snippet?.thumbnails?.maxres?.url ||
-                item.snippet?.thumbnails?.high?.url ||
-                item.snippet?.thumbnails?.medium?.url ||
-                `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-              title: item.snippet?.title || 'Unavailable',
-              caption: item.snippet?.description || item.snippet?.title || '',
-              hashtags: ['Shorts'],
-              creator: {
-                id: channelId,
-                name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
-                username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
-                avatar: chMeta?.avatar || '',
-                isVerified: Boolean(item.snippet?.channelTitle),
-              },
-              stats: {
-                views: Number(item.statistics?.viewCount || 0),
-                likes: Number(item.statistics?.likeCount || 0),
-                comments: Number(item.statistics?.commentCount || 0),
-                shares: 0,
-              },
-              createdAt: item.snippet?.publishedAt || new Date().toISOString(),
-            });
+            ytShorts.push(mappedShort);
           }
         } catch (catErr: any) {
           if (catErr?.reason === 'quotaExceeded' || catErr?.reason === 'dailyLimitExceeded') {
@@ -5129,6 +5145,7 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
     if (!nextCursor) break;
     if (
       ytShorts.length === prevCount &&
+      deferredYtShorts.length === 0 &&
       nextCursor.mode === cursor.mode &&
       nextCursor.qIdx === cursor.qIdx &&
       (nextCursor.rIdx || 0) === (cursor.rIdx || 0) &&
@@ -5138,6 +5155,17 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
       break;
     }
     cursor = nextCursor;
+  }
+
+  // Graceful non-suppressed top-up so repeated Home/Shorts visits never starve to empty
+  if (localSlice.length + ytShorts.length < pageSize && deferredYtShorts.length > 0 && (!rawToken || page === 1 || localSlice.length + ytShorts.length === 0)) {
+    for (const s of deferredYtShorts) {
+      if (localSlice.length + ytShorts.length >= pageSize) break;
+      if (!seenYtIds.has(s.id)) {
+        seenYtIds.add(s.id);
+        ytShorts.push(s);
+      }
+    }
   }
 
   const seen = new Set(localSlice.map((s) => s.youtubeId || s.id));

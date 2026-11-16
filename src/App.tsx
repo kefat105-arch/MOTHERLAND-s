@@ -158,11 +158,14 @@ export default function App() {
   // Loading States (Never block initial render with a slow splash wall)
   const [isLoadingFeed, setIsLoadingFeed] = useState(false);
   const [isFetchingInitialPosts, setIsFetchingInitialPosts] = useState(true);
+  const [isLoadingHomePosts, setIsLoadingHomePosts] = useState(false);
+  const [isLoadingHomeShorts, setIsLoadingHomeShorts] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [homeFeedPage, setHomeFeedPage] = useState(1);
   const [isLoadingMorePosts, setIsLoadingMorePosts] = useState(false);
   const [hasMorePosts, setHasMorePosts] = useState(true);
   const [homeFeedError, setHomeFeedError] = useState('');
+  const [homeShortsError, setHomeShortsError] = useState('');
   const [peopleDiscovery, setPeopleDiscovery] = useState<{
     suggested: UserProfile[];
     pendingRequests: FriendRequest[];
@@ -178,9 +181,43 @@ export default function App() {
   const homeSentinelRef = useRef<HTMLDivElement | null>(null);
   const homeYtCursorRef = useRef<string>('');
   const homePostsAbortRef = useRef<AbortController | null>(null);
+  const homeMorePostsAbortRef = useRef<AbortController | null>(null);
+  const homePostsReqSeqRef = useRef<number>(0);
+  const shortsAbortRef = useRef<AbortController | null>(null);
+  const shortsMoreAbortRef = useRef<AbortController | null>(null);
+  const shortsReqSeqRef = useRef<number>(0);
+  const longVideosAbortRef = useRef<AbortController | null>(null);
+  const longVideosReqSeqRef = useRef<number>(0);
   const isLoadingMorePostsRef = useRef<boolean>(false);
+  const isLoadingMoreShortsRef = useRef<boolean>(false);
   const sessionExpiredPromptedRef = useRef(false);
   const savedScrollRef = useRef<number>(0);
+  const savedHomeScrollRef = useRef<number>(0);
+  const activeNavRef = useRef<NavTab>(activeNav);
+  activeNavRef.current = activeNav;
+  const feedFilterRef = useRef<'all' | 'for_you' | 'motherland' | 'saved'>(feedFilter);
+  feedFilterRef.current = feedFilter;
+  const postsRef = useRef<Post[]>(posts);
+  postsRef.current = posts;
+  const shortsRef = useRef<ShortVideo[]>(shorts);
+  shortsRef.current = shorts;
+  const longVideosRef = useRef<LongVideo[]>(longVideos);
+  longVideosRef.current = longVideos;
+  const homeFeedPageRef = useRef<number>(homeFeedPage);
+  homeFeedPageRef.current = homeFeedPage;
+  const hasMorePostsRef = useRef<boolean>(hasMorePosts);
+  hasMorePostsRef.current = hasMorePosts;
+  const homeFeedCacheRef = useRef<
+    Record<
+      'all' | 'for_you' | 'motherland' | 'saved',
+      { posts: Post[]; page: number; hasMore: boolean; ytCursor: string; loadedOnce: boolean }
+    >
+  >({
+    all: { posts: [], page: 1, hasMore: true, ytCursor: '', loadedOnce: false },
+    for_you: { posts: [], page: 1, hasMore: true, ytCursor: '', loadedOnce: false },
+    motherland: { posts: [], page: 1, hasMore: true, ytCursor: '', loadedOnce: false },
+    saved: { posts: [], page: 1, hasMore: false, ytCursor: '', loadedOnce: false },
+  });
 
   // Persistent Long-Form Watch Player State
   const [activeWatchVideo, setActiveWatchVideo] = useState<LongVideo | null>(null);
@@ -227,17 +264,31 @@ export default function App() {
     return subscribeEdgeSwipeProgress(setEdgeSwipePx);
   }, []);
 
+  // Track Home scroll position continuously while Home is visible & not in full-screen player
+  useEffect(() => {
+    if (activeNav !== 'home' || shortsPlayerState.isOpen) return;
+    const onScroll = () => {
+      savedHomeScrollRef.current = window.scrollY;
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [activeNav, shortsPlayerState.isOpen]);
+
+  const navigateToHomeRef = useRef<
+    (options?: { scrollMode?: 'restore' | 'top'; forceRefresh?: boolean }) => void
+  >(() => {});
+
   // Sub-tab back navigation (Friends / Video / Menu / Profile / YouTube -> Home)
   useBackHandler(
     'app-youtube-tab',
     activeNav === 'youtube',
-    () => setActiveNav('home'),
+    () => navigateToHomeRef.current({ scrollMode: 'restore' }),
     12
   );
   useBackHandler(
     'app-sub-tab',
     activeNav !== 'home' && activeNav !== 'youtube',
-    () => setActiveNav('home'),
+    () => navigateToHomeRef.current({ scrollMode: 'restore' }),
     10
   );
 
@@ -448,7 +499,14 @@ export default function App() {
   // Live 7-day watched suppression pruning across all feeds & shorts list
   useEffect(() => {
     const onSuppressed = () => {
-      setPosts((prev) => filterUnsuppressed(prev, true));
+      setPosts((prev) => {
+        const next = filterUnsuppressed(prev, true);
+        homeFeedCacheRef.current[feedFilterRef.current] = {
+          ...homeFeedCacheRef.current[feedFilterRef.current],
+          posts: next,
+        };
+        return next;
+      });
       setShorts((prev) => filterUnsuppressed(prev).filter(isEligibleShortVideo));
       setLongVideos((prev) => filterUnsuppressed(prev));
     };
@@ -490,11 +548,208 @@ export default function App() {
     }
   }, []);
 
-  const bootstrapApp = async () => {
+  const dedupeHomePosts = (rawList: Post[]): Post[] => {
+    const filtered = filterUnsuppressed(rawList || [], true);
+    const seen = new Set<string>();
+    const deduped: Post[] = [];
+    for (const p of filtered) {
+      const extKey = p.externalId || p.id;
+      if (!seen.has(p.id) && !seen.has(extKey)) {
+        seen.add(p.id);
+        seen.add(extKey);
+        deduped.push(p);
+      }
+    }
+    return deduped;
+  };
+
+  const commitHomeFeedResult = (
+    targetFilter: 'all' | 'for_you' | 'motherland' | 'saved',
+    nextPosts: Post[],
+    nextHasMore: boolean,
+    nextYtCursor: string,
+    options?: { allowEmpty?: boolean; preserveExisting?: boolean; errorMsg?: string }
+  ) => {
+    const cached = homeFeedCacheRef.current[targetFilter];
+    const currentVisible = feedFilterRef.current === targetFilter ? postsRef.current : cached.posts;
+    const preserveExisting = options?.preserveExisting !== false;
+
+    if (nextPosts.length > 0) {
+      homeFeedCacheRef.current[targetFilter] = {
+        posts: nextPosts,
+        page: 1,
+        hasMore: nextHasMore,
+        ytCursor: nextYtCursor,
+        loadedOnce: true,
+      };
+      recordShownFeedIds('home', nextPosts.map((p) => p.externalId || p.id));
+      if (feedFilterRef.current === targetFilter) {
+        homeYtCursorRef.current = nextYtCursor;
+        setPosts(nextPosts);
+        setHomeFeedPage(1);
+        setHasMorePosts(nextHasMore);
+        setHomeFeedError('');
+      }
+      return;
+    }
+
+    // Empty result returned — determine whether this is a genuine empty collection or a failure/starvation
+    const canCommitEmpty =
+      Boolean(options?.allowEmpty) &&
+      !options?.errorMsg &&
+      (targetFilter === 'saved' || targetFilter === 'motherland');
+
+    if (canCommitEmpty) {
+      homeFeedCacheRef.current[targetFilter] = {
+        posts: [],
+        page: 1,
+        hasMore: false,
+        ytCursor: '',
+        loadedOnce: true,
+      };
+      if (feedFilterRef.current === targetFilter) {
+        homeYtCursorRef.current = '';
+        setPosts([]);
+        setHomeFeedPage(1);
+        setHasMorePosts(false);
+        setHomeFeedError('');
+      }
+      return;
+    }
+
+    if (preserveExisting && currentVisible.length > 0) {
+      // Never wipe valid existing posts when refresh fails or temporarily returns 0 items
+      homeFeedCacheRef.current[targetFilter] = {
+        ...cached,
+        posts: currentVisible,
+        loadedOnce: true,
+      };
+      if (feedFilterRef.current === targetFilter && !cached.loadedOnce) {
+        setPosts(currentVisible);
+      }
+      return;
+    }
+
+    homeFeedCacheRef.current[targetFilter] = {
+      ...cached,
+      posts: [],
+      page: 1,
+      hasMore: false,
+      ytCursor: '',
+      loadedOnce: true,
+    };
+    if (feedFilterRef.current === targetFilter) {
+      setPosts([]);
+      setHomeFeedPage(1);
+      setHasMorePosts(false);
+      if (options?.errorMsg) {
+        setHomeFeedError(options.errorMsg);
+      }
+    }
+  };
+
+  const commitShortsResult = (
+    rawShorts: ShortVideo[] | null,
+    nextPageToken: string | null,
+    hasMoreVal: boolean,
+    options?: { preserveExisting?: boolean; errorMsg?: string }
+  ) => {
+    const preserveExisting = options?.preserveExisting !== false;
+    if (Array.isArray(rawShorts)) {
+      const fresh = filterUnsuppressed(rawShorts).filter(isEligibleShortVideo);
+      if (fresh.length > 0) {
+        setShorts(fresh);
+        setShortsPage(1);
+        setShortsNextPageToken(nextPageToken || null);
+        setShortsHasMore(hasMoreVal);
+        setShortsExhaustedNotice('');
+        setHomeShortsError('');
+        recordShownFeedIds('shorts', fresh.map((s) => s.youtubeId || s.id));
+        return;
+      }
+    }
+    // Never overwrite valid existing Small Videos with an empty array on failure/starvation
+    if (preserveExisting && shortsRef.current.length > 0) {
+      return;
+    }
+    if (options?.errorMsg && shortsRef.current.length === 0) {
+      setHomeShortsError(options.errorMsg);
+    }
+  };
+
+  const refreshHomeShorts = async (options?: { forceLoading?: boolean; preserveExisting?: boolean }) => {
+    const reqSeq = ++shortsReqSeqRef.current;
+    shortsAbortRef.current?.abort();
+    shortsMoreAbortRef.current?.abort();
+    isLoadingMoreShortsRef.current = false;
+    const controller = new AbortController();
+    shortsAbortRef.current = controller;
+
+    if (options?.forceLoading || shortsRef.current.length === 0) {
+      setIsLoadingHomeShorts(true);
+    }
+    setHomeShortsError('');
+
+    try {
+      const res = await api.getShorts(false, 1, 12, '', controller.signal);
+      if (reqSeq !== shortsReqSeqRef.current || controller.signal.aborted) return;
+      commitShortsResult(
+        res.shorts || [],
+        res.nextPageToken || null,
+        res.hasMore !== false,
+        {
+          preserveExisting: options?.preserveExisting !== false,
+          errorMsg: res.exhaustedReason || '',
+        }
+      );
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || reqSeq !== shortsReqSeqRef.current) return;
+      if (shortsRef.current.length === 0) {
+        setHomeShortsError(err?.message || 'Unable to load Small Videos');
+      }
+    } finally {
+      if (reqSeq === shortsReqSeqRef.current) {
+        setIsLoadingHomeShorts(false);
+      }
+    }
+  };
+
+  const bootstrapApp = async (options?: { preserveExisting?: boolean }) => {
+    const preserveExisting = options?.preserveExisting !== false;
+    const activeFilterAtStart = feedFilterRef.current;
+    const postsSeq = ++homePostsReqSeqRef.current;
+    const shortsSeq = ++shortsReqSeqRef.current;
+    const longSeq = ++longVideosReqSeqRef.current;
+
+    homePostsAbortRef.current?.abort();
+    homeMorePostsAbortRef.current?.abort();
+    shortsAbortRef.current?.abort();
+    shortsMoreAbortRef.current?.abort();
+    longVideosAbortRef.current?.abort();
+    isLoadingMorePostsRef.current = false;
+    isLoadingMoreShortsRef.current = false;
+    setIsLoadingMorePosts(false);
+    setIsLoadingMoreShorts(false);
+
+    const postsController = new AbortController();
+    const shortsController = new AbortController();
+    const longController = new AbortController();
+    homePostsAbortRef.current = postsController;
+    shortsAbortRef.current = shortsController;
+    longVideosAbortRef.current = longController;
+
+    if (postsRef.current.length === 0) {
+      setIsLoadingHomePosts(true);
+    }
+    if (shortsRef.current.length === 0) {
+      setIsLoadingHomeShorts(true);
+    }
+
     try {
       setAuthToken(api.getToken() || '');
-      setHomeFeedError('');
-      homeYtCursorRef.current = '';
+      if (postsRef.current.length === 0) {
+        setHomeFeedError('');
+      }
       const userData = await api.getCurrentUser().catch(() => ({
         user: null,
         sessionExpired: false,
@@ -539,44 +794,29 @@ export default function App() {
       }
 
       const [
-        ytData,
-        adaptData,
-        notifData,
-        storiesData,
-        shortsData,
-        longData,
-        convData,
-        postsData,
-      ] = await Promise.all([
-        api.getYouTubeStatus().catch(() => ({ configured: false })),
-        api.getPlatformAdapters().catch(() => ({ adapters: [] })),
-        api.getToken() ? api.getNotifications().catch(() => ({ notifications: [] })) : Promise.resolve({ notifications: [] }),
-        api.getStories().catch(() => ({ stories: [] })),
-        api.getShorts(false, 1, 12).catch(() => ({ shorts: [], nextPageToken: null, hasMore: true })),
-        api.getLongVideos().catch(() => ({ videos: [] })),
-        api.getToken() ? api.getConversations().catch(() => ({ totalUnread: 0 })) : Promise.resolve({ totalUnread: 0 }),
-        api.getPosts(feedFilter, 'all', 1, 10, '').catch((err) => ({
-          posts: [],
-          hasMore: true,
-          nextYtCursor: null,
-          errorMessage: err?.message || 'Unable to load feed',
-        })),
+        ytRes,
+        adaptRes,
+        notifRes,
+        storiesRes,
+        shortsRes,
+        longRes,
+        convRes,
+        postsRes,
+      ] = await Promise.allSettled([
+        api.getYouTubeStatus(),
+        api.getPlatformAdapters(),
+        api.getToken() ? api.getNotifications() : Promise.resolve({ notifications: [] }),
+        api.getStories(postsController.signal),
+        api.getShorts(false, 1, 12, '', shortsController.signal),
+        api.getLongVideos(false, longController.signal),
+        api.getToken() ? api.getConversations() : Promise.resolve({ totalUnread: 0 }),
+        api.getPosts(activeFilterAtStart, 'all', 1, 10, '', postsController.signal),
       ]);
 
-      const nextStories = storiesData.stories || [];
-      const nextShorts = filterUnsuppressed(shortsData.shorts || []).filter(isEligibleShortVideo);
-      const nextLongVideos = filterUnsuppressed(longData.videos || []);
-      const filteredPosts = filterUnsuppressed(postsData.posts || [], true);
-      const seenPostKeys = new Set<string>();
-      const nextPosts: Post[] = [];
-      for (const p of filteredPosts) {
-        const key = p.externalId || p.id;
-        if (!seenPostKeys.has(p.id) && !seenPostKeys.has(key)) {
-          seenPostKeys.add(p.id);
-          seenPostKeys.add(key);
-          nextPosts.push(p);
-        }
-      }
+      const ytData = ytRes.status === 'fulfilled' ? ytRes.value : { configured: false };
+      const adaptData = adaptRes.status === 'fulfilled' ? adaptRes.value : { adapters: [] };
+      const notifData = notifRes.status === 'fulfilled' ? notifRes.value : { notifications: [] };
+      const convData = convRes.status === 'fulfilled' ? convRes.value : { totalUnread: 0 };
 
       let resolvedNotifs = notifData.notifications || [];
       let resolvedUnread = (convData as any).totalUnread || 0;
@@ -591,83 +831,215 @@ export default function App() {
         resolvedUnread = (cookieConvs as any).totalUnread || 0;
       }
 
-      homeYtCursorRef.current = (postsData as any).nextYtCursor || '';
-      if ((postsData as any).errorMessage) {
-        setHomeFeedError(String((postsData as any).errorMessage));
-      }
-
       setCurrentUser(resolvedUser);
       setYoutubeStatus(ytData);
       setAdapters(adaptData.adapters || []);
       setNotifications(resolvedNotifs);
       setUnreadMessagesCount(resolvedUnread);
-      setStories(nextStories);
-      setShorts(nextShorts);
-      setShortsPage(1);
-      setShortsNextPageToken((shortsData as any).nextPageToken || null);
-      setShortsHasMore((shortsData as any).hasMore !== false);
-      setShortsExhaustedNotice('');
-      setLongVideos(nextLongVideos);
-      setHomeFeedPage(1);
-      setPosts(nextPosts);
-      setHasMorePosts((postsData as any).hasMore !== false);
-      lastAutoRefreshRef.current = Date.now();
 
-      recordShownFeedIds('home', nextPosts.map((p) => p.externalId || p.id));
-      recordShownFeedIds('shorts', nextShorts.map((s) => s.youtubeId || s.id));
+      if (storiesRes.status === 'fulfilled' && Array.isArray(storiesRes.value?.stories)) {
+        if (storiesRes.value.stories.length > 0 || !preserveExisting) {
+          setStories(storiesRes.value.stories);
+        }
+      }
+
+      if (shortsSeq === shortsReqSeqRef.current && !shortsController.signal.aborted) {
+        if (shortsRes.status === 'fulfilled') {
+          commitShortsResult(
+            shortsRes.value.shorts || [],
+            shortsRes.value.nextPageToken || null,
+            shortsRes.value.hasMore !== false,
+            { preserveExisting, errorMsg: shortsRes.value.exhaustedReason || '' }
+          );
+        } else {
+          const reason = (shortsRes.reason as any);
+          if (reason?.name !== 'AbortError' && shortsRef.current.length === 0) {
+            setHomeShortsError(reason?.message || 'Unable to load Small Videos');
+          }
+        }
+      }
+
+      if (longSeq === longVideosReqSeqRef.current && !longController.signal.aborted) {
+        if (longRes.status === 'fulfilled') {
+          const nextLongVideos = filterUnsuppressed(longRes.value.videos || []);
+          if (nextLongVideos.length > 0 || !preserveExisting || longVideosRef.current.length === 0) {
+            setLongVideos(nextLongVideos);
+          }
+        }
+      }
+
+      if (postsSeq === homePostsReqSeqRef.current && !postsController.signal.aborted) {
+        if (postsRes.status === 'fulfilled') {
+          const pData = postsRes.value;
+          const nextPosts = dedupeHomePosts(pData.posts || []);
+          const apiErr = (pData as any).errorMessage ? String((pData as any).errorMessage) : '';
+          commitHomeFeedResult(
+            activeFilterAtStart,
+            nextPosts,
+            pData.hasMore !== false,
+            (pData as any).nextYtCursor || '',
+            {
+              allowEmpty: !apiErr && !(pData as any).quotaExceeded,
+              preserveExisting,
+              errorMsg: apiErr,
+            }
+          );
+        } else {
+          const reason = postsRes.reason as any;
+          if (reason?.name !== 'AbortError') {
+            commitHomeFeedResult(activeFilterAtStart, [], true, '', {
+              allowEmpty: false,
+              preserveExisting,
+              errorMsg: reason?.message || 'Unable to load feed',
+            });
+          }
+        }
+      }
+
+      lastAutoRefreshRef.current = Date.now();
       void refreshPeopleDiscovery(resolvedUser);
     } catch (err) {
       console.error('Bootstrap error:', err);
     } finally {
       setIsLoadingFeed(false);
       setIsFetchingInitialPosts(false);
+      if (postsSeq === homePostsReqSeqRef.current) {
+        setIsLoadingHomePosts(false);
+      }
+      if (shortsSeq === shortsReqSeqRef.current) {
+        setIsLoadingHomeShorts(false);
+      }
     }
   };
 
-  const loadPosts = async (type: 'all' | 'for_you' | 'motherland' | 'saved' = feedFilter, reset = true) => {
+  const loadPosts = async (
+    type: 'all' | 'for_you' | 'motherland' | 'saved' = feedFilterRef.current,
+    reset = true,
+    options?: { preserveExisting?: boolean; silent?: boolean }
+  ) => {
+    const reqSeq = ++homePostsReqSeqRef.current;
     homePostsAbortRef.current?.abort();
+    homeMorePostsAbortRef.current?.abort();
+    isLoadingMorePostsRef.current = false;
+    setIsLoadingMorePosts(false);
+
     const controller = new AbortController();
     homePostsAbortRef.current = controller;
 
+    // Immediately sync cached posts when switching filters so valid content appears with zero flicker
+    if (reset && feedFilterRef.current === type) {
+      const cached = homeFeedCacheRef.current[type];
+      if (cached.posts.length > 0 && postsRef.current.length === 0) {
+        setPosts(cached.posts);
+        setHomeFeedPage(cached.page);
+        setHasMorePosts(cached.hasMore);
+        homeYtCursorRef.current = cached.ytCursor;
+      }
+    }
+
+    const hasVisibleForTarget =
+      (feedFilterRef.current === type && postsRef.current.length > 0) ||
+      homeFeedCacheRef.current[type].posts.length > 0;
+
+    if (!options?.silent || !hasVisibleForTarget) {
+      setIsLoadingHomePosts(true);
+    }
+
     try {
       if (reset) {
-        setHomeFeedError('');
-        setHomeFeedPage(1);
-        homeYtCursorRef.current = '';
-        const data = await api.getPosts(type, 'all', 1, 10, '', controller.signal);
-        if (controller.signal.aborted) return;
-        homeYtCursorRef.current = data.nextYtCursor || '';
-        const filtered = filterUnsuppressed(data.posts || [], true);
-        const seen = new Set<string>();
-        const deduped: Post[] = [];
-        for (const p of filtered) {
-          const extKey = p.externalId || p.id;
-          if (!seen.has(p.id) && !seen.has(extKey)) {
-            seen.add(p.id);
-            seen.add(extKey);
-            deduped.push(p);
-          }
+        if (!hasVisibleForTarget) {
+          setHomeFeedError('');
         }
-        setPosts(deduped);
-        setHasMorePosts(data.hasMore !== false);
-        recordShownFeedIds('home', deduped.map((p) => p.externalId || p.id));
+        const data = await api.getPosts(type, 'all', 1, 10, '', controller.signal);
+        if (controller.signal.aborted || reqSeq !== homePostsReqSeqRef.current) return;
+
+        const deduped = dedupeHomePosts(data.posts || []);
+        const apiErr = (data as any).errorMessage ? String((data as any).errorMessage) : '';
+        commitHomeFeedResult(
+          type,
+          deduped,
+          data.hasMore !== false,
+          data.nextYtCursor || '',
+          {
+            allowEmpty: !apiErr && !(data as any).quotaExceeded,
+            preserveExisting: options?.preserveExisting !== false,
+            errorMsg: apiErr,
+          }
+        );
       }
     } catch (err: any) {
-      if (err?.name === 'AbortError') return;
+      if (err?.name === 'AbortError' || reqSeq !== homePostsReqSeqRef.current) return;
       console.error('Failed to load posts:', err);
-      setHomeFeedError(err?.message || 'Unable to load posts');
+      commitHomeFeedResult(type, [], true, '', {
+        allowEmpty: false,
+        preserveExisting: options?.preserveExisting !== false,
+        errorMsg: err?.message || 'Unable to load posts',
+      });
+    } finally {
+      if (reqSeq === homePostsReqSeqRef.current) {
+        setIsLoadingHomePosts(false);
+      }
     }
+  };
+
+  const handleSelectFeedFilter = (nextFilter: 'all' | 'for_you' | 'motherland' | 'saved') => {
+    const prevFilter = feedFilterRef.current;
+    if (prevFilter !== nextFilter) {
+      // Save current filter's state before switching
+      homeFeedCacheRef.current[prevFilter] = {
+        ...homeFeedCacheRef.current[prevFilter],
+        posts: postsRef.current,
+        page: homeFeedPageRef.current,
+        hasMore: hasMorePostsRef.current,
+        ytCursor: homeYtCursorRef.current,
+      };
+      setFeedFilter(nextFilter);
+      feedFilterRef.current = nextFilter;
+
+      const targetCached = homeFeedCacheRef.current[nextFilter];
+      if (targetCached.posts.length > 0) {
+        setPosts(targetCached.posts);
+        setHomeFeedPage(targetCached.page);
+        setHasMorePosts(targetCached.hasMore);
+        homeYtCursorRef.current = targetCached.ytCursor;
+        setHomeFeedError('');
+      } else {
+        setPosts([]);
+        setHomeFeedPage(1);
+        setHasMorePosts(nextFilter !== 'saved');
+        homeYtCursorRef.current = '';
+        setHomeFeedError('');
+      }
+    }
+    void loadPosts(nextFilter, true, { preserveExisting: true });
   };
 
   const loadMorePosts = async () => {
     if (isLoadingMorePostsRef.current || isLoadingMorePosts || !hasMorePosts) return;
+    const activeType = feedFilterRef.current;
+    const capturedResetSeq = homePostsReqSeqRef.current;
+    homeMorePostsAbortRef.current?.abort();
+    const controller = new AbortController();
+    homeMorePostsAbortRef.current = controller;
+
     isLoadingMorePostsRef.current = true;
     setIsLoadingMorePosts(true);
     setHomeFeedError('');
     try {
-      const nextPage = homeFeedPage + 1;
-      const data = await api.getPosts(feedFilter, 'all', nextPage, 10, homeYtCursorRef.current);
-      homeYtCursorRef.current = data.nextYtCursor || '';
+      const nextPage = homeFeedPageRef.current + 1;
+      const data = await api.getPosts(activeType, 'all', nextPage, 10, homeYtCursorRef.current, controller.signal);
+      if (
+        controller.signal.aborted ||
+        capturedResetSeq !== homePostsReqSeqRef.current ||
+        feedFilterRef.current !== activeType
+      ) {
+        return;
+      }
+
+      const nextYtCursor = data.nextYtCursor || '';
+      homeYtCursorRef.current = nextYtCursor;
+      const nextHasMore = data.hasMore !== false;
+
       if (data.posts && data.posts.length > 0) {
         const filtered = filterUnsuppressed(data.posts, true);
         recordShownFeedIds('home', filtered.map((p) => p.externalId || p.id));
@@ -686,13 +1058,21 @@ export default function App() {
               nextItems.push(p);
             }
           }
-          return [...prev, ...nextItems];
+          const merged = [...prev, ...nextItems];
+          homeFeedCacheRef.current[activeType] = {
+            posts: merged,
+            page: nextPage,
+            hasMore: nextHasMore,
+            ytCursor: nextYtCursor,
+            loadedOnce: true,
+          };
+          return merged;
         });
         setHomeFeedPage(nextPage);
       }
-      setHasMorePosts(data.hasMore !== false);
+      setHasMorePosts(nextHasMore);
     } catch (err: any) {
-      if (err?.name !== 'AbortError') {
+      if (err?.name !== 'AbortError' && capturedResetSeq === homePostsReqSeqRef.current) {
         console.error('Load more posts error:', err);
         setHomeFeedError(err?.message || 'Failed to load more posts');
       }
@@ -704,11 +1084,18 @@ export default function App() {
 
   // Continuous Cursor-Based Infinite Shorts Loader (Strict <=180s)
   const handleLoadMoreShorts = async () => {
-    if (isLoadingMoreShorts || !shortsHasMore) return;
+    if (isLoadingMoreShortsRef.current || isLoadingMoreShorts || !shortsHasMore) return;
+    const capturedSeq = shortsReqSeqRef.current;
+    shortsMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    shortsMoreAbortRef.current = controller;
+
+    isLoadingMoreShortsRef.current = true;
     setIsLoadingMoreShorts(true);
     try {
       const nextPage = shortsPage + 1;
-      const res = await api.getShorts(false, nextPage, 12, shortsNextPageToken || '');
+      const res = await api.getShorts(false, nextPage, 12, shortsNextPageToken || '', controller.signal);
+      if (controller.signal.aborted || capturedSeq !== shortsReqSeqRef.current) return;
 
       const fetched = filterUnsuppressed(res.shorts || []).filter(isEligibleShortVideo);
 
@@ -729,12 +1116,50 @@ export default function App() {
       if (res.hasMore === false && !nextToken) {
         setShortsHasMore(false);
       }
-    } catch (err) {
-      console.error('Load more shorts error:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        console.error('Load more shorts error:', err);
+      }
     } finally {
+      isLoadingMoreShortsRef.current = false;
       setIsLoadingMoreShorts(false);
     }
   };
+
+  // Non-destructive Home recovery + navigation helper
+  const navigateToHome = useCallback((options?: { scrollMode?: 'restore' | 'top'; forceRefresh?: boolean }) => {
+    const wasOnHome = activeNavRef.current === 'home';
+    setActiveNav('home');
+
+    if (options?.scrollMode === 'top' || wasOnHome) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: savedHomeScrollRef.current, behavior: 'auto' });
+      });
+    }
+
+    const needsPostsRecovery = postsRef.current.length === 0;
+    const needsShortsRecovery = shortsRef.current.length === 0;
+    const isStale = Date.now() - lastAutoRefreshRef.current > 25000;
+
+    if (options?.forceRefresh || wasOnHome || needsPostsRecovery || isStale) {
+      lastAutoRefreshRef.current = Date.now();
+      void loadPosts(feedFilterRef.current, true, { preserveExisting: true, silent: !needsPostsRecovery });
+    }
+    if (options?.forceRefresh || wasOnHome || needsShortsRecovery || isStale) {
+      void refreshHomeShorts({ forceLoading: needsShortsRecovery, preserveExisting: true });
+    }
+    if (options?.forceRefresh || wasOnHome || isStale) {
+      api
+        .getStories()
+        .then((s) => {
+          if (Array.isArray(s.stories) && s.stories.length > 0) setStories(s.stories);
+        })
+        .catch(() => {});
+    }
+  }, []);
+  navigateToHomeRef.current = navigateToHome;
 
   // Automatic Background Auto-Refresh (on app re-entry / focus + every 90s when not actively watching)
   useEffect(() => {
@@ -742,21 +1167,14 @@ export default function App() {
       if (document.visibilityState !== 'visible') return;
       if (shortsPlayerState.isOpen || (activeWatchVideo && !isWatchMinimized)) return;
       lastAutoRefreshRef.current = Date.now();
-      loadPosts(feedFilter, true);
+      void loadPosts(feedFilterRef.current, true, { preserveExisting: true, silent: true });
       api
         .getStories()
-        .then((s) => setStories(s.stories || []))
-        .catch(() => {});
-      api
-        .getShorts(false, 1, 12)
         .then((s) => {
-          const clean = filterUnsuppressed(s.shorts || []).filter(isEligibleShortVideo);
-          setShorts(clean);
-          setShortsPage(1);
-          setShortsNextPageToken(s.nextPageToken || null);
-          setShortsHasMore(s.hasMore !== false);
+          if (Array.isArray(s.stories) && s.stories.length > 0) setStories(s.stories);
         })
         .catch(() => {});
+      void refreshHomeShorts({ forceLoading: false, preserveExisting: true });
       if (activeNav === 'video') {
         setVideoRefreshSignal((s) => s + 1);
       } else if (activeNav === 'youtube') {
@@ -798,7 +1216,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', onFocusOrVisibility);
       window.removeEventListener('focus', onFocusOrVisibility);
     };
-  }, [activeNav, feedFilter, shortsPlayerState.isOpen, activeWatchVideo, isWatchMinimized]);
+  }, [activeNav, shortsPlayerState.isOpen, activeWatchVideo, isWatchMinimized]);
 
   // IntersectionObserver for Home Feed infinite scroll
   useEffect(() => {
@@ -821,7 +1239,7 @@ export default function App() {
 
   const refreshAll = async () => {
     setIsRefreshing(true);
-    await bootstrapApp();
+    await bootstrapApp({ preserveExisting: true });
     setIsRefreshing(false);
   };
 
@@ -970,6 +1388,11 @@ export default function App() {
     bootstrapApp();
   };
 
+  const clearUserFeedCaches = () => {
+    homeFeedCacheRef.current.saved = { posts: [], page: 1, hasMore: false, ytCursor: '', loadedOnce: false };
+    homeFeedCacheRef.current.for_you = { ...homeFeedCacheRef.current.for_you, loadedOnce: false };
+  };
+
   const handleLogout = async () => {
     try {
       await api.logout();
@@ -978,12 +1401,17 @@ export default function App() {
       setNotifications([]);
       setUnreadMessagesCount(0);
       setExpiredSessionHint(null);
+      clearUserFeedCaches();
+      if (feedFilterRef.current === 'saved') {
+        setFeedFilter('all');
+        feedFilterRef.current = 'all';
+      }
       try {
         localStorage.removeItem(LAST_USER_HINT_KEY);
       } catch {
         // ignore
       }
-      await bootstrapApp();
+      await bootstrapApp({ preserveExisting: true });
     } catch (err) {
       console.error('Logout error:', err);
     }
@@ -995,19 +1423,25 @@ export default function App() {
     setNotifications([]);
     setUnreadMessagesCount(0);
     setExpiredSessionHint(null);
+    clearUserFeedCaches();
+    if (feedFilterRef.current === 'saved') {
+      setFeedFilter('all');
+      feedFilterRef.current = 'all';
+    }
     try {
       localStorage.removeItem(LAST_USER_HINT_KEY);
     } catch {
       // ignore
     }
     setActiveNav('home');
-    await bootstrapApp();
+    await bootstrapApp({ preserveExisting: true });
   };
 
   const handleSwitchAccount = async (account: UserProfile) => {
     setCurrentUser(account);
     setAuthToken(api.getToken() || '');
-    await bootstrapApp();
+    clearUserFeedCaches();
+    await bootstrapApp({ preserveExisting: true });
   };
 
   // Show loading screen ONLY during initial bootstrap fetch — guests proceed seamlessly after bootstrap completes
@@ -1061,43 +1495,39 @@ export default function App() {
         </div>
 
         {rotated.length === 0 ? (
-          <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] px-3.5 py-4">
-            <div className="min-w-0">
-              <p className="text-xs font-bold text-[var(--text-primary)]">
-                {isFetchingInitialPosts || isLoadingMoreShorts
-                  ? 'Loading Small Videos...'
-                  : 'No Small Videos available right now'}
-              </p>
-              <p className="text-[11px] text-[var(--text-secondary)] mt-0.5">
-                Tap Retry to fetch the latest vertical videos.
-              </p>
+          isFetchingInitialPosts || isLoadingHomeShorts || isLoadingMoreShorts || isRefreshing ? (
+            <div className="flex items-stretch gap-2.5 overflow-hidden pb-1">
+              {[0, 1, 2, 3].map((idx) => (
+                <div
+                  key={idx}
+                  className="flex-shrink-0 w-[132px] sm:w-[148px] aspect-[9/16] rounded-2xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] animate-pulse"
+                />
+              ))}
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setIsLoadingMoreShorts(true);
-                api
-                  .getShorts(false, 1, 12)
-                  .then((res) => {
-                    const fresh = filterUnsuppressed(res.shorts || []).filter(isEligibleShortVideo);
-                    setShorts(fresh);
-                    setShortsPage(1);
-                    setShortsNextPageToken(res.nextPageToken || null);
-                    setShortsHasMore(res.hasMore !== false);
-                  })
-                  .catch(() => {})
-                  .finally(() => setIsLoadingMoreShorts(false));
-              }}
-              className="ml-flame-box px-3 py-2 rounded-xl text-xs font-bold text-[var(--text-primary)] shrink-0"
-            >
-              {isLoadingMoreShorts ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="w-3.5 h-3.5" />
-              )}
-              <span>Retry</span>
-            </button>
-          </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] px-3.5 py-4">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-[var(--text-primary)]">
+                  {homeShortsError || 'No Small Videos available right now'}
+                </p>
+                <p className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                  Tap Retry to fetch the latest vertical videos.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshHomeShorts({ forceLoading: true, preserveExisting: false })}
+                className="ml-flame-box px-3 py-2 rounded-xl text-xs font-bold text-[var(--text-primary)] shrink-0 inline-flex items-center gap-1.5"
+              >
+                {isLoadingHomeShorts || isLoadingMoreShorts ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>Retry</span>
+              </button>
+            </div>
+          )
         ) : (
           <div
             data-horizontal-strip="true"
@@ -1374,7 +1804,9 @@ export default function App() {
           onOpenSearch={() => setIsSearchOpen(true)}
           onOpenProfile={() => {
             setActiveNav('profile');
-            loadPosts(feedFilter, true);
+            if (postsRef.current.length === 0) {
+              void loadPosts(feedFilterRef.current, true, { preserveExisting: true });
+            }
             api.getCurrentUser().then((r) => r.user && setCurrentUser(r.user)).catch(() => {});
           }}
           onOpenAuth={() => setIsAuthOpen(true)}
@@ -1397,10 +1829,10 @@ export default function App() {
       {/* Main Content Area */}
       <main className={`flex-1 ${activeNav === 'youtube' ? 'pb-0' : hasMiniPlayer ? 'pb-40' : 'pb-24'}`}>
         {/* ========================================================= */}
-        {/* TAB 1: HOME FEED (with Facebook-Style Pull-to-Refresh)    */}
+        {/* TAB 1: HOME FEED (Persists across tab navigation!)        */}
         {/* ========================================================= */}
-        {activeNav === 'home' && (
-          <PullToRefresh onRefresh={refreshAll} disabled={isRefreshing}>
+        <div className={activeNav === 'home' ? '' : 'hidden'}>
+          <PullToRefresh onRefresh={refreshAll} disabled={isRefreshing || activeNav !== 'home'}>
             <div className="max-w-6xl mx-auto px-2.5 sm:px-4 py-3.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-5 w-full min-w-0">
               {/* Center Feed Column */}
               <div className="lg:col-span-8 space-y-4 min-w-0">
@@ -1512,8 +1944,7 @@ export default function App() {
                         data-testid={`feed-tab-${tab.key}`}
                         onClick={() => {
                           if (tab.key === 'saved' && !requireSignedIn()) return;
-                          setFeedFilter(tab.key);
-                          loadPosts(tab.key, true);
+                          handleSelectFeedFilter(tab.key);
                         }}
                         className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
                           feedFilter === tab.key
@@ -1540,7 +1971,7 @@ export default function App() {
                 </div>
 
               {/* Feed Stream with Interspersed Shorts Discovery Carousels */}
-              {isFetchingInitialPosts && posts.length === 0 ? (
+              {(isFetchingInitialPosts || isLoadingHomePosts || isRefreshing) && posts.length === 0 ? (
                 <div className="space-y-4">
                   {[0, 1].map((idx) => (
                     <div key={idx} className="ml-glass rounded-2xl p-4 space-y-3 animate-pulse">
@@ -1558,22 +1989,51 @@ export default function App() {
                 </div>
               ) : posts.length === 0 ? (
                 <>
-                  <div className="py-14 text-center ml-glass rounded-2xl p-6 text-[var(--text-secondary)]">
-                    <p className="text-sm font-semibold text-[var(--text-primary)]">
-                      {feedFilter === 'saved' ? 'No saved posts yet.' : 'No posts in this feed yet.'}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (requireSignedIn()) {
-                          setCreateModalState({ isOpen: true, initialMode: 'post' });
-                        }
-                      }}
-                      className="mt-3 px-4 py-2 rounded-xl bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] text-xs font-bold"
-                    >
-                      Create Post
-                    </button>
-                  </div>
+                  {homeFeedError ? (
+                    <div className="py-12 text-center ml-glass rounded-2xl p-6 text-[var(--text-secondary)] space-y-3">
+                      <p className="text-sm font-semibold text-[var(--accent-danger)] inline-flex items-center gap-1.5 justify-center">
+                        <AlertCircle className="w-4 h-4" />
+                        <span>{homeFeedError}</span>
+                      </p>
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => void loadPosts(feedFilter, true, { preserveExisting: false })}
+                          className="px-4 py-2 rounded-xl bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] text-xs font-bold inline-flex items-center gap-1.5"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Retry Feed</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-14 text-center ml-glass rounded-2xl p-6 text-[var(--text-secondary)]">
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">
+                        {feedFilter === 'saved' ? 'No saved posts yet.' : 'No posts in this feed yet.'}
+                      </p>
+                      <div className="mt-3 flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void loadPosts(feedFilter, true, { preserveExisting: false })}
+                          className="px-4 py-2 rounded-xl ml-glass hover:bg-[var(--bg-surface-alt)] text-[var(--text-primary)] text-xs font-bold inline-flex items-center gap-1.5"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Refresh</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (requireSignedIn()) {
+                              setCreateModalState({ isOpen: true, initialMode: 'post' });
+                            }
+                          }}
+                          className="px-4 py-2 rounded-xl bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] text-xs font-bold"
+                        >
+                          Create Post
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {renderHomeShortsStrip(0)}
                   {renderHomePeopleStrip()}
                 </>
@@ -1640,7 +2100,7 @@ export default function App() {
                         </p>
                         <button
                           type="button"
-                          onClick={() => (posts.length === 0 ? loadPosts(feedFilter, true) : loadMorePosts())}
+                          onClick={() => (posts.length === 0 ? loadPosts(feedFilter, true, { preserveExisting: false }) : loadMorePosts())}
                           className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] text-xs font-bold inline-flex items-center gap-1.5"
                         >
                           <RefreshCw className="w-3.5 h-3.5" />
@@ -1787,8 +2247,7 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     if (!requireSignedIn()) return;
-                    setFeedFilter('saved');
-                    loadPosts('saved', true);
+                    handleSelectFeedFilter('saved');
                   }}
                   className="w-full p-2.5 rounded-xl hover:bg-[var(--bg-surface-alt)] text-left transition-colors flex items-center gap-2"
                 >
@@ -1801,7 +2260,7 @@ export default function App() {
             </div>
             </div>
           </PullToRefresh>
-        )}
+        </div>
 
         {/* ========================================================= */}
         {/* TAB 2: FRIENDS & SOCIAL GRAPH                             */}
@@ -1883,9 +2342,8 @@ export default function App() {
             onOpenFriends={() => setActiveNav('friends')}
             onOpenSavedPosts={() => {
               if (!requireSignedIn()) return;
-              setFeedFilter('saved');
-              loadPosts('saved', true);
               setActiveNav('home');
+              handleSelectFeedFilter('saved');
             }}
             onOpenNotifications={() => {
               if (requireSignedIn()) setIsNotificationsOpen(true);
@@ -1956,7 +2414,7 @@ export default function App() {
         {/* ========================================================= */}
         {activeNav === 'youtube' && (
           <YouTubeFullExperience
-            onBackToMotherland={() => setActiveNav('home')}
+            onBackToMotherland={() => navigateToHome({ scrollMode: 'restore' })}
             refreshSignal={ytRefreshSignal}
           />
         )}
@@ -1967,7 +2425,7 @@ export default function App() {
         {activeNav === 'bd_services' && (
           <BangladeshServicesView
             currentUser={currentUser}
-            onBack={() => setActiveNav('home')}
+            onBack={() => navigateToHome({ scrollMode: 'restore' })}
             onOpenAuth={() => setIsAuthOpen(true)}
           />
         )}
@@ -2006,47 +2464,49 @@ export default function App() {
           activeTab={shortsPlayerState.isOpen ? 'shorts' : activeNav}
           onTabChange={(tab) => {
             if (tab === 'shorts') {
-              const latestUnsuppressed = filterUnsuppressed(shorts).filter(isEligibleShortVideo);
+              const latestUnsuppressed = filterUnsuppressed(shortsRef.current).filter(isEligibleShortVideo);
               openShortsPlayer(latestUnsuppressed, 0);
-              setIsLoadingMoreShorts(true);
+              const reqSeq = ++shortsReqSeqRef.current;
+              shortsAbortRef.current?.abort();
+              const controller = new AbortController();
+              shortsAbortRef.current = controller;
+              setIsLoadingHomeShorts(true);
               api
-                .getShorts(false, 1, 12)
+                .getShorts(false, 1, 12, '', controller.signal)
                 .then((res) => {
+                  if (controller.signal.aborted || reqSeq !== shortsReqSeqRef.current) return;
                   const fresh = filterUnsuppressed(res.shorts || []).filter(isEligibleShortVideo);
-                  setShorts(fresh);
-                  setShortsPage(1);
-                  setShortsNextPageToken(res.nextPageToken || null);
-                  setShortsHasMore(res.hasMore !== false);
-                  setShortsPlayerState((prev) =>
-                    prev.isOpen && prev.list.length > 0
-                      ? prev
-                      : { isOpen: true, list: fresh, initialIndex: 0 }
-                  );
+                  if (fresh.length > 0) {
+                    setShorts(fresh);
+                    setShortsPage(1);
+                    setShortsNextPageToken(res.nextPageToken || null);
+                    setShortsHasMore(res.hasMore !== false);
+                    recordShownFeedIds('shorts', fresh.map((s) => s.youtubeId || s.id));
+                    setShortsPlayerState((prev) =>
+                      prev.isOpen && prev.list.length > 0
+                        ? prev
+                        : { isOpen: true, list: fresh, initialIndex: 0 }
+                    );
+                  }
                 })
                 .catch(() => {})
-                .finally(() => setIsLoadingMoreShorts(false));
+                .finally(() => {
+                  if (reqSeq === shortsReqSeqRef.current) {
+                    setIsLoadingHomeShorts(false);
+                  }
+                });
               return;
             }
             if (tab === 'video' && activeNav === 'video' && activeWatchVideo && !isWatchMinimized) {
               setIsWatchMinimized(true);
               return;
             }
-            setActiveNav(tab);
             if (tab === 'home') {
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-              loadPosts(feedFilter, true);
-              api.getStories().then((s) => setStories(s.stories || [])).catch(() => {});
-              api
-                .getShorts(false, 1, 12)
-                .then((s) => {
-                  const fresh = filterUnsuppressed(s.shorts || []).filter(isEligibleShortVideo);
-                  setShorts(fresh);
-                  setShortsPage(1);
-                  setShortsNextPageToken(s.nextPageToken || null);
-                  setShortsHasMore(s.hasMore !== false);
-                })
-                .catch(() => {});
-            } else if (tab === 'friends') {
+              navigateToHome({ scrollMode: activeNavRef.current === 'home' ? 'top' : 'restore' });
+              return;
+            }
+            setActiveNav(tab);
+            if (tab === 'friends') {
               setFriendsRefreshSignal((s) => s + 1);
             } else if (tab === 'video') {
               setVideoRefreshSignal((s) => s + 1);
@@ -2081,14 +2541,19 @@ export default function App() {
             setVideoPublishState({ isOpen: true, initialDestination: 'select' });
           }}
           onPostCreated={() => {
-            void loadPosts(feedFilter, true);
+            void loadPosts(feedFilterRef.current, true, { preserveExisting: true });
             void refreshCurrentUserCounts();
           }}
           onStoryCreated={() =>
-            api.getStories().then((res) => setStories(res.stories || []))
+            api
+              .getStories()
+              .then((res) => {
+                if (Array.isArray(res.stories) && res.stories.length > 0) setStories(res.stories);
+              })
+              .catch(() => {})
           }
           onShortCreated={() => {
-            api.getShorts().then((res) => setShorts(res.shorts || []));
+            void refreshHomeShorts({ forceLoading: false, preserveExisting: true });
             void refreshCurrentUserCounts();
           }}
         />
@@ -2102,15 +2567,20 @@ export default function App() {
           currentUser={currentUser}
           initialDestination={videoPublishState.initialDestination}
           onMotherlandVideoCreated={() => {
-            api.getLongVideos().then((res) => setLongVideos(res.videos || []));
-            void loadPosts(feedFilter, true);
+            api
+              .getLongVideos()
+              .then((res) => {
+                if (Array.isArray(res.videos) && res.videos.length > 0) setLongVideos(res.videos);
+              })
+              .catch(() => {});
+            void loadPosts(feedFilterRef.current, true, { preserveExisting: true });
             void refreshCurrentUserCounts();
           }}
           onMotherlandPostCreated={() => {
-            void loadPosts(feedFilter, true);
+            void loadPosts(feedFilterRef.current, true, { preserveExisting: true });
             void refreshCurrentUserCounts();
           }}
-          onYouTubeConnectionChanged={bootstrapApp}
+          onYouTubeConnectionChanged={() => bootstrapApp({ preserveExisting: true })}
         />
       )}
 

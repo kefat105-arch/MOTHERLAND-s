@@ -961,9 +961,9 @@ export const api = {
   },
 
   // Stories
-  async getStories(): Promise<{ stories: Story[] }> {
-    const res = await authFetch(`${API_BASE}/stories`);
-    return res.json();
+  async getStories(signal?: AbortSignal): Promise<{ stories: Story[] }> {
+    const res = await authFetch(`${API_BASE}/stories`, { signal });
+    return parseJsonOrThrow(res);
   },
 
   async createStory(data: { mediaUrl: string; mediaType?: 'image' | 'video'; caption?: string }) {
@@ -1011,7 +1011,7 @@ export const api = {
     if (includeWatched) params.set('includeWatched', '1');
     if (pageToken) params.set('pageToken', pageToken);
     const res = await authFetch(`${API_BASE}/videos/shorts?${params.toString()}`, { signal });
-    return res.json();
+    return parseJsonOrThrow(res);
   },
 
   async createShort(data: {
@@ -1031,10 +1031,10 @@ export const api = {
     return parseJsonOrThrow(res);
   },
 
-  async getLongVideos(includeWatched = false): Promise<{ videos: LongVideo[] }> {
+  async getLongVideos(includeWatched = false, signal?: AbortSignal): Promise<{ videos: LongVideo[] }> {
     const qs = includeWatched ? '?includeWatched=1' : '';
-    const res = await authFetch(`${API_BASE}/videos/long${qs}`);
-    return res.json();
+    const res = await authFetch(`${API_BASE}/videos/long${qs}`, { signal });
+    return parseJsonOrThrow(res);
   },
 
   async createLongVideo(data: { videoUrl: string; thumbnailUrl?: string; title: string; description?: string; duration?: string; tags?: string[] }) {
