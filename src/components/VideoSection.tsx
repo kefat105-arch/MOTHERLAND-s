@@ -48,6 +48,7 @@ import {
   CollapsibleDescription,
   TranslatableText,
 } from './common/ExpandableTranslatableText';
+import { buildMotherlandVideoShareUrl, warmVideoThumbnail } from '../utils/videoShareLinks';
 
 interface VideoSectionProps {
   currentUser: UserProfile | null;
@@ -60,6 +61,7 @@ interface VideoSectionProps {
   onWatchVideo: (video: LongVideo) => void;
   onMinimizeWatch: () => void;
   onStageAnchorChange: (el: HTMLDivElement | null) => void;
+  onUpNextChange?: (video: LongVideo | null) => void;
   onOpenComments: (info: { postId?: string; youtubeVideoId?: string; title?: string }) => void;
   onOpenPlatformHub: () => void;
   onOpenShortsPlayer: (shortsList: ShortVideo[], startIndex: number) => void;
@@ -89,6 +91,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   onWatchVideo,
   onMinimizeWatch,
   onStageAnchorChange,
+  onUpNextChange,
   onOpenComments,
   onOpenPlatformHub,
   onOpenShortsPlayer,
@@ -148,6 +151,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const queryAbortRef = useRef<AbortController | null>(null);
 
   const isWatchPageOpen = Boolean(watchingVideo && !isWatchMinimized);
+
+  // Inform PersistentWatchPlayer of the upcoming video + warm top thumbnails for zero-delay transitions
+  useEffect(() => {
+    if (!watchingVideo) {
+      onUpNextChange?.(null);
+      return;
+    }
+    const nextCandidates = longVideosList.filter((v) => v.id !== watchingVideo.id);
+    onUpNextChange?.(nextCandidates[0] || null);
+    nextCandidates.slice(0, 4).forEach((v) => warmVideoThumbnail(v.thumbnailUrl));
+  }, [watchingVideo?.id, longVideosList, onUpNextChange]);
 
   // Preserve & restore window scroll when switching between tabs or exiting Watch Page
   useEffect(() => {
@@ -708,9 +722,12 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   };
 
   const handleShareVideo = async (video: LongVideo) => {
-    const shareUrl = video.youtubeId
-      ? `https://www.youtube.com/watch?v=${video.youtubeId}`
-      : window.location.href;
+    const shareUrl = buildMotherlandVideoShareUrl({
+      id: video.id,
+      youtubeId: video.youtubeId,
+      source: video.source,
+      isShort: false,
+    });
     if (navigator.share) {
       try {
         await navigator.share({ title: video.title, url: shareUrl });

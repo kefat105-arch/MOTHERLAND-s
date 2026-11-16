@@ -7,11 +7,15 @@ import {
   sendYTCommand,
   registerYTListeningHandshake,
   parseYTInfoMessage,
+  recordVideoSwitchMetric,
 } from '../utils/youtubePlayerBridge';
+import { warmVideoThumbnail } from '../utils/videoShareLinks';
 import { recordWatchedSuppression } from '../services/watchSuppression';
+import { VideoBrandOverlay } from './common/VideoBrandOverlay';
 
 interface PersistentWatchPlayerProps {
   video: LongVideo | null;
+  upNextVideo?: LongVideo | null;
   isMinimized: boolean;
   isFullWatchVisible: boolean; // true only when activeNav === 'video' && !isMinimized
   isPausedByOverlay: boolean; // pauses when ShortsPlayerModal is open
@@ -30,6 +34,7 @@ function formatWatchTime(sec: number): string {
 
 export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
   video,
+  upNextVideo = null,
   isMinimized,
   isFullWatchVisible,
   isPausedByOverlay,
@@ -43,6 +48,8 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
   const ytIframeRef = useRef<HTMLIFrameElement | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(true);
+  const [isBuffering, setIsBuffering] = useState(true);
+  const [frameReady, setFrameReady] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -58,6 +65,13 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
 
   const isYouTube = Boolean(video?.source === 'youtube' && video?.youtubeId);
 
+  // Persistent YouTube iframe initial URL lock so loadVideoById reuses the SAME iframe across switches!
+  const [ytBaseEmbedUrl, setYtBaseEmbedUrl] = useState<string>('');
+  const ytBoundVideoIdRef = useRef<string | null>(null);
+  const ytReadyHandshakeDoneRef = useRef<boolean>(false);
+  const switchStartMsRef = useRef<number>(performance.now());
+  const metricLoggedForIdRef = useRef<string>('');
+
   const watchedSecondsRef = useRef(0);
   const lastReportedSecRef = useRef(0);
   const currentTimeRef = useRef(0);
@@ -65,14 +79,71 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
   currentTimeRef.current = currentTime;
   durationRef.current = duration;
 
-  // Reset playback counters only when switching to a genuinely different video ID
+  // Initialize or seamlessly swap YouTube video via loadVideoById without destroying the iframe
   useEffect(() => {
+    switchStartMsRef.current = performance.now();
+    metricLoggedForIdRef.current = '';
     setIsPlaying(true);
     setCurrentTime(0);
     setDuration(0);
     watchedSecondsRef.current = 0;
     lastReportedSecRef.current = 0;
-  }, [video?.id]);
+
+    if (!video) {
+      ytBoundVideoIdRef.current = null;
+      ytReadyHandshakeDoneRef.current = false;
+      setYtBaseEmbedUrl('');
+      setFrameReady(false);
+      setIsBuffering(false);
+      return;
+    }
+
+    setFrameReady(false);
+    setIsBuffering(true);
+    if (video.thumbnailUrl) warmVideoThumbnail(video.thumbnailUrl);
+
+    if (isYouTube && video.youtubeId) {
+      if (!ytBaseEmbedUrl) {
+        // First YouTube load mounts the single persistent iframe
+        ytBoundVideoIdRef.current = video.youtubeId;
+        ytReadyHandshakeDoneRef.current = false;
+        setYtBaseEmbedUrl(
+          buildYouTubeEmbedUrl(video.youtubeId, {
+            autoplay: true,
+            controls: true,
+            loop: false,
+            mute: false,
+          })
+        );
+      } else if (ytBoundVideoIdRef.current !== video.youtubeId) {
+        // Subsequent YouTube switches REUSE the already-mounted iframe (zero player bootstrap!)
+        ytBoundVideoIdRef.current = video.youtubeId;
+        sendYTCommand(ytIframeRef.current, 'loadVideoById', [
+          { videoId: video.youtubeId, startSeconds: 0 },
+        ]);
+        sendYTCommand(ytIframeRef.current, isMuted ? 'mute' : 'unMute');
+      }
+    } else {
+      // Switching to native MOTHERLAND stream
+      ytBoundVideoIdRef.current = null;
+      ytReadyHandshakeDoneRef.current = false;
+      setYtBaseEmbedUrl('');
+    }
+
+    // Safety reveal fallback if a sandboxed iframe blocks postMessage infoDelivery
+    const revealTimer = window.setTimeout(() => {
+      setFrameReady(true);
+      setIsBuffering(false);
+    }, 2400);
+
+    return () => window.clearTimeout(revealTimer);
+  }, [video?.id, video?.youtubeId, isYouTube]);
+
+  // Preload upNextVideo thumbnail + native stream metadata/buffer when idle
+  useEffect(() => {
+    if (!upNextVideo) return;
+    warmVideoThumbnail(upNextVideo.thumbnailUrl);
+  }, [upNextVideo?.id, upNextVideo?.thumbnailUrl]);
 
   // Accurate meaningful watch progress reporting (>= 8s or >= 25%) for both guests & signed-in users
   useEffect(() => {
@@ -166,6 +237,7 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
       nativeVideoRef.current.pause();
     }
     setIsPlaying(false);
+    setIsBuffering(false);
   }, [isPausedByOverlay, video, isYouTube]);
 
   // Sync mute state
@@ -178,29 +250,56 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
     }
   }, [isMuted, video, isYouTube]);
 
-  // Parse real YouTube time/state updates
+  // Parse real YouTube time/state updates ONLY for this iframe & target videoId
   useEffect(() => {
     if (!video || !isYouTube) return;
+    const expectedYtId = video.youtubeId;
     const onMessage = (event: MessageEvent) => {
-      const parsed = parseYTInfoMessage(event);
+      const parsed = parseYTInfoMessage(event, ytIframeRef.current);
       if (!parsed) return;
+      // Ignore trailing events from a previous video during rapid switch
+      if (parsed.videoId && expectedYtId && parsed.videoId !== expectedYtId) return;
+
       if (typeof parsed.currentTime === 'number') setCurrentTime(parsed.currentTime);
       if (typeof parsed.duration === 'number' && parsed.duration > 0) setDuration(parsed.duration);
       if (typeof parsed.playerState === 'number') {
-        if (parsed.playerState === 1) setIsPlaying(true);
-        else if (parsed.playerState === 2) setIsPlaying(false);
+        if (parsed.playerState === 1) {
+          setIsPlaying(true);
+          setIsBuffering(false);
+          setFrameReady(true);
+          if (expectedYtId && metricLoggedForIdRef.current !== expectedYtId) {
+            metricLoggedForIdRef.current = expectedYtId;
+            recordVideoSwitchMetric({
+              player: 'watch',
+              videoId: expectedYtId,
+              reusedPlayer: ytReadyHandshakeDoneRef.current,
+              startupMs: Math.round(performance.now() - switchStartMsRef.current),
+            });
+            ytReadyHandshakeDoneRef.current = true;
+          }
+        } else if (parsed.playerState === 2) {
+          setIsPlaying(false);
+          setIsBuffering(false);
+          setFrameReady(true);
+        } else if (parsed.playerState === 3) {
+          setIsBuffering(true);
+        } else if (parsed.playerState === 5) {
+          // Video cued and ready to play
+          setFrameReady(true);
+        }
       }
       if (typeof parsed.muted === 'boolean') setIsMuted(parsed.muted);
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [video?.id, isYouTube]);
+  }, [video?.id, video?.youtubeId, isYouTube]);
 
   if (!video) return null;
 
   const togglePlayPause = () => {
     const next = !isPlaying;
     setIsPlaying(next);
+    if (!next) setIsBuffering(false);
     if (isYouTube) {
       sendYTCommand(ytIframeRef.current, next ? 'playVideo' : 'pauseVideo');
     } else if (nativeVideoRef.current) {
@@ -264,8 +363,23 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
         zIndex: 35,
       };
 
+  const showBrandOverlay =
+    !showFloatingMiniBar && ((!isPlaying && frameReady) || (isPlaying && isBuffering && !frameReady));
+
   return (
     <>
+      {/* Hidden preloader for upcoming native Up-Next video stream */}
+      {upNextVideo && upNextVideo.source !== 'youtube' && upNextVideo.videoUrl && (
+        <video
+          key={`upnext_preload_${upNextVideo.id}`}
+          src={upNextVideo.videoUrl}
+          preload="auto"
+          muted
+          playsInline
+          className="hidden"
+        />
+      )}
+
       {/* Docked Frosted Glass Mini-Player Background Shell */}
       {showFloatingMiniBar && (
         <div
@@ -319,36 +433,51 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
         </div>
       )}
 
-      {/* Single Persistent Player Stage Box — Never unmounted across scroll/minimize */}
+      {/* Single Persistent Player Stage Box — Never unmounted across scroll/minimize/switches */}
       <div
         ref={containerRef}
         data-testid="persistent-watch-stage"
         style={mediaBoxStyle}
         className="bg-black shadow-xl group"
       >
-        {/* Single Mounted Video / IFrame Node — Keyed ONLY by video.id */}
-        {isYouTube && video.youtubeId ? (
+        {/* Crisp Thumbnail Transition Backdrop — Prevents black frame while next video swaps in */}
+        {video.thumbnailUrl && (
+          <img
+            src={video.thumbnailUrl}
+            alt=""
+            aria-hidden="true"
+            className={`absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-200 z-[6] ${
+              frameReady ? 'opacity-0' : 'opacity-95'
+            }`}
+          />
+        )}
+
+        {/* Persistent Reused YouTube IFrame OR Persistent Reused Native Video Node */}
+        {isYouTube && ytBaseEmbedUrl ? (
           <iframe
             ref={ytIframeRef}
-            key={video.id}
-            src={buildYouTubeEmbedUrl(video.youtubeId, {
-              autoplay: true,
-              controls: true,
-              loop: false,
-              mute: false,
-            })}
-            onLoad={() => registerYTListeningHandshake(ytIframeRef.current, 100)}
+            key="yt-watch-persistent-iframe"
+            src={ytBaseEmbedUrl}
+            onLoad={() => {
+              registerYTListeningHandshake(ytIframeRef.current, 100);
+              if (video.youtubeId && ytBoundVideoIdRef.current && ytBoundVideoIdRef.current !== video.youtubeId) {
+                sendYTCommand(ytIframeRef.current, 'loadVideoById', [
+                  { videoId: video.youtubeId, startSeconds: 0 },
+                ]);
+              }
+            }}
             title={video.title}
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
             allowFullScreen
-            className={`w-full h-full border-0 ${showFloatingMiniBar ? 'pointer-events-none' : ''}`}
+            className={`relative z-[2] w-full h-full border-0 ${showFloatingMiniBar ? 'pointer-events-none' : ''}`}
           />
         ) : (
           <video
             ref={nativeVideoRef}
-            key={video.id}
+            key="native-watch-persistent-video"
             src={video.videoUrl}
             poster={video.thumbnailUrl}
+            preload="auto"
             autoPlay
             playsInline
             muted={isMuted}
@@ -356,14 +485,47 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
               if (showFloatingMiniBar) onExpand();
               else togglePlayPause();
             }}
+            onCanPlay={() => {
+              setFrameReady(true);
+              setIsBuffering(false);
+            }}
+            onWaiting={() => setIsBuffering(true)}
+            onPlaying={() => {
+              setIsPlaying(true);
+              setIsBuffering(false);
+              setFrameReady(true);
+              if (metricLoggedForIdRef.current !== video.id) {
+                metricLoggedForIdRef.current = video.id;
+                recordVideoSwitchMetric({
+                  player: 'watch',
+                  videoId: video.id,
+                  reusedPlayer: true,
+                  startupMs: Math.round(performance.now() - switchStartMsRef.current),
+                });
+              }
+            }}
             onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
             onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
             onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => setIsPlaying(false)}
-            className="w-full h-full object-contain cursor-pointer"
+            onPause={() => {
+              setIsPlaying(false);
+              setIsBuffering(false);
+            }}
+            onEnded={() => {
+              setIsPlaying(false);
+              setIsBuffering(false);
+            }}
+            className="relative z-[2] w-full h-full object-contain cursor-pointer"
           />
         )}
+
+        {/* MOTHERLAND Branded Pause (Smooth Rotating Logo Ring) & Buffering Overlay */}
+        <VideoBrandOverlay
+          mode={!isPlaying ? 'paused' : 'buffering'}
+          visible={showBrandOverlay}
+          interactive={!showFloatingMiniBar && !isPlaying}
+          onResume={togglePlayPause}
+        />
 
         {/* Tap overlay on Mini-Video to expand back to Watch Page */}
         {showFloatingMiniBar && (

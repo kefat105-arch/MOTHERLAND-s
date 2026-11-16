@@ -78,6 +78,7 @@ import { parseGoogleOAuthHashRedirect } from './services/youtubeAuthService';
 import { setTranslationPrefs } from './services/translationService';
 import { TranslatableText } from './components/common/ExpandableTranslatableText';
 import { playNotificationChime, playMessageChime } from './utils/motherlandSoundEngine';
+import { parseMotherlandDeepLink } from './utils/videoShareLinks';
 
 const LEGACY_FEED_CACHE_KEY = 'motherland_instant_cache_v1';
 const LAST_USER_HINT_KEY = 'motherland_last_user_hint';
@@ -183,6 +184,7 @@ export default function App() {
 
   // Persistent Long-Form Watch Player State
   const [activeWatchVideo, setActiveWatchVideo] = useState<LongVideo | null>(null);
+  const [upNextWatchVideo, setUpNextWatchVideo] = useState<LongVideo | null>(null);
   const [isWatchMinimized, setIsWatchMinimized] = useState(false);
   const [watchAnchorElement, setWatchAnchorElement] = useState<HTMLDivElement | null>(null);
 
@@ -377,6 +379,44 @@ export default function App() {
   handleCallSignalRef.current = handleCallSignal;
   activeCallPhaseRef.current = activeCall?.phase || 'idle';
 
+  // Deep-link resolver for MOTHERLAND-native shared URLs (/video/:id, /shorts/:id, /post/:id)
+  const resolveAndOpenDeepLink = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    const parsed = parseMotherlandDeepLink(window.location.pathname, window.location.search);
+    if (!parsed) return;
+    try {
+      const resolved = await api.resolveSharedLink(parsed.id, parsed.kind);
+      if (!resolved.found) return;
+      if (resolved.kind === 'short' && resolved.short) {
+        const targetShort = resolved.short;
+        setShortsPlayerState((prev) => {
+          const others = prev.list.filter(
+            (s) => s.id !== targetShort.id && (!targetShort.youtubeId || s.youtubeId !== targetShort.youtubeId)
+          );
+          return {
+            isOpen: true,
+            list: [targetShort, ...others],
+            initialIndex: 0,
+          };
+        });
+      } else if (resolved.kind === 'long' && resolved.video) {
+        setActiveWatchVideo(resolved.video);
+        setIsWatchMinimized(false);
+        setActiveNav('video');
+      } else if (resolved.kind === 'post' && resolved.post) {
+        const sharedPost = resolved.post;
+        setPosts((prev) => {
+          const rest = prev.filter((p) => p.id !== sharedPost.id);
+          return [sharedPost, ...rest];
+        });
+        setActiveNav('home');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    } catch {
+      // Ignore invalid deep link silently
+    }
+  }, []);
+
   // Initial Data Bootstrap (runs in parallel with OAuth hash completion, zero startup splash block)
   useEffect(() => {
     try {
@@ -392,7 +432,14 @@ export default function App() {
       })
       .catch(() => {});
     bootstrapApp();
-  }, []);
+    void resolveAndOpenDeepLink();
+
+    const onPopState = () => {
+      void resolveAndOpenDeepLink();
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [resolveAndOpenDeepLink]);
 
   useEffect(() => {
     setWatchSuppressionUserId(currentUser?.id || null);
@@ -792,6 +839,9 @@ export default function App() {
 
   const closeShortsPlayer = () => {
     setShortsPlayerState((prev) => ({ ...prev, isOpen: false }));
+    if (typeof window !== 'undefined' && /^\/shorts\//.test(window.location.pathname)) {
+      window.history.replaceState(null, '', '/');
+    }
     requestAnimationFrame(() => {
       window.scrollTo({ top: savedScrollRef.current, behavior: 'auto' });
     });
@@ -1799,6 +1849,7 @@ export default function App() {
             }}
             onMinimizeWatch={() => setIsWatchMinimized(true)}
             onStageAnchorChange={setWatchAnchorElement}
+            onUpNextChange={setUpNextWatchVideo}
             onOpenComments={({ postId, youtubeVideoId, title }) =>
               setCommentsDrawerState({ isOpen: true, postId, youtubeVideoId, title })
             }
@@ -1925,6 +1976,11 @@ export default function App() {
       {/* Persistent Zero-Restart Watch Player + Floating Docked Mini-Player */}
       <PersistentWatchPlayer
         video={activeWatchVideo}
+        upNextVideo={
+          upNextWatchVideo ||
+          longVideos.find((v) => v.id !== activeWatchVideo?.id) ||
+          null
+        }
         isMinimized={isWatchMinimized}
         isFullWatchVisible={activeNav === 'video' && !isWatchMinimized}
         isPausedByOverlay={shortsPlayerState.isOpen || activeNav === 'youtube'}
@@ -1938,6 +1994,9 @@ export default function App() {
         onClose={() => {
           setActiveWatchVideo(null);
           setIsWatchMinimized(false);
+          if (typeof window !== 'undefined' && /^\/video\//.test(window.location.pathname)) {
+            window.history.replaceState(null, '', '/');
+          }
         }}
       />
 

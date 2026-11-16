@@ -226,3 +226,31 @@ html.dark .ml-flame-box-active {
   animation: fire-wiggle 1.4s ease-in-out infinite;
 }
 
+/* Video Pause Orbit (Calm deliberate rotation) vs Buffering Sweep */
+@keyframes ml-pause-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ml-buffer-sweep {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ml-pause-orbit-svg {
+  animation: ml-pause-orbit 7.5s linear infinite;
+  transform-origin: center;
+}
+
+.ml-buffer-sweep-svg {
+  animation: ml-buffer-sweep 1s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
+  transform-origin: center;
+}

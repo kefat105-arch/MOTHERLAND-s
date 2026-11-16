@@ -27,13 +27,16 @@ import {
   sendYTCommand,
   registerYTListeningHandshake,
   parseYTInfoMessage,
+  recordVideoSwitchMetric,
 } from '../utils/youtubePlayerBridge';
+import { buildMotherlandVideoShareUrl, warmVideoThumbnail } from '../utils/videoShareLinks';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import { recordWatchedSuppression } from '../services/watchSuppression';
 import { FireLikeIcon, FireDislikeIcon, TalkIcon, VaultIcon, BoostIcon } from './fire/MotherlandIcons';
 import { FireRichText } from './fire/FireRichText';
 import type { CreatorProfileTarget } from './CreatorProfileModal';
 import { CollapsibleDescription } from './common/ExpandableTranslatableText';
+import { VideoBrandOverlay } from './common/VideoBrandOverlay';
 
 interface ShortsPlayerModalProps {
   isOpen: boolean;
@@ -90,18 +93,28 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [actionNotice, setActionNotice] = useState<{ text: string; url?: string } | null>(null);
 
-  // Playback progress
+  // Playback progress & instant-switch zero-black-screen state
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [isBuffering, setIsBuffering] = useState(true);
+  const [frameReady, setFrameReady] = useState(false);
 
   // Live swipe / drag gesture state
   const [dragOffsetY, setDragOffsetY] = useState(0);
   const [dragHint, setDragHint] = useState<'next' | 'prev' | 'close' | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
 
+  // 2-Slot Pooled Players (alternating active & preloaded next slot for near-instant swipes)
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const ytIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const videoSlotRefs = useRef<[HTMLVideoElement | null, HTMLVideoElement | null]>([null, null]);
+  const ytSlotRefs = useRef<[HTMLIFrameElement | null, HTMLIFrameElement | null]>([null, null]);
+  const ytSlotInitialSrcRef = useRef<[string, string]>(['', '']);
+  const ytSlotBoundVideoIdRef = useRef<[string, string]>(['', '']);
+  const ytSlotReadyIdRef = useRef<[string, string]>(['', '']);
+  const nativeSlotReadyIdRef = useRef<[string, string]>(['', '']);
+  const switchStartMsRef = useRef<number>(performance.now());
+  const metricLoggedKeyRef = useRef<string>('');
+  const [ytSlotUrls, setYtSlotUrls] = useState<[string, string]>(['', '']);
 
   const touchStartYRef = useRef<number | null>(null);
   const touchStartXRef = useRef<number | null>(null);
@@ -130,6 +143,15 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
       setCurrentTime(0);
       setDuration(0);
       setMoreMenuOpen(false);
+    } else {
+      // Release iframe slots cleanly on modal close so background audio never lingers
+      ytSlotInitialSrcRef.current = ['', ''];
+      ytSlotBoundVideoIdRef.current = ['', ''];
+      ytSlotReadyIdRef.current = ['', ''];
+      nativeSlotReadyIdRef.current = ['', ''];
+      setYtSlotUrls(['', '']);
+      setFrameReady(false);
+      setIsBuffering(false);
     }
   }, [isOpen, initialIndex]);
 
@@ -144,8 +166,10 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const watchedSecondsRef = useRef(0);
   const reportedShortRef = useRef(false);
 
-  // Reset per-video state on index switch
+  // Reset per-video counters & prepare instant frame readiness on index switch
   useEffect(() => {
+    switchStartMsRef.current = performance.now();
+    metricLoggedKeyRef.current = '';
     setCurrentTime(0);
     setDuration(0);
     setIsPlaying(true);
@@ -193,61 +217,206 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     };
   }, [isOpen, currentIndex, isPlaying, items, duration, currentTime]);
 
-  // Preload next 2 Shorts thumbnails & next native video asset for instant playback
+  // Preload next 3 Shorts thumbnails for zero-flash vertical swipe
   useEffect(() => {
     if (!isOpen) return;
-    [items[currentIndex + 1], items[currentIndex + 2]].forEach((nextItem) => {
-      if (nextItem?.thumbnailUrl) {
-        const img = new Image();
-        img.src = nextItem.thumbnailUrl;
-      }
+    [items[currentIndex + 1], items[currentIndex + 2], items[currentIndex + 3]].forEach((nextItem) => {
+      if (nextItem?.thumbnailUrl) warmVideoThumbnail(nextItem.thumbnailUrl);
     });
   }, [isOpen, currentIndex, items]);
 
   const currentShort = items[currentIndex] || items[0];
+  const nextShortItem = items[currentIndex + 1] || null;
+  const activeSlot = (currentIndex % 2) as 0 | 1;
+  const preloadSlot = ((currentIndex + 1) % 2) as 0 | 1;
   const isYouTube = Boolean(currentShort?.source === 'youtube' && currentShort?.youtubeId);
 
-  // Sync play/pause & mute to native <video> or YouTube iframe (only 1 active video plays)
+  // Manage 2-Slot Pooled Playback & Background Pre-Cueing (Eliminates ~2-3s IFrame tear-down delay!)
   useEffect(() => {
     if (!isOpen || !currentShort) return;
-    if (isYouTube) {
-      sendYTCommand(ytIframeRef.current, isPlaying ? 'playVideo' : 'pauseVideo');
-    } else if (videoRef.current) {
-      videoRef.current.playbackRate = playbackRate;
-      if (isPlaying) {
-        videoRef.current.play().catch(() => {});
+
+    const alreadyCued = isYouTube
+      ? Boolean(currentShort.youtubeId && ytSlotReadyIdRef.current[activeSlot] === currentShort.youtubeId)
+      : nativeSlotReadyIdRef.current[activeSlot] === currentShort.id;
+
+    setFrameReady(alreadyCued);
+    setIsBuffering(!alreadyCued);
+
+    // 1) Activate current Short on activeSlot
+    if (isYouTube && currentShort.youtubeId) {
+      const targetYtId = currentShort.youtubeId;
+      const existingSrc = ytSlotInitialSrcRef.current[activeSlot];
+      if (!existingSrc) {
+        const url = buildYouTubeEmbedUrl(targetYtId, {
+          autoplay: true,
+          controls: false,
+          loop: true,
+          mute: isMuted,
+        });
+        ytSlotInitialSrcRef.current[activeSlot] = url;
+        ytSlotBoundVideoIdRef.current[activeSlot] = targetYtId;
+        setYtSlotUrls((prev) => {
+          const copy: [string, string] = [...prev] as [string, string];
+          copy[activeSlot] = url;
+          return copy;
+        });
       } else {
-        videoRef.current.pause();
+        const iframe = ytSlotRefs.current[activeSlot];
+        if (ytSlotBoundVideoIdRef.current[activeSlot] === targetYtId) {
+          // Pre-cued slot! Instant unmute/play/restart without network re-bootstrap
+          sendYTCommand(iframe, 'seekTo', [0, true]);
+          sendYTCommand(iframe, isMuted ? 'mute' : 'unMute');
+          sendYTCommand(iframe, 'playVideo');
+        } else {
+          ytSlotBoundVideoIdRef.current[activeSlot] = targetYtId;
+          ytSlotReadyIdRef.current[activeSlot] = '';
+          sendYTCommand(iframe, 'loadVideoById', [{ videoId: targetYtId, startSeconds: 0 }]);
+          sendYTCommand(iframe, isMuted ? 'mute' : 'unMute');
+        }
+      }
+    } else if (!isYouTube && videoSlotRefs.current[activeSlot]) {
+      const vid = videoSlotRefs.current[activeSlot];
+      if (vid) {
+        vid.playbackRate = playbackRate;
+        vid.muted = isMuted;
+        vid.currentTime = 0;
+        vid.play().catch(() => {});
       }
     }
-  }, [isOpen, isPlaying, currentIndex, isYouTube, playbackRate]);
 
+    // Ensure non-active slot stays paused immediately on switch
+    if (ytSlotRefs.current[preloadSlot]) {
+      sendYTCommand(ytSlotRefs.current[preloadSlot], 'pauseVideo');
+      sendYTCommand(ytSlotRefs.current[preloadSlot], 'mute');
+    }
+    if (videoSlotRefs.current[preloadSlot]) {
+      videoSlotRefs.current[preloadSlot]!.pause();
+    }
+
+    // 2) After short settle delay (220ms) so active video gets full startup bandwidth, pre-cue nextShort!
+    const preloadTimer = window.setTimeout(() => {
+      if (!nextShortItem) return;
+      if (nextShortItem.source === 'youtube' && nextShortItem.youtubeId) {
+        const nextYtId = nextShortItem.youtubeId;
+        if (!ytSlotInitialSrcRef.current[preloadSlot]) {
+          const url = buildYouTubeEmbedUrl(nextYtId, {
+            autoplay: false,
+            controls: false,
+            loop: true,
+            mute: true,
+          });
+          ytSlotInitialSrcRef.current[preloadSlot] = url;
+          ytSlotBoundVideoIdRef.current[preloadSlot] = nextYtId;
+          setYtSlotUrls((prev) => {
+            const copy: [string, string] = [...prev] as [string, string];
+            copy[preloadSlot] = url;
+            return copy;
+          });
+        } else if (ytSlotBoundVideoIdRef.current[preloadSlot] !== nextYtId) {
+          ytSlotBoundVideoIdRef.current[preloadSlot] = nextYtId;
+          ytSlotReadyIdRef.current[preloadSlot] = '';
+          sendYTCommand(ytSlotRefs.current[preloadSlot], 'mute');
+          sendYTCommand(ytSlotRefs.current[preloadSlot], 'cueVideoById', [{ videoId: nextYtId, startSeconds: 0 }]);
+        }
+      } else if (nextShortItem.videoUrl && videoSlotRefs.current[preloadSlot]) {
+        videoSlotRefs.current[preloadSlot]!.load();
+      }
+    }, 220);
+
+    // Safety reveal fallback if a browser blocks YouTube infoDelivery messages
+    const revealTimer = window.setTimeout(() => {
+      setFrameReady(true);
+      setIsBuffering(false);
+    }, 1800);
+
+    return () => {
+      window.clearTimeout(preloadTimer);
+      window.clearTimeout(revealTimer);
+    };
+  }, [isOpen, currentIndex, currentShort?.id, currentShort?.youtubeId, nextShortItem?.id, nextShortItem?.youtubeId]);
+
+  // Sync play/pause & speed ONLY on activeSlot
   useEffect(() => {
     if (!isOpen || !currentShort) return;
     if (isYouTube) {
-      sendYTCommand(ytIframeRef.current, isMuted ? 'mute' : 'unMute');
-    } else if (videoRef.current) {
-      videoRef.current.muted = isMuted;
-    }
-  }, [isOpen, isMuted, isYouTube]);
-
-  // Listen to YouTube IFrame player state & time updates
-  useEffect(() => {
-    if (!isOpen || !isYouTube) return;
-    const onMessage = (event: MessageEvent) => {
-      const parsed = parseYTInfoMessage(event);
-      if (!parsed) return;
-      if (typeof parsed.currentTime === 'number') setCurrentTime(parsed.currentTime);
-      if (typeof parsed.duration === 'number' && parsed.duration > 0) setDuration(parsed.duration);
-      if (typeof parsed.playerState === 'number') {
-        if (parsed.playerState === 1) setIsPlaying(true);
-        else if (parsed.playerState === 2) setIsPlaying(false);
+      sendYTCommand(ytSlotRefs.current[activeSlot], isPlaying ? 'playVideo' : 'pauseVideo');
+      if (!isPlaying) setIsBuffering(false);
+    } else if (videoSlotRefs.current[activeSlot]) {
+      const vid = videoSlotRefs.current[activeSlot]!;
+      vid.playbackRate = playbackRate;
+      if (isPlaying) {
+        vid.play().catch(() => {});
+      } else {
+        vid.pause();
+        setIsBuffering(false);
       }
-      if (typeof parsed.muted === 'boolean') setIsMuted(parsed.muted);
+    }
+  }, [isOpen, isPlaying, activeSlot, isYouTube, playbackRate, currentShort?.id]);
+
+  // Sync mute state ONLY on activeSlot (preloadSlot stays muted!)
+  useEffect(() => {
+    if (!isOpen || !currentShort) return;
+    if (isYouTube) {
+      sendYTCommand(ytSlotRefs.current[activeSlot], isMuted ? 'mute' : 'unMute');
+    } else if (videoSlotRefs.current[activeSlot]) {
+      videoSlotRefs.current[activeSlot]!.muted = isMuted;
+    }
+  }, [isOpen, isMuted, activeSlot, isYouTube, currentShort?.id]);
+
+  // Listen to YouTube IFrame player state & time updates per slot cleanly isolated by window source
+  useEffect(() => {
+    if (!isOpen) return;
+    const onMessage = (event: MessageEvent) => {
+      // Check active slot first
+      const activeFrame = ytSlotRefs.current[activeSlot];
+      const activeParsed = activeFrame ? parseYTInfoMessage(event, activeFrame) : null;
+      if (activeParsed) {
+        const targetYtId = currentShort?.youtubeId;
+        if (!activeParsed.videoId || !targetYtId || activeParsed.videoId === targetYtId) {
+          if (typeof activeParsed.currentTime === 'number') setCurrentTime(activeParsed.currentTime);
+          if (typeof activeParsed.duration === 'number' && activeParsed.duration > 0) setDuration(activeParsed.duration);
+          if (typeof activeParsed.playerState === 'number') {
+            if (activeParsed.playerState === 1) {
+              setIsPlaying(true);
+              setIsBuffering(false);
+              setFrameReady(true);
+              if (targetYtId) ytSlotReadyIdRef.current[activeSlot] = targetYtId;
+              if (currentShort && metricLoggedKeyRef.current !== currentShort.id) {
+                metricLoggedKeyRef.current = currentShort.id;
+                recordVideoSwitchMetric({
+                  player: 'shorts',
+                  videoId: targetYtId || currentShort.id,
+                  reusedPlayer: currentIndex > 0,
+                  startupMs: Math.round(performance.now() - switchStartMsRef.current),
+                });
+              }
+            } else if (activeParsed.playerState === 2) {
+              setIsPlaying(false);
+              setIsBuffering(false);
+              setFrameReady(true);
+            } else if (activeParsed.playerState === 3) {
+              setIsBuffering(true);
+            } else if (activeParsed.playerState === 5 && targetYtId) {
+              ytSlotReadyIdRef.current[activeSlot] = targetYtId;
+            }
+          }
+          if (typeof activeParsed.muted === 'boolean') setIsMuted(activeParsed.muted);
+        }
+        return;
+      }
+
+      // Check preload slot so we know when nextShort finishes cuing silently in background
+      const preloadFrame = ytSlotRefs.current[preloadSlot];
+      const preloadParsed = preloadFrame ? parseYTInfoMessage(event, preloadFrame) : null;
+      if (preloadParsed && preloadParsed.playerState === 5 && nextShortItem?.youtubeId) {
+        if (!preloadParsed.videoId || preloadParsed.videoId === nextShortItem.youtubeId) {
+          ytSlotReadyIdRef.current[preloadSlot] = nextShortItem.youtubeId;
+        }
+      }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [isOpen, isYouTube, currentShort?.youtubeId]);
+  }, [isOpen, activeSlot, preloadSlot, currentIndex, currentShort?.id, currentShort?.youtubeId, nextShortItem?.youtubeId]);
 
   const goNext = useCallback(() => {
     if (currentIndex < items.length - 1) {
@@ -579,17 +748,20 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const handleSeek = (val: number) => {
     setCurrentTime(val);
     if (isYouTube) {
-      sendYTCommand(ytIframeRef.current, 'seekTo', [val, true]);
-    } else if (videoRef.current) {
-      videoRef.current.currentTime = val;
+      sendYTCommand(ytSlotRefs.current[activeSlot], 'seekTo', [val, true]);
+    } else if (videoSlotRefs.current[activeSlot]) {
+      videoSlotRefs.current[activeSlot]!.currentTime = val;
     }
   };
 
   const handleShare = async () => {
     if (!currentShort) return;
-    const shareUrl = currentShort.youtubeId
-      ? `https://youtube.com/shorts/${currentShort.youtubeId}`
-      : window.location.href;
+    const shareUrl = buildMotherlandVideoShareUrl({
+      id: currentShort.id,
+      youtubeId: currentShort.youtubeId,
+      source: currentShort.source,
+      isShort: true,
+    });
     if (navigator.share) {
       try {
         await navigator.share({ title: currentShort.title, url: shareUrl });
@@ -749,56 +921,110 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           </div>
         </div>
 
-        {/* Single Active Video Playback Layer (Only 1 Video Ever Plays, Instant Poster Backdrop) */}
-        <div className="relative w-full h-full flex items-center justify-center bg-black">
+        {/* 2-Slot Pooled Video Playback Layer (Instant Swap · Zero Black-Screen · Pre-Warmed Next Slot) */}
+        <div className="relative w-full h-full flex items-center justify-center bg-black overflow-hidden">
+          {([0, 1] as const).map((slot) => {
+            const slotShort = slot === activeSlot ? currentShort : nextShortItem;
+            const isActive = slot === activeSlot;
+            const slotIsYt = Boolean(slotShort?.source === 'youtube' && slotShort?.youtubeId);
+            const hasYtSlotUrl = Boolean(ytSlotUrls[slot]);
+
+            return (
+              <div
+                key={`shorts-slot-${slot}`}
+                className={`absolute inset-0 w-full h-full ${
+                  isActive ? 'z-[2] opacity-100' : 'z-0 opacity-0 pointer-events-none'
+                }`}
+              >
+                {hasYtSlotUrl && (slotIsYt || ytSlotUrls[slot]) && (
+                  <iframe
+                    ref={(el) => {
+                      ytSlotRefs.current[slot] = el;
+                    }}
+                    src={ytSlotUrls[slot]}
+                    onLoad={() => {
+                      registerYTListeningHandshake(ytSlotRefs.current[slot], slot + 1);
+                      if (
+                        slotShort?.youtubeId &&
+                        ytSlotBoundVideoIdRef.current[slot] &&
+                        ytSlotBoundVideoIdRef.current[slot] !== slotShort.youtubeId
+                      ) {
+                        ytSlotBoundVideoIdRef.current[slot] = slotShort.youtubeId;
+                        sendYTCommand(
+                          ytSlotRefs.current[slot],
+                          isActive ? 'loadVideoById' : 'cueVideoById',
+                          [{ videoId: slotShort.youtubeId, startSeconds: 0 }]
+                        );
+                      }
+                    }}
+                    title={slotShort?.title || 'Small Video'}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                    className={`w-full h-full border-0 pointer-events-none ${
+                      slotShort && !slotIsYt ? 'hidden' : ''
+                    }`}
+                  />
+                )}
+                {slotShort && !slotIsYt && slotShort.videoUrl && (
+                  <video
+                    ref={(el) => {
+                      videoSlotRefs.current[slot] = el;
+                    }}
+                    src={slotShort.videoUrl}
+                    poster={slotShort.thumbnailUrl}
+                    preload="auto"
+                    loop
+                    playsInline
+                    muted={!isActive || isMuted}
+                    onCanPlay={() => {
+                      nativeSlotReadyIdRef.current[slot] = slotShort.id;
+                      if (isActive) {
+                        setFrameReady(true);
+                        setIsBuffering(false);
+                      }
+                    }}
+                    onWaiting={() => {
+                      if (isActive) setIsBuffering(true);
+                    }}
+                    onPlaying={() => {
+                      nativeSlotReadyIdRef.current[slot] = slotShort.id;
+                      if (isActive) {
+                        setIsPlaying(true);
+                        setFrameReady(true);
+                        setIsBuffering(false);
+                        if (metricLoggedKeyRef.current !== slotShort.id) {
+                          metricLoggedKeyRef.current = slotShort.id;
+                          recordVideoSwitchMetric({
+                            player: 'shorts',
+                            videoId: slotShort.id,
+                            reusedPlayer: currentIndex > 0,
+                            startupMs: Math.round(performance.now() - switchStartMsRef.current),
+                          });
+                        }
+                      }
+                    }}
+                    onTimeUpdate={(e) => {
+                      if (isActive) setCurrentTime(e.currentTarget.currentTime);
+                    }}
+                    onLoadedMetadata={(e) => {
+                      if (isActive) setDuration(e.currentTarget.duration);
+                    }}
+                    className="w-full h-full object-cover"
+                  />
+                )}
+              </div>
+            );
+          })}
+
+          {/* Instant Thumbnail Backdrop until Active Video Confirms Ready First Frame */}
           {currentShort.thumbnailUrl && (
             <img
               src={currentShort.thumbnailUrl}
               alt=""
               aria-hidden="true"
-              className="absolute inset-0 w-full h-full object-cover opacity-80 pointer-events-none"
-            />
-          )}
-          {isYouTube && currentShort.youtubeId ? (
-            <iframe
-              ref={ytIframeRef}
-              key={currentShort.youtubeId}
-              src={buildYouTubeEmbedUrl(currentShort.youtubeId, {
-                autoplay: true,
-                controls: false,
-                loop: true,
-                mute: false,
-              })}
-              onLoad={() => registerYTListeningHandshake(ytIframeRef.current, currentIndex + 1)}
-              title={currentShort.title}
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-              className="relative z-[1] w-full h-full border-0 pointer-events-none"
-            />
-          ) : (
-            <video
-              ref={videoRef}
-              key={currentShort.id}
-              src={currentShort.videoUrl}
-              poster={currentShort.thumbnailUrl}
-              loop
-              playsInline
-              autoPlay
-              muted={isMuted}
-              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-              className="w-full h-full object-cover"
-            />
-          )}
-
-          {nextShort && !nextShort.youtubeId && nextShort.videoUrl && (
-            <video
-              key={`preload_${nextShort.id}`}
-              src={nextShort.videoUrl}
-              preload="auto"
-              muted
-              playsInline
-              className="hidden"
+              className={`absolute inset-0 z-[5] w-full h-full object-cover pointer-events-none transition-opacity duration-200 ${
+                frameReady ? 'opacity-0' : 'opacity-95'
+              }`}
             />
           )}
 
@@ -818,18 +1044,11 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
             }}
           />
 
-          {/* Paused / Tap Pulse Feedback */}
-          {(!isPlaying || playPulseIcon) && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-25">
-              <div className="w-16 h-16 rounded-full bg-black/55 backdrop-blur-md border border-[#D0AF72]/40 text-white flex items-center justify-center shadow-2xl">
-                {!isPlaying || playPulseIcon === 'play' ? (
-                  <Play className="w-7 h-7 fill-current ml-0.5 text-[#D0AF72]" />
-                ) : (
-                  <Pause className="w-7 h-7 text-white" />
-                )}
-              </div>
-            </div>
-          )}
+          {/* MOTHERLAND Branded Paused (Rotating Original Logo) vs Genuine Buffering Indicator */}
+          <VideoBrandOverlay
+            mode={isPlaying && isBuffering ? 'buffering' : 'paused'}
+            visible={!isPlaying || (isPlaying && isBuffering && !frameReady) || playPulseIcon === 'pause'}
+          />
 
           {/* Double-Tap Heart Burst */}
           {showHeartBurst && (
@@ -1169,11 +1388,13 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    navigator.clipboard?.writeText(
-                      currentShort.youtubeId
-                        ? `https://youtube.com/shorts/${currentShort.youtubeId}`
-                        : window.location.href
-                    );
+                    const shareUrl = buildMotherlandVideoShareUrl({
+                      id: currentShort.id,
+                      youtubeId: currentShort.youtubeId,
+                      source: currentShort.source,
+                      isShort: true,
+                    });
+                    navigator.clipboard?.writeText(shareUrl);
                     setCopiedId(currentShort.id);
                     setMoreMenuOpen(false);
                     setTimeout(() => setCopiedId(null), 1800);

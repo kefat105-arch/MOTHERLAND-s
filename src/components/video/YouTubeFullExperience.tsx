@@ -74,6 +74,15 @@ import {
   CollapsibleDescription,
   TranslatableText,
 } from '../common/ExpandableTranslatableText';
+import { VideoBrandOverlay } from '../common/VideoBrandOverlay';
+import {
+  buildYouTubeEmbedUrl,
+  sendYTCommand,
+  registerYTListeningHandshake,
+  parseYTInfoMessage,
+  recordVideoSwitchMetric,
+} from '../../utils/youtubePlayerBridge';
+import { buildMotherlandVideoShareUrl, warmVideoThumbnail } from '../../utils/videoShareLinks';
 import {
   searchYouTubeChannels,
   searchYouTubePlaylists,
@@ -233,9 +242,17 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     Array<{ id: string; title: string; channel: string; time: string; read: boolean }>
   >([]);
 
-  // Fullscreen Player State
+  // Fullscreen & Persistent Watch Player Reuse State
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const ytWatchIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const ytWatchBoundIdRef = useRef<string>('');
+  const ytSwitchStartRef = useRef<number>(performance.now());
+  const ytMetricLoggedIdRef = useRef<string>('');
+  const [ytBaseWatchSrc, setYtBaseWatchSrc] = useState<string>('');
+  const [ytFrameReady, setYtFrameReady] = useState(false);
+  const [ytIsPlaying, setYtIsPlaying] = useState(true);
+  const [ytIsBuffering, setYtIsBuffering] = useState(true);
 
   // Infinite Scroll, Request Cancellation & Deduplication Refs
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -302,12 +319,48 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     }
   }, [authUser?.accessToken, loadChannelVideos]);
 
-  // Fetch real comments & channel subscription status whenever active video changes
+  // Reuse persistent Watch iframe across video switches via loadVideoById & fetch comments/sub status
   useEffect(() => {
     if (!activeVideo?.videoId) {
       setComments([]);
+      ytWatchBoundIdRef.current = '';
+      setYtBaseWatchSrc('');
+      setYtFrameReady(false);
+      setYtIsBuffering(false);
       return;
     }
+
+    ytSwitchStartRef.current = performance.now();
+    ytMetricLoggedIdRef.current = '';
+    setYtFrameReady(false);
+    setYtIsPlaying(true);
+    setYtIsBuffering(true);
+    if (activeVideo.thumbnailUrl) warmVideoThumbnail(activeVideo.thumbnailUrl);
+    videos.filter((v) => v.videoId !== activeVideo.videoId).slice(0, 4).forEach((v) => warmVideoThumbnail(v.thumbnailUrl));
+
+    if (!ytBaseWatchSrc) {
+      ytWatchBoundIdRef.current = activeVideo.videoId;
+      setYtBaseWatchSrc(
+        buildYouTubeEmbedUrl(activeVideo.videoId, {
+          autoplay: true,
+          controls: true,
+          loop: false,
+          mute: false,
+          nocookie: true,
+        })
+      );
+    } else if (ytWatchBoundIdRef.current !== activeVideo.videoId) {
+      ytWatchBoundIdRef.current = activeVideo.videoId;
+      sendYTCommand(ytWatchIframeRef.current, 'loadVideoById', [
+        { videoId: activeVideo.videoId, startSeconds: 0 },
+      ]);
+    }
+
+    const revealTimer = window.setTimeout(() => {
+      setYtFrameReady(true);
+      setYtIsBuffering(false);
+    }, 2400);
+
     setActionNotice(null);
     getYouTubeVideoComments(activeVideo.videoId, 15).then((cmts) => {
       setComments(cmts);
@@ -324,7 +377,46 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         })
         .catch(() => {});
     }
+
+    return () => window.clearTimeout(revealTimer);
   }, [activeVideo?.videoId, activeVideo?.creatorName, activeVideo?.sourceMetadata?.channelId]);
+
+  // Listen to YouTube Watch iframe playerState for pause/buffering overlay & ready detection
+  useEffect(() => {
+    if (!activeVideo?.videoId) return;
+    const expectedId = activeVideo.videoId;
+    const onMessage = (event: MessageEvent) => {
+      const parsed = parseYTInfoMessage(event, ytWatchIframeRef.current);
+      if (!parsed) return;
+      if (parsed.videoId && parsed.videoId !== expectedId) return;
+      if (typeof parsed.playerState === 'number') {
+        if (parsed.playerState === 1) {
+          setYtIsPlaying(true);
+          setYtIsBuffering(false);
+          setYtFrameReady(true);
+          if (ytMetricLoggedIdRef.current !== expectedId) {
+            ytMetricLoggedIdRef.current = expectedId;
+            recordVideoSwitchMetric({
+              player: 'yt_watch',
+              videoId: expectedId,
+              reusedPlayer: Boolean(ytBaseWatchSrc),
+              startupMs: Math.round(performance.now() - ytSwitchStartRef.current),
+            });
+          }
+        } else if (parsed.playerState === 2) {
+          setYtIsPlaying(false);
+          setYtIsBuffering(false);
+          setYtFrameReady(true);
+        } else if (parsed.playerState === 3) {
+          setYtIsBuffering(true);
+        } else if (parsed.playerState === 5) {
+          setYtFrameReady(true);
+        }
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [activeVideo?.videoId, ytBaseWatchSrc]);
 
   // Suppress active YouTube video after 6 seconds of playback so it stays hidden for 14 days
   useEffect(() => {
@@ -1100,17 +1192,47 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                   </span>
                 </div>
 
-                {/* 16:9 Responsive Video Player with Aspect Ratio Preserved */}
+                {/* 16:9 Persistent Reused Video Player with Thumbnail Backdrop (Zero Black Screen) */}
                 <div className="relative w-full aspect-video bg-black overflow-hidden flex items-center justify-center">
-                  <iframe
-                    key={activeVideo.videoId}
-                    src={`https://www.youtube-nocookie.com/embed/${activeVideo.videoId}?autoplay=1&enablejsapi=1&origin=${encodeURIComponent(
-                      typeof window !== 'undefined' ? window.location.origin : ''
-                    )}`}
-                    title={activeVideo.title}
-                    className="w-full h-full border-0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    allowFullScreen
+                  {activeVideo.thumbnailUrl && (
+                    <img
+                      src={activeVideo.thumbnailUrl}
+                      alt=""
+                      aria-hidden="true"
+                      className={`absolute inset-0 z-[5] w-full h-full object-cover pointer-events-none transition-opacity duration-200 ${
+                        ytFrameReady ? 'opacity-0' : 'opacity-95'
+                      }`}
+                    />
+                  )}
+                  {ytBaseWatchSrc && (
+                    <iframe
+                      ref={ytWatchIframeRef}
+                      key="yt-experience-persistent-watch-iframe"
+                      src={ytBaseWatchSrc}
+                      onLoad={() => {
+                        registerYTListeningHandshake(ytWatchIframeRef.current, 200);
+                        if (
+                          activeVideo.videoId &&
+                          ytWatchBoundIdRef.current &&
+                          ytWatchBoundIdRef.current !== activeVideo.videoId
+                        ) {
+                          ytWatchBoundIdRef.current = activeVideo.videoId;
+                          sendYTCommand(ytWatchIframeRef.current, 'loadVideoById', [
+                            { videoId: activeVideo.videoId, startSeconds: 0 },
+                          ]);
+                        }
+                      }}
+                      title={activeVideo.title}
+                      className="relative z-[2] w-full h-full border-0"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                    />
+                  )}
+                  <VideoBrandOverlay
+                    mode={ytIsPlaying && ytIsBuffering ? 'buffering' : 'paused'}
+                    visible={(!ytIsPlaying && ytFrameReady) || (ytIsPlaying && ytIsBuffering && !ytFrameReady)}
+                    interactive={!ytIsPlaying}
+                    onResume={() => sendYTCommand(ytWatchIframeRef.current, 'playVideo')}
                   />
 
                   {/* Interactive Fullscreen Overlay Button */}
@@ -1219,9 +1341,23 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
                       <button
                         type="button"
-                        onClick={() => {
-                          navigator.clipboard.writeText(activeVideo.originalVideoUrl);
-                          setCopiedNotice('Boost link copied!');
+                        onClick={async () => {
+                          const shareUrl = buildMotherlandVideoShareUrl({
+                            id: activeVideo.id,
+                            youtubeId: activeVideo.videoId,
+                            source: 'youtube',
+                            isShort: false,
+                          });
+                          if (navigator.share) {
+                            try {
+                              await navigator.share({ title: activeVideo.title, url: shareUrl });
+                              return;
+                            } catch {
+                              // fallback to clipboard
+                            }
+                          }
+                          navigator.clipboard.writeText(shareUrl);
+                          setCopiedNotice('MOTHERLAND link copied!');
                           setTimeout(() => setCopiedNotice(null), 2000);
                         }}
                         className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-semibold flex items-center gap-1.5 border border-white/10"

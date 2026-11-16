@@ -1,12 +1,13 @@
 // Lightweight YouTube IFrame Player API bridge using native postMessage.
-// Lets Shorts & Watch Player control real playback (play/pause/mute/seek)
-// and read real currentTime/duration/playerState without extra script races.
+// Enables player reuse (`loadVideoById`, `cueVideoById`), accurate target-video
+// frame-ready detection, and multi-slot iframe isolation without full player tear-down.
 
 export interface YTPlayerStateMessage {
   currentTime?: number;
   duration?: number;
   playerState?: number; // -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
   muted?: boolean;
+  videoId?: string;
 }
 
 export function buildYouTubeEmbedUrl(
@@ -16,9 +17,10 @@ export function buildYouTubeEmbedUrl(
     controls?: boolean;
     loop?: boolean;
     mute?: boolean;
+    nocookie?: boolean;
   } = {}
 ): string {
-  const { autoplay = true, controls = true, loop = false, mute = false } = options;
+  const { autoplay = true, controls = true, loop = false, mute = false, nocookie = false } = options;
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const params = new URLSearchParams({
     autoplay: autoplay ? '1' : '0',
@@ -33,16 +35,29 @@ export function buildYouTubeEmbedUrl(
   if (origin) {
     params.set('origin', origin);
   }
-  if (loop) {
+  if (loop && videoId) {
     params.set('loop', '1');
     params.set('playlist', videoId);
   }
-  return `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
+  const host = nocookie ? 'https://www.youtube-nocookie.com' : 'https://www.youtube.com';
+  return `${host}/embed/${videoId}?${params.toString()}`;
 }
+
+export type YTCommandName =
+  | 'playVideo'
+  | 'pauseVideo'
+  | 'mute'
+  | 'unMute'
+  | 'seekTo'
+  | 'loadVideoById'
+  | 'cueVideoById'
+  | 'setPlaybackRate'
+  | 'setVolume'
+  | 'setLoop';
 
 export function sendYTCommand(
   iframe: HTMLIFrameElement | null,
-  func: 'playVideo' | 'pauseVideo' | 'mute' | 'unMute' | 'seekTo',
+  func: YTCommandName,
   args: any[] = []
 ) {
   if (!iframe?.contentWindow) return;
@@ -76,12 +91,22 @@ export function registerYTListeningHandshake(iframe: HTMLIFrameElement | null, i
   }
 }
 
-export function parseYTInfoMessage(event: MessageEvent): YTPlayerStateMessage | null {
+export function parseYTInfoMessage(
+  event: MessageEvent,
+  expectedIframe?: HTMLIFrameElement | null
+): YTPlayerStateMessage | null {
   if (
     !event.origin.includes('youtube.com') &&
     !event.origin.includes('youtube-nocookie.com')
   ) {
     return null;
+  }
+
+  // When checking a specific pooled iframe slot, ensure the message originated from that slot
+  if (expectedIframe) {
+    if (!expectedIframe.contentWindow || event.source !== expectedIframe.contentWindow) {
+      return null;
+    }
   }
 
   let data = event.data;
@@ -95,13 +120,14 @@ export function parseYTInfoMessage(event: MessageEvent): YTPlayerStateMessage | 
 
   if (!data || typeof data !== 'object') return null;
 
-  // YouTube posts both `infoDelivery` and `onStateChange`
   if (data.event === 'infoDelivery' && data.info && typeof data.info === 'object') {
     const out: YTPlayerStateMessage = {};
     if (typeof data.info.currentTime === 'number') out.currentTime = data.info.currentTime;
     if (typeof data.info.duration === 'number') out.duration = data.info.duration;
     if (typeof data.info.playerState === 'number') out.playerState = data.info.playerState;
     if (typeof data.info.muted === 'boolean') out.muted = data.info.muted;
+    const vidId = data.info.videoData?.video_id;
+    if (typeof vidId === 'string' && vidId) out.videoId = vidId;
     return out;
   }
 
@@ -110,4 +136,23 @@ export function parseYTInfoMessage(event: MessageEvent): YTPlayerStateMessage | 
   }
 
   return null;
+}
+
+export function recordVideoSwitchMetric(entry: {
+  player: 'watch' | 'shorts' | 'yt_shorts' | 'yt_watch';
+  videoId: string;
+  reusedPlayer: boolean;
+  startupMs: number;
+}) {
+  if (typeof window === 'undefined') return;
+  const w = window as unknown as {
+    __MOTHERLAND_VIDEO_METRICS__?: Array<typeof entry & { recordedAt: number }>;
+  };
+  if (!w.__MOTHERLAND_VIDEO_METRICS__) {
+    w.__MOTHERLAND_VIDEO_METRICS__ = [];
+  }
+  w.__MOTHERLAND_VIDEO_METRICS__.push({ ...entry, recordedAt: Date.now() });
+  if (w.__MOTHERLAND_VIDEO_METRICS__.length > 50) {
+    w.__MOTHERLAND_VIDEO_METRICS__.shift();
+  }
 }

@@ -5213,6 +5213,192 @@ app.get('/api/videos/long', (req: Request, res: Response) => {
   });
 });
 
+// MOTHERLAND-Native Video, Short & Post Deep-Link Resolver
+app.get('/api/videos/resolve/:videoId', async (req: Request, res: Response) => {
+  const rawId = decodeURIComponent(String(req.params.videoId || '')).trim();
+  const preferredType = String(req.query.type || '').trim(); // 'short' | 'video' | 'long' | 'post'
+  if (!rawId) {
+    return res.status(400).json({ found: false, error: 'Missing videoId' });
+  }
+
+  const candidateYtId = rawId.startsWith('yt_') ? rawId.slice(3) : rawId;
+  const currentUserId = (req as any).userId as string | undefined;
+
+  // 1. Check MOTHERLAND posts if requested or matching post_ ID
+  const matchedPost = db
+    .getAllPosts()
+    .find(
+      (p) =>
+        p.id === rawId ||
+        p.externalId === rawId ||
+        p.externalId === candidateYtId
+    );
+  if (matchedPost && db.canViewerSeePost(currentUserId, matchedPost)) {
+    const hydrated = db.hydratePostForUser(matchedPost, currentUserId);
+    if (preferredType === 'post') {
+      return res.json({ found: true, kind: 'post', post: hydrated });
+    }
+    if (matchedPost.mediaType === 'video' && matchedPost.mediaUrl) {
+      return res.json({
+        found: true,
+        kind: 'long',
+        video: {
+          id: matchedPost.id,
+          source: matchedPost.source === 'youtube' ? 'youtube' : 'motherland',
+          youtubeId: matchedPost.source === 'youtube' ? matchedPost.externalId : undefined,
+          videoUrl: matchedPost.mediaUrl,
+          thumbnailUrl: matchedPost.thumbnailUrl || '',
+          title: matchedPost.content || 'MOTHERLAND Video',
+          description: matchedPost.content || '',
+          duration: '0:00',
+          channel: {
+            id: matchedPost.author.id,
+            title: matchedPost.author.displayName,
+            avatar: matchedPost.author.avatar || '',
+            isVerified: matchedPost.author.isVerified,
+          },
+          stats: {
+            views: 0,
+            likes: hydrated.stats?.likes || 0,
+            comments: hydrated.stats?.comments || 0,
+          },
+          publishedAt: matchedPost.createdAt,
+        },
+        post: hydrated,
+      });
+    }
+  }
+
+  // 2. Check local MOTHERLAND ShortVideos first when short is preferred or ID matches
+  const matchedShort = db
+    .getShortVideos()
+    .find(
+      (s) =>
+        s.id === rawId ||
+        s.id === candidateYtId ||
+        (s.youtubeId && s.youtubeId === candidateYtId)
+    );
+  if (matchedShort && (preferredType === 'short' || preferredType === '')) {
+    return res.json({ found: true, kind: 'short', short: matchedShort });
+  }
+
+  // 3. Check local MOTHERLAND LongVideos
+  const matchedLong = db
+    .getLongVideos()
+    .find(
+      (v) =>
+        v.id === rawId ||
+        v.id === candidateYtId ||
+        (v.youtubeId && v.youtubeId === candidateYtId)
+    );
+  if (matchedLong && preferredType !== 'short') {
+    return res.json({ found: true, kind: 'long', video: matchedLong });
+  }
+
+  // 4. Resolve real metadata via YouTube Data API v3 for YouTube video/short links
+  const isValidYtId = /^[a-zA-Z0-9_-]{11}$/.test(candidateYtId);
+  if (isValidYtId) {
+    try {
+      const data = await fetchFromYouTubeApi('videos', {
+        part: 'snippet,contentDetails,statistics',
+        id: candidateYtId,
+      });
+      const item = data?.items?.[0];
+      if (item) {
+        const mapped = mapYouTubeVideoDetailsToItem(item);
+        const [enriched] = await enrichVideoItemsWithChannelMeta([mapped]);
+        const isShortKind =
+          preferredType === 'short' ||
+          (preferredType !== 'long' &&
+            preferredType !== 'video' &&
+            enriched.durationSeconds > 0 &&
+            enriched.durationSeconds <= 180);
+
+        const shortObj: ShortVideo = {
+          id: `yt_${candidateYtId}`,
+          source: 'youtube',
+          youtubeId: candidateYtId,
+          videoUrl: '',
+          thumbnailUrl: enriched.thumbnailUrl,
+          title: enriched.title,
+          caption: enriched.description,
+          hashtags: [],
+          durationSeconds: enriched.durationSeconds,
+          creator: {
+            id: enriched.channel?.id || candidateYtId,
+            name: enriched.channel?.title || 'Creator',
+            username: (enriched.channel?.title || 'creator').toLowerCase().replace(/[^a-z0-9]/g, ''),
+            avatar: enriched.channel?.avatar || '',
+            isVerified: Boolean(enriched.channel?.isVerified),
+            isFollowing: false,
+          },
+          stats: {
+            likes: enriched.stats?.likes || 0,
+            comments: enriched.stats?.comments || 0,
+            shares: 0,
+            views: enriched.stats?.views || 0,
+          },
+          createdAt: enriched.publishedAt || new Date().toISOString(),
+        };
+
+        return res.json({
+          found: true,
+          kind: isShortKind ? 'short' : 'long',
+          short: isShortKind ? shortObj : undefined,
+          video: enriched,
+        });
+      }
+    } catch {
+      // Fallback embeddable descriptor when API key quota is temporarily unavailable
+      const isShortFallback = preferredType === 'short';
+      const fallbackThumb = `https://i.ytimg.com/vi/${candidateYtId}/hqdefault.jpg`;
+      if (isShortFallback) {
+        return res.json({
+          found: true,
+          kind: 'short',
+          short: {
+            id: `yt_${candidateYtId}`,
+            source: 'youtube',
+            youtubeId: candidateYtId,
+            videoUrl: '',
+            thumbnailUrl: fallbackThumb,
+            title: 'YouTube Small Video',
+            caption: '',
+            hashtags: [],
+            durationSeconds: 60,
+            creator: { id: candidateYtId, name: 'Creator', username: 'creator', avatar: '' },
+            stats: { likes: 0, comments: 0, shares: 0, views: 0 },
+            createdAt: new Date().toISOString(),
+          },
+        });
+      }
+      return res.json({
+        found: true,
+        kind: 'long',
+        video: {
+          id: `yt_${candidateYtId}`,
+          source: 'youtube',
+          youtubeId: candidateYtId,
+          thumbnailUrl: fallbackThumb,
+          title: 'YouTube Video',
+          description: '',
+          duration: '0:00',
+          channel: {
+            id: candidateYtId,
+            title: 'YouTube Creator',
+            avatar: '',
+            url: `https://www.youtube.com/watch?v=${candidateYtId}`,
+          },
+          stats: { views: 0, likes: 0, comments: 0 },
+          publishedAt: 'YouTube',
+        },
+      });
+    }
+  }
+
+  return res.status(404).json({ found: false, error: 'Video not found' });
+});
+
 app.post('/api/videos/watch-progress', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;

@@ -1596,4 +1596,24 @@ export const api = {
     if (!res.ok) return { authenticated: false, ageYears: null, loanEligible: null, isMinor: false };
     return res.json();
   },
+
+  async resolveSharedLink(
+    videoId: string,
+    preferredType?: 'video' | 'short' | 'post'
+  ): Promise<{
+    found: boolean;
+    kind: 'short' | 'long' | 'post';
+    short?: ShortVideo;
+    video?: LongVideo;
+    post?: Post;
+  }> {
+    const typeQ = preferredType ? `?type=${encodeURIComponent(preferredType)}` : '';
+    const res = await authFetch(
+      `${API_BASE}/videos/resolve/${encodeURIComponent(videoId)}${typeQ}`
+    );
+    if (!res.ok) {
+      return { found: false, kind: preferredType === 'short' ? 'short' : 'long' };
+    }
+    return res.json();
+  },
 };

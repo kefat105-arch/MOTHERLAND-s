@@ -32,6 +32,8 @@ import {
   CollapsibleDescription,
   TranslatableText,
 } from './common/ExpandableTranslatableText';
+import { VideoBrandOverlay } from './common/VideoBrandOverlay';
+import { buildMotherlandPostShareUrl } from '../utils/videoShareLinks';
 
 interface PostCardProps {
   post: Post;
@@ -76,7 +78,11 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxDragY, setLightboxDragY] = useState(0);
+  const [hasVideoStarted, setHasVideoStarted] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [isVideoBuffering, setIsVideoBuffering] = useState(false);
 
+  const inlineVideoRef = useRef<HTMLVideoElement | null>(null);
   const carouselStartXRef = useRef<number | null>(null);
   const lightboxStartYRef = useRef<number | null>(null);
 
@@ -102,7 +108,7 @@ export const PostCard: React.FC<PostCardProps> = ({
       : [];
 
   const handleCopyLink = () => {
-    const url = post.originalUrl || window.location.href;
+    const url = buildMotherlandPostShareUrl(post);
     navigator.clipboard?.writeText(url);
     setCopiedLink(true);
     setShareMenuOpen(false);
@@ -459,18 +465,42 @@ export const PostCard: React.FC<PostCardProps> = ({
         ) : post.mediaType === 'video' && post.mediaUrl ? (
           <div className="relative aspect-video w-full bg-black overflow-hidden">
             <video
+              ref={inlineVideoRef}
               src={post.mediaUrl}
               poster={post.thumbnailUrl}
+              preload="metadata"
               playsInline
               loop
               muted={isMuted}
               controls
+              onPlay={() => {
+                setHasVideoStarted(true);
+                setIsVideoPlaying(true);
+              }}
+              onPlaying={() => {
+                setHasVideoStarted(true);
+                setIsVideoPlaying(true);
+                setIsVideoBuffering(false);
+              }}
+              onPause={() => {
+                setIsVideoPlaying(false);
+                setIsVideoBuffering(false);
+              }}
+              onWaiting={() => setIsVideoBuffering(true)}
+              onCanPlay={() => setIsVideoBuffering(false)}
               className="w-full h-full object-contain"
+            />
+            <VideoBrandOverlay
+              compact
+              mode={isVideoPlaying && isVideoBuffering ? 'buffering' : 'paused'}
+              visible={hasVideoStarted && (!isVideoPlaying || isVideoBuffering)}
+              interactive={!isVideoPlaying}
+              onResume={() => inlineVideoRef.current?.play().catch(() => {})}
             />
             <button
               type="button"
               onClick={() => setIsMuted((m) => !m)}
-              className="absolute top-3 right-3 p-1.5 rounded-lg bg-black/60 text-white"
+              className="absolute top-3 right-3 z-20 p-1.5 rounded-lg bg-black/60 text-white"
               aria-label={isMuted ? 'Unmute' : 'Mute'}
             >
               {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}

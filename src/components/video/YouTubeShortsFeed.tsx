@@ -38,6 +38,15 @@ import { FireEmojiPicker } from '../fire/FireEmojiPicker';
 import { FireRichText } from '../fire/FireRichText';
 import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 import { CollapsibleDescription } from '../common/ExpandableTranslatableText';
+import { VideoBrandOverlay } from '../common/VideoBrandOverlay';
+import {
+  buildYouTubeEmbedUrl,
+  sendYTCommand,
+  registerYTListeningHandshake,
+  parseYTInfoMessage,
+  recordVideoSwitchMetric,
+} from '../../utils/youtubePlayerBridge';
+import { buildMotherlandVideoShareUrl, warmVideoThumbnail } from '../../utils/videoShareLinks';
 
 interface YouTubeShortsFeedProps {
   onBackToHome?: () => void;
@@ -82,6 +91,17 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const shortsAbortRef = useRef<AbortController | null>(null);
+
+  // 2-Slot Pooled YouTube IFrames for instant zero-black-screen swipe transitions
+  const [ytFrameReady, setYtFrameReady] = useState(false);
+  const [ytBuffering, setYtBuffering] = useState(true);
+  const [ytSlotUrls, setYtSlotUrls] = useState<[string, string]>(['', '']);
+  const ytSlotRefs = useRef<[HTMLIFrameElement | null, HTMLIFrameElement | null]>([null, null]);
+  const ytSlotInitialSrcRef = useRef<[string, string]>(['', '']);
+  const ytSlotBoundIdRef = useRef<[string, string]>(['', '']);
+  const ytSlotReadyIdRef = useRef<[string, string]>(['', '']);
+  const switchStartMsRef = useRef<number>(performance.now());
+  const metricLoggedIdRef = useRef<string>('');
 
   const mapFeedItemToShort = (item: any): UnifiedVideo | null => {
     if (typeof item.durationSeconds !== 'number' || item.durationSeconds <= 0 || item.durationSeconds > 180) {
@@ -195,15 +215,16 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
   }, []);
 
-  // Track 4s genuine Short watch for 7-day suppression + preload next 2 Short thumbnails
+  // Track 4s genuine Short watch for 7-day suppression + preload next 3 Short thumbnails
   const activeShortForTrack = shorts[currentIndex];
+  const nextShortForPreload = shorts[currentIndex + 1];
+  const activeYtSlot = (currentIndex % 2) as 0 | 1;
+  const preloadYtSlot = ((currentIndex + 1) % 2) as 0 | 1;
+
   useEffect(() => {
     if (!activeShortForTrack) return;
-    [shorts[currentIndex + 1], shorts[currentIndex + 2]].forEach((upcoming) => {
-      if (upcoming?.thumbnailUrl) {
-        const img = new Image();
-        img.src = upcoming.thumbnailUrl;
-      }
+    [shorts[currentIndex + 1], shorts[currentIndex + 2], shorts[currentIndex + 3]].forEach((upcoming) => {
+      if (upcoming?.thumbnailUrl) warmVideoThumbnail(upcoming.thumbnailUrl);
     });
     const timer = window.setTimeout(() => {
       if (isPlaying) {
@@ -212,6 +233,151 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     }, 4000);
     return () => window.clearTimeout(timer);
   }, [activeShortForTrack?.id, currentIndex, isPlaying, shorts]);
+
+  // Manage 2-Slot Pooled YouTube Shorts switching & next-video cueing
+  useEffect(() => {
+    if (!activeShortForTrack?.videoId) return;
+    switchStartMsRef.current = performance.now();
+    metricLoggedIdRef.current = '';
+
+    const activeId = activeShortForTrack.videoId;
+    const isPreCued = ytSlotReadyIdRef.current[activeYtSlot] === activeId;
+    setYtFrameReady(isPreCued);
+    setYtBuffering(!isPreCued);
+
+    if (!ytSlotInitialSrcRef.current[activeYtSlot]) {
+      const url = buildYouTubeEmbedUrl(activeId, {
+        autoplay: true,
+        controls: false,
+        loop: true,
+        mute: isMuted,
+        nocookie: true,
+      });
+      ytSlotInitialSrcRef.current[activeYtSlot] = url;
+      ytSlotBoundIdRef.current[activeYtSlot] = activeId;
+      setYtSlotUrls((prev) => {
+        const copy: [string, string] = [...prev] as [string, string];
+        copy[activeYtSlot] = url;
+        return copy;
+      });
+    } else {
+      const frame = ytSlotRefs.current[activeYtSlot];
+      if (ytSlotBoundIdRef.current[activeYtSlot] === activeId) {
+        sendYTCommand(frame, 'seekTo', [0, true]);
+        sendYTCommand(frame, isMuted ? 'mute' : 'unMute');
+        sendYTCommand(frame, 'playVideo');
+      } else {
+        ytSlotBoundIdRef.current[activeYtSlot] = activeId;
+        ytSlotReadyIdRef.current[activeYtSlot] = '';
+        sendYTCommand(frame, 'loadVideoById', [{ videoId: activeId, startSeconds: 0 }]);
+        sendYTCommand(frame, isMuted ? 'mute' : 'unMute');
+      }
+    }
+
+    // Pause inactive slot immediately
+    if (ytSlotRefs.current[preloadYtSlot]) {
+      sendYTCommand(ytSlotRefs.current[preloadYtSlot], 'pauseVideo');
+      sendYTCommand(ytSlotRefs.current[preloadYtSlot], 'mute');
+    }
+
+    const cueTimer = window.setTimeout(() => {
+      const nextId = nextShortForPreload?.videoId;
+      if (!nextId) return;
+      if (!ytSlotInitialSrcRef.current[preloadYtSlot]) {
+        const url = buildYouTubeEmbedUrl(nextId, {
+          autoplay: false,
+          controls: false,
+          loop: true,
+          mute: true,
+          nocookie: true,
+        });
+        ytSlotInitialSrcRef.current[preloadYtSlot] = url;
+        ytSlotBoundIdRef.current[preloadYtSlot] = nextId;
+        setYtSlotUrls((prev) => {
+          const copy: [string, string] = [...prev] as [string, string];
+          copy[preloadYtSlot] = url;
+          return copy;
+        });
+      } else if (ytSlotBoundIdRef.current[preloadYtSlot] !== nextId) {
+        ytSlotBoundIdRef.current[preloadYtSlot] = nextId;
+        ytSlotReadyIdRef.current[preloadYtSlot] = '';
+        sendYTCommand(ytSlotRefs.current[preloadYtSlot], 'mute');
+        sendYTCommand(ytSlotRefs.current[preloadYtSlot], 'cueVideoById', [{ videoId: nextId, startSeconds: 0 }]);
+      }
+    }, 240);
+
+    const revealTimer = window.setTimeout(() => {
+      setYtFrameReady(true);
+      setYtBuffering(false);
+    }, 1800);
+
+    return () => {
+      window.clearTimeout(cueTimer);
+      window.clearTimeout(revealTimer);
+    };
+  }, [activeShortForTrack?.videoId, nextShortForPreload?.videoId, activeYtSlot, preloadYtSlot]);
+
+  // Sync play/pause & mute directly to active slot iframe via postMessage
+  useEffect(() => {
+    if (!activeShortForTrack?.videoId) return;
+    sendYTCommand(ytSlotRefs.current[activeYtSlot], isPlaying ? 'playVideo' : 'pauseVideo');
+    if (!isPlaying) setYtBuffering(false);
+  }, [isPlaying, activeYtSlot, activeShortForTrack?.videoId]);
+
+  useEffect(() => {
+    if (!activeShortForTrack?.videoId) return;
+    sendYTCommand(ytSlotRefs.current[activeYtSlot], isMuted ? 'mute' : 'unMute');
+  }, [isMuted, activeYtSlot, activeShortForTrack?.videoId]);
+
+  // Listen to per-slot YouTube player messages
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const activeFrame = ytSlotRefs.current[activeYtSlot];
+      const activeParsed = activeFrame ? parseYTInfoMessage(event, activeFrame) : null;
+      if (activeParsed) {
+        const expectedId = activeShortForTrack?.videoId;
+        if (!activeParsed.videoId || !expectedId || activeParsed.videoId === expectedId) {
+          if (typeof activeParsed.playerState === 'number') {
+            if (activeParsed.playerState === 1) {
+              setIsPlaying(true);
+              setYtBuffering(false);
+              setYtFrameReady(true);
+              if (expectedId) ytSlotReadyIdRef.current[activeYtSlot] = expectedId;
+              if (expectedId && metricLoggedIdRef.current !== expectedId) {
+                metricLoggedIdRef.current = expectedId;
+                recordVideoSwitchMetric({
+                  player: 'yt_shorts',
+                  videoId: expectedId,
+                  reusedPlayer: currentIndex > 0,
+                  startupMs: Math.round(performance.now() - switchStartMsRef.current),
+                });
+              }
+            } else if (activeParsed.playerState === 2) {
+              setIsPlaying(false);
+              setYtBuffering(false);
+              setYtFrameReady(true);
+            } else if (activeParsed.playerState === 3) {
+              setYtBuffering(true);
+            } else if (activeParsed.playerState === 5 && expectedId) {
+              ytSlotReadyIdRef.current[activeYtSlot] = expectedId;
+            }
+          }
+          if (typeof activeParsed.muted === 'boolean') setIsMuted(activeParsed.muted);
+        }
+        return;
+      }
+
+      const preloadFrame = ytSlotRefs.current[preloadYtSlot];
+      const preloadParsed = preloadFrame ? parseYTInfoMessage(event, preloadFrame) : null;
+      if (preloadParsed && preloadParsed.playerState === 5 && nextShortForPreload?.videoId) {
+        if (!preloadParsed.videoId || preloadParsed.videoId === nextShortForPreload.videoId) {
+          ytSlotReadyIdRef.current[preloadYtSlot] = nextShortForPreload.videoId;
+        }
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [activeYtSlot, preloadYtSlot, currentIndex, activeShortForTrack?.videoId, nextShortForPreload?.videoId]);
 
   // Fetch more shorts when approaching end of list
   const fetchMoreShorts = useCallback(async () => {
@@ -403,10 +569,24 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     setSubscribedMap((prev) => ({ ...prev, [channel]: !prev[channel] }));
   };
 
-  const handleShare = () => {
+  const handleShare = async () => {
     if (!activeShort) return;
-    navigator.clipboard.writeText(activeShort.originalVideoUrl);
-    setShareNotice('Short link copied to clipboard!');
+    const shareUrl = buildMotherlandVideoShareUrl({
+      id: activeShort.id,
+      youtubeId: activeShort.videoId,
+      source: 'youtube',
+      isShort: true,
+    });
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: activeShort.title, url: shareUrl });
+        return;
+      } catch {
+        // fallback to clipboard
+      }
+    }
+    navigator.clipboard.writeText(shareUrl);
+    setShareNotice('MOTHERLAND link copied to clipboard!');
     setTimeout(() => setShareNotice(null), 2500);
   };
 
@@ -466,37 +646,70 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
       className="relative w-full max-w-md mx-auto h-[calc(100dvh-130px)] sm:h-[800px] max-h-[860px] bg-black rounded-none sm:rounded-3xl overflow-hidden shadow-2xl select-none flex flex-col justify-between border-0 sm:border border-white/10"
       style={{ touchAction: 'pan-y' }}
     >
-      {/* Active Short Video Player (Full 9:16 Area with instant thumbnail backdrop) */}
+      {/* 2-Slot Pre-Warmed Short Video Player Stage (Instant Swipe · Zero Black-Screen) */}
       <div className="absolute inset-0 w-full h-full bg-black z-0 flex items-center justify-center overflow-hidden">
+        {([0, 1] as const).map((slot) => {
+          const isActive = slot === activeYtSlot;
+          const slotShort = isActive ? activeShort : nextShortForPreload;
+          return (
+            <div
+              key={`yt-feed-slot-${slot}`}
+              className={`absolute inset-0 w-full h-full ${
+                isActive ? 'z-[2] opacity-100' : 'z-0 opacity-0 pointer-events-none'
+              }`}
+            >
+              {ytSlotUrls[slot] && (
+                <iframe
+                  ref={(el) => {
+                    ytSlotRefs.current[slot] = el;
+                  }}
+                  src={ytSlotUrls[slot]}
+                  onLoad={() => {
+                    registerYTListeningHandshake(ytSlotRefs.current[slot], slot + 10);
+                    if (
+                      slotShort?.videoId &&
+                      ytSlotBoundIdRef.current[slot] &&
+                      ytSlotBoundIdRef.current[slot] !== slotShort.videoId
+                    ) {
+                      ytSlotBoundIdRef.current[slot] = slotShort.videoId;
+                      sendYTCommand(
+                        ytSlotRefs.current[slot],
+                        isActive ? 'loadVideoById' : 'cueVideoById',
+                        [{ videoId: slotShort.videoId, startSeconds: 0 }]
+                      );
+                    }
+                  }}
+                  title={slotShort?.title || 'YouTube Short'}
+                  className="w-full h-full object-cover scale-[1.02] pointer-events-none border-0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              )}
+            </div>
+          );
+        })}
+
+        {/* Crisp Thumbnail Transition Layer until Active Video Confirms First Frame */}
         {activeShort.thumbnailUrl && (
           <img
             src={activeShort.thumbnailUrl}
             alt=""
             aria-hidden="true"
-            className="absolute inset-0 w-full h-full object-cover opacity-80 pointer-events-none"
+            className={`absolute inset-0 z-[5] w-full h-full object-cover pointer-events-none transition-opacity duration-200 ${
+              ytFrameReady ? 'opacity-0' : 'opacity-95'
+            }`}
           />
         )}
-        <iframe
-          key={activeShort.videoId}
-          src={`https://www.youtube-nocookie.com/embed/${activeShort.videoId}?autoplay=1&mute=${
-            isMuted ? '1' : '0'
-          }&controls=0&loop=1&playlist=${activeShort.videoId}&modestbranding=1&rel=0&playsinline=1`}
-          title={activeShort.title}
-          className="relative z-[1] w-full h-full object-cover scale-[1.02] pointer-events-none"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          allowFullScreen
-        />
 
-        {/* Click-to-Play/Pause & Sound Tap Overlay */}
+        {/* Click-to-Play/Pause Overlay + Branded Paused/Buffering Original Logo Overlay */}
         <div
-          onClick={() => setIsPlaying(!isPlaying)}
+          onClick={() => setIsPlaying((p) => !p)}
           className="absolute inset-0 z-10 cursor-pointer flex items-center justify-center bg-transparent"
         >
-          {!isPlaying && (
-            <div className="w-16 h-16 rounded-full bg-black/60 backdrop-blur-md flex items-center justify-center text-white shadow-xl animate-in zoom-in-75">
-              <Play className="w-8 h-8 fill-white ml-1" />
-            </div>
-          )}
+          <VideoBrandOverlay
+            mode={isPlaying && ytBuffering ? 'buffering' : 'paused'}
+            visible={!isPlaying || (isPlaying && ytBuffering && !ytFrameReady)}
+          />
         </div>
       </div>
 

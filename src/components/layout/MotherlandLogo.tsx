@@ -12,6 +12,7 @@ import React from 'react';
 
 interface MotherlandLogoProps {
   className?: string;
+  iconClassName?: string;
   size?: number | string;
   showText?: boolean;
   subtitle?: string;
@@ -19,6 +20,7 @@ interface MotherlandLogoProps {
 
 export const MotherlandLogo: React.FC<MotherlandLogoProps> = ({
   className = '',
+  iconClassName = '',
   size = 40,
   showText = false,
   subtitle = 'বাংলাদেশ',
@@ -27,8 +29,8 @@ export const MotherlandLogo: React.FC<MotherlandLogoProps> = ({
     <div className={`flex items-center gap-2.5 select-none ${className}`}>
       {/* Premium BTV-inspired Clean Square Enclosure */}
       <div
-        className="relative flex-shrink-0 flex items-center justify-center rounded-2xl overflow-hidden shadow-lg shadow-emerald-950/50 border border-emerald-400/40"
-        style={{ width: size, height: size }}
+        className={`relative flex-shrink-0 flex items-center justify-center rounded-2xl overflow-hidden shadow-lg shadow-emerald-950/50 border border-emerald-400/40 ${iconClassName}`}
+        style={iconClassName ? undefined : { width: size, height: size }}
       >
         <svg
           viewBox="0 0 120 120"
@@ -114,19 +116,70 @@ export const MotherlandLogo: React.FC<MotherlandLogoProps> = ({
         </svg>
       </div>
 
-      {/* Optional Typography */}
+      {/* Optional Sculpted Curved Editorial Wordmark Typography (Always visible beside logo) */}
       {showText && (
-        <div className="flex flex-col text-left leading-none">
-          <div className="flex items-center gap-1.5">
-            <span className="font-extrabold text-base sm:text-lg tracking-wider text-[var(--text-primary)]">
-              MOTHERLAND
-            </span>
+        <div className="flex flex-col text-left leading-none min-w-0">
+          <div className="flex items-center gap-1 sm:gap-1.5">
+            <svg
+              viewBox="0 0 212 34"
+              className="w-[84px] min-[360px]:w-[96px] min-[400px]:w-[114px] sm:w-[138px] h-auto overflow-visible"
+              role="img"
+              aria-label="MOTHERLAND"
+            >
+              <defs>
+                {/* Gently arched calligraphic baseline path */}
+                <path id="mlWordmarkArch" d="M 3 23 Q 106 14.5 209 23" fill="none" />
+                <linearGradient id="mlWordmarkGradLight" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#006A4E" />
+                  <stop offset="48%" stopColor="#1F6E6C" />
+                  <stop offset="82%" stopColor="#A7823F" />
+                  <stop offset="100%" stopColor="#006A4E" />
+                </linearGradient>
+                <linearGradient id="mlWordmarkGradDark" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#F8FAFC" />
+                  <stop offset="52%" stopColor="#E6D2A2" />
+                  <stop offset="85%" stopColor="#6EE7B7" />
+                  <stop offset="100%" stopColor="#F8FAFC" />
+                </linearGradient>
+                <linearGradient id="mlSwooshGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#006A4E" stopOpacity="0.2" />
+                  <stop offset="35%" stopColor="#D0AF72" stopOpacity="0.95" />
+                  <stop offset="75%" stopColor="#2B8A86" stopOpacity="0.9" />
+                  <stop offset="100%" stopColor="#F42A41" stopOpacity="0.85" />
+                </linearGradient>
+              </defs>
+
+              {/* Arched Stylized MOTHERLAND Lettering */}
+              <text
+                className="fill-[url(#mlWordmarkGradLight)] dark:fill-[url(#mlWordmarkGradDark)]"
+                style={{
+                  fontFamily: "'Cinzel', 'Cormorant Garamond', Georgia, serif",
+                  fontWeight: 800,
+                  fontSize: '20.5px',
+                  letterSpacing: '0.085em',
+                }}
+              >
+                <textPath href="#mlWordmarkArch" startOffset="50%" textAnchor="middle">
+                  MOTHERLAND
+                </textPath>
+              </text>
+
+              {/* Delicate Curved Calligraphic Flourish Underline + Crimson Star Accent */}
+              <path
+                d="M 18 28.5 Q 106 23.5 190 28.5"
+                fill="none"
+                stroke="url(#mlSwooshGrad)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+              <circle cx="195.5" cy="28" r="1.8" fill="#F42A41" />
+            </svg>
             <span className="hidden md:inline-flex text-[9px] font-mono uppercase px-1.5 py-0.5 rounded-full bg-[var(--accent-primary-soft)] text-[var(--accent-primary)] font-bold border border-[var(--accent-primary-border)]">
               BD
             </span>
           </div>
           {subtitle && (
-            <span className="text-[10px] text-[var(--accent-primary)] font-semibold mt-0.5">
+            <span className="text-[9px] sm:text-[10px] text-[var(--accent-primary)] font-semibold -mt-0.5 tracking-wide truncate">
               {subtitle}
             </span>
           )}
