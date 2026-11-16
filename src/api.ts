@@ -32,6 +32,7 @@ import type {
   ServerRegistryEntry,
   ServerSwitchHistoryEntry,
   AdminConfigChatMessage,
+  TranslationPreferences,
 } from './types';
 import {
   getSuppressedIdsHeaderValue,
@@ -148,7 +149,7 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
         : 'home';
     const recentExcluded = getRecentlyShownIds(scope);
     if (recentExcluded.length > 0 && !headers.has('x-exclude-ids')) {
-      headers.set('x-exclude-ids', recentExcluded.slice(0, 80).join(','));
+      headers.set('x-exclude-ids', recentExcluded.slice(0, 120).join(','));
     }
     if (!headers.has('x-feed-seed')) {
       headers.set('x-feed-seed', getSessionSeed());
@@ -207,15 +208,24 @@ export const api = {
     return parseJsonOrThrow(res);
   },
 
-  async searchYouTube(query: string, pageToken = '', maxResults = 15, videoDuration = '') {
+  async searchYouTube(
+    query: string,
+    pageToken = '',
+    maxResults = 15,
+    videoDuration = '',
+    options?: { continuous?: boolean; signal?: AbortSignal }
+  ) {
     const params = new URLSearchParams({
       q: query,
       maxResults: String(maxResults),
     });
     if (pageToken) params.set('pageToken', pageToken);
     if (videoDuration) params.set('videoDuration', videoDuration);
+    if (options?.continuous) params.set('continuous', '1');
 
-    const res = await authFetch(`${API_BASE}/youtube/search?${params.toString()}`);
+    const res = await authFetch(`${API_BASE}/youtube/search?${params.toString()}`, {
+      signal: options?.signal,
+    });
     return res.json();
   },
 
@@ -230,6 +240,7 @@ export const api = {
     pageToken?: string;
     page?: number;
     pageSize?: number;
+    signal?: AbortSignal;
   } = {}): Promise<{
     items: any[];
     nextPageToken: string | null;
@@ -247,7 +258,9 @@ export const api = {
     if (options.page) params.set('page', String(options.page));
     if (options.pageSize) params.set('pageSize', String(options.pageSize));
 
-    const res = await authFetch(`${API_BASE}/youtube/feed?${params.toString()}`);
+    const res = await authFetch(`${API_BASE}/youtube/feed?${params.toString()}`, {
+      signal: options.signal,
+    });
     return res.json();
   },
 
@@ -615,12 +628,38 @@ export const api = {
     return res.json().catch(() => ({ success: true }));
   },
 
-  async getCurrentUser(): Promise<{ user: UserProfile | null; isGuest?: boolean; sessionExpired?: boolean; error?: string }> {
-    const res = await authFetch(`${API_BASE}/auth/me`);
-    if (!res.ok) {
-      return { user: null, isGuest: true, sessionExpired: false, error: 'Unauthorized' };
+  async getCurrentUser(): Promise<{
+    user: UserProfile | null;
+    isGuest?: boolean;
+    sessionExpired?: boolean;
+    transientError?: boolean;
+    error?: string;
+  }> {
+    try {
+      const res = await authFetch(`${API_BASE}/auth/me`);
+      if (res.status >= 500) {
+        return { user: null, isGuest: false, sessionExpired: false, transientError: true, error: `Server error (${res.status})` };
+      }
+      if (!res.ok) {
+        return {
+          user: null,
+          isGuest: true,
+          sessionExpired: res.status === 401 || res.status === 403,
+          transientError: false,
+          error: 'Unauthorized',
+        };
+      }
+      const data = await res.json();
+      return { ...data, transientError: false };
+    } catch (err: any) {
+      return {
+        user: null,
+        isGuest: false,
+        sessionExpired: false,
+        transientError: true,
+        error: err?.message || 'Network unavailable',
+      };
     }
-    return res.json();
   },
 
   async getActiveSessions(): Promise<{ sessions: DeviceSessionInfo[] }> {
@@ -723,6 +762,7 @@ export const api = {
   async updatePreferences(data: {
     privacy?: Partial<UserPrivacySettings>;
     notificationPrefs?: Partial<NotificationPreferences>;
+    translationPrefs?: Partial<TranslationPreferences>;
     dataSaver?: boolean;
   }): Promise<{ success: boolean; user: UserProfile }> {
     const res = await authFetch(`${API_BASE}/users/preferences`, {
@@ -780,7 +820,8 @@ export const api = {
     source = 'all',
     page = 1,
     pageSize = 10,
-    ytCursor = ''
+    ytCursor = '',
+    signal?: AbortSignal
   ): Promise<{
     posts: Post[];
     total: number;
@@ -797,7 +838,7 @@ export const api = {
       pageSize: String(pageSize),
     });
     if (ytCursor) params.set('ytCursor', ytCursor);
-    const res = await authFetch(`${API_BASE}/posts?${params.toString()}`);
+    const res = await authFetch(`${API_BASE}/posts?${params.toString()}`, { signal });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData?.error || errData?.message || `Failed to load feed (${res.status})`);
@@ -953,15 +994,23 @@ export const api = {
     includeWatched = false,
     page = 1,
     pageSize = 12,
-    pageToken = ''
-  ): Promise<{ shorts: ShortVideo[]; page?: number; nextPageToken?: string | null; hasMore?: boolean }> {
+    pageToken = '',
+    signal?: AbortSignal
+  ): Promise<{
+    shorts: ShortVideo[];
+    page?: number;
+    nextPageToken?: string | null;
+    hasMore?: boolean;
+    quotaExceeded?: boolean;
+    exhaustedReason?: string;
+  }> {
     const params = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
     });
     if (includeWatched) params.set('includeWatched', '1');
     if (pageToken) params.set('pageToken', pageToken);
-    const res = await authFetch(`${API_BASE}/videos/shorts?${params.toString()}`);
+    const res = await authFetch(`${API_BASE}/videos/shorts?${params.toString()}`, { signal });
     return res.json();
   },
 

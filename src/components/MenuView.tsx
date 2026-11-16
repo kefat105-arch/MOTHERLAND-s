@@ -20,11 +20,18 @@ import {
   History,
   Globe,
   Server,
+  Languages,
 } from 'lucide-react';
 import { api } from '../api';
 import type { UserProfile, YouTubeOAuthStatus } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 import { WaveLogo } from './wave/WaveLogo';
+import {
+  SUPPORTED_TRANSLATION_LANGUAGES,
+  setTranslationPrefs,
+  useTranslationPrefs,
+  getLanguageShortLabel,
+} from '../services/translationService';
 
 interface MenuViewProps {
   currentUser: UserProfile | null;
@@ -74,6 +81,7 @@ export const MenuView: React.FC<MenuViewProps> = ({
   const [ytOAuth, setYtOAuth] = useState<YouTubeOAuthStatus | null>(null);
   const [isLoadingOAuth, setIsLoadingOAuth] = useState(true);
   const [oauthMessage, setOauthMessage] = useState('');
+  const translationPrefs = useTranslationPrefs();
 
   const loadOAuthStatus = async () => {
     setIsLoadingOAuth(true);
@@ -227,6 +235,79 @@ export const MenuView: React.FC<MenuViewProps> = ({
           </button>
         </div>
       )}
+
+      {/* 2c. Language & Automatic Translator Settings (Default: বাংলা) */}
+      <div className="ml-glass rounded-2xl p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-[var(--bg-surface-alt)] flex items-center justify-center text-[var(--accent-primary)] shrink-0">
+              <Languages className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-[var(--text-primary)]">Auto-Translate Content</p>
+              <p className="text-xs text-[var(--text-secondary)]">
+                {translationPrefs.enabled
+                  ? `Active — translating posts, titles & descriptions to ${getLanguageShortLabel(translationPrefs.targetLang)}`
+                  : 'Off — showing all content in original language'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid="auto-translate-toggle-btn"
+            onClick={async () => {
+              const next = setTranslationPrefs({ enabled: !translationPrefs.enabled });
+              if (currentUser) {
+                try {
+                  const res = await api.updatePreferences({ translationPrefs: next });
+                  onUserUpdated?.(res.user);
+                } catch {
+                  // Local pref already saved
+                }
+              }
+            }}
+            className={`min-h-[40px] px-4 py-1.5 rounded-xl text-xs font-bold border transition-colors cursor-pointer shrink-0 ${
+              translationPrefs.enabled
+                ? 'bg-[var(--accent-primary)] text-[var(--accent-primary-contrast)] border-transparent'
+                : 'bg-[var(--bg-surface-alt)] text-[var(--text-secondary)] border-[var(--border-subtle)]'
+            }`}
+          >
+            {translationPrefs.enabled ? 'On' : 'Off'}
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 pt-2 border-t border-[var(--border-subtle)]">
+          <label
+            htmlFor="translation-lang-select"
+            className="text-xs font-semibold text-[var(--text-secondary)]"
+          >
+            Target Language
+          </label>
+          <select
+            id="translation-lang-select"
+            data-testid="translation-lang-select"
+            value={translationPrefs.targetLang}
+            onChange={async (e) => {
+              const next = setTranslationPrefs({ targetLang: e.target.value });
+              if (currentUser) {
+                try {
+                  const res = await api.updatePreferences({ translationPrefs: next });
+                  onUserUpdated?.(res.user);
+                } catch {
+                  // Local pref already saved
+                }
+              }
+            }}
+            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] text-xs font-semibold text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
+          >
+            {SUPPORTED_TRANSLATION_LANGUAGES.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
 
       {/* 3. Official YouTube Account Connection Card */}
       <div className="ml-glass rounded-2xl p-4 space-y-3">

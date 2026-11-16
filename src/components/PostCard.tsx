@@ -28,6 +28,10 @@ import {
   FIRE_ACTION_BOX_CLASS,
 } from './fire/MotherlandIcons';
 import { FireRichText } from './fire/FireRichText';
+import {
+  CollapsibleDescription,
+  TranslatableText,
+} from './common/ExpandableTranslatableText';
 
 interface PostCardProps {
   post: Post;
@@ -333,7 +337,18 @@ export const PostCard: React.FC<PostCardProps> = ({
         ) : post.content ? (
           <div className="px-4 pb-3">
             <div className="text-[var(--text-primary)] text-sm leading-relaxed">
-              <FireRichText text={post.content} emojiSize="sm" />
+              {post.mediaType === 'video' || post.content.length > 160 || post.content.includes('\n') ? (
+                <CollapsibleDescription
+                  text={post.content}
+                  minLengthToCollapse={post.mediaType === 'video' ? 70 : 160}
+                  renderText={(val) => <FireRichText text={val} emojiSize="sm" />}
+                />
+              ) : (
+                <TranslatableText
+                  text={post.content}
+                  renderText={(val) => <FireRichText text={val} emojiSize="sm" />}
+                />
+              )}
             </div>
             {post.hashtags && post.hashtags.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-2">
@@ -417,7 +432,11 @@ export const PostCard: React.FC<PostCardProps> = ({
             </div>
             {post.sharedPost.content && (
               <div className="px-3 pb-2.5 text-xs text-[var(--text-secondary)] leading-relaxed">
-                <FireRichText text={post.sharedPost.content} emojiSize="xs" />
+                <CollapsibleDescription
+                  text={post.sharedPost.content}
+                  minLengthToCollapse={90}
+                  renderText={(val) => <FireRichText text={val} emojiSize="xs" />}
+                />
               </div>
             )}
             {post.sharedPost.mediaUrl && post.sharedPost.mediaType !== 'video' && (

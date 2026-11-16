@@ -48,7 +48,7 @@ app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
 
 const AUTH_COOKIE_NAME = 'ml_session';
-const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 30; // 30 days
+const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90; // 90 days sliding persistence
 
 function parseCookies(cookieHeader?: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -73,29 +73,33 @@ function isHttpsRequest(req: Request): boolean {
 }
 
 function setAuthCookie(res: Response, req: Request, token: string): void {
+  const https = isHttpsRequest(req);
   const parts = [
     `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax',
+    https ? 'SameSite=None' : 'SameSite=Lax',
     `Max-Age=${SESSION_MAX_AGE_SEC}`,
   ];
-  if (isHttpsRequest(req)) {
+  if (https) {
     parts.push('Secure');
+    parts.push('Partitioned');
   }
   res.append('Set-Cookie', parts.join('; '));
 }
 
 function clearAuthCookie(res: Response, req: Request): void {
+  const https = isHttpsRequest(req);
   const parts = [
     `${AUTH_COOKIE_NAME}=`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Lax',
+    https ? 'SameSite=None' : 'SameSite=Lax',
     'Max-Age=0',
   ];
-  if (isHttpsRequest(req)) {
+  if (https) {
     parts.push('Secure');
+    parts.push('Partitioned');
   }
   res.append('Set-Cookie', parts.join('; '));
 }
@@ -685,6 +689,8 @@ function getRelevantVideoIds(query: string, pageNum = 1, pageSize = 12): { ids: 
 interface FeedCursor {
   mode: 'api_search' | 'api_popular' | 'catalog';
   qIdx: number;
+  rIdx?: number;
+  stepsDone?: number;
   pageToken: string;
   offset: number;
 }
@@ -702,26 +708,146 @@ function decodeFeedCursor(raw: string): FeedCursor | null {
   }
 }
 
+const POPULAR_REGION_CODES = ['BD', 'IN', 'US', 'GB', 'CA', 'SG', 'MY', 'AU'];
+
 const SHORTS_DISCOVERY_QUERIES = [
-  '#shorts trending',
-  'Bangladesh shorts travel',
+  'Bangladesh shorts travel #shorts',
+  'trending #shorts',
+  'Bangla street food #shorts',
+  'cricket highlights #shorts',
   'nature 4k #shorts',
-  'science amazing #shorts',
-  'music acoustic #shorts',
-  'creative art #shorts',
+  'science experiment amazing #shorts',
+  'music acoustic guitar #shorts',
+  'creative art drawing #shorts',
   'technology coding #shorts',
   'wildlife ocean #shorts',
+  'Dhaka city view #shorts',
+  'Bangladesh village nature #shorts',
+  'football skills #shorts',
+  'cooking recipe quick #shorts',
+  'space universe facts #shorts',
+  'mountain sunrise timelapse #shorts',
+  'funny pet animals #shorts',
+  'photography tips #shorts',
+  'diy craft idea #shorts',
+  'motivation cinematic #shorts',
+  'fitness workout #shorts',
+  'history facts #shorts',
+  'gadgets review #shorts',
+  'travel adventure #shorts',
 ];
 
 const CATEGORY_DISCOVERY_QUERIES: Record<string, string[]> = {
-  all: ['4K nature documentary', 'Bangladesh travel vlog', 'technology engineering explained', 'live acoustic concert'],
-  bangla: ['Bangladesh documentary 4K', 'Sajek Valley Bangladesh travel', 'Bangla folk acoustic session'],
-  nature: ['wildlife 4K HDR nature', 'mountain aerial 4K documentary', 'ocean marine life 4K'],
-  tech: ['software architecture systems', 'AI robotics documentary', 'web engineering conference'],
-  music: ['acoustic session live performance', 'ambient chill instrumental', 'classical piano concert'],
-  gaming: ['esports highlights championship', 'indie game development documentary'],
-  trending: ['viral science documentary', 'world travel cinema 4K'],
+  all: [
+    'Bangladesh documentary travel 4K',
+    '4K nature documentary',
+    'Dhaka city life street food vlog',
+    'technology engineering explained',
+    'Bangladesh cricket highlights',
+    'live acoustic concert session',
+    'Sajek Valley Bangladesh travel',
+    'science space documentary 4K',
+    'Bangla folk music studio',
+    'world travel cinema 4K',
+    'software development AI explained',
+    'ocean wildlife documentary 4K',
+    'culinary street food tour',
+    'architecture design documentary',
+    'history civilization documentary',
+    'inspiring creator stories',
+  ],
+  bangla: [
+    'Bangladesh documentary 4K',
+    'Sajek Valley Bangladesh travel',
+    'Bangla folk acoustic session',
+    'Dhaka Bangladesh travel vlog',
+    'Cox Bazar Sundarbans 4K nature',
+    'Sylhet tea garden Bangladesh',
+    'Bangladesh cricket highlights',
+    'Bangladeshi street food tour',
+    'Coke Studio Bangla live',
+    'Bangla natok new drama',
+    'Padma Bridge Bangladesh',
+    'Bangladesh village life 4K',
+  ],
+  nature: [
+    'wildlife 4K HDR nature',
+    'mountain aerial 4K documentary',
+    'ocean marine life 4K',
+    'Sundarbans forest Bangladesh nature',
+    'Amazon rainforest 4K documentary',
+    'arctic glaciers wildlife 4K',
+    'relaxing river forest sounds 4K',
+    'earth from space 4K documentary',
+    'volcano aurora borealis 4K',
+    'safari Africa wildlife 4K',
+  ],
+  tech: [
+    'software architecture systems',
+    'AI robotics documentary',
+    'web engineering conference',
+    'Bangladesh tech startup innovation',
+    'smartphone hardware tear down review',
+    'computer science algorithms visual',
+    'spaceflight rocket engineering',
+    'electric vehicles battery tech',
+    'linux server programming tutorial',
+    'cybersecurity explained',
+  ],
+  music: [
+    'acoustic session live performance',
+    'Coke Studio Bangla acoustic',
+    'ambient chill instrumental',
+    'classical piano concert',
+    'Bangla classic song live',
+    'lofi beats study session',
+    'jazz guitar live session',
+    'violin orchestra performance',
+    'world folk instruments live',
+    'indie band tiny desk concert',
+  ],
+  gaming: [
+    'esports highlights championship',
+    'indie game development documentary',
+    'open world gameplay 4K',
+    'speedrun world record documentary',
+    'chess grandmaster highlights',
+    'mobile esports tournament',
+    'game engine graphics showcase',
+    'retro gaming documentary',
+  ],
+  trending: [
+    'Bangladesh viral trending video',
+    'viral science documentary',
+    'world travel cinema 4K',
+    'breaking technology innovation',
+    'amazing engineering megaprojects',
+    'cricket match winning moments',
+    'incredible nature phenomenon',
+    'inspirational documentary short film',
+  ],
 };
+
+function buildPersonalizedDiscoveryQueries(
+  baseQueries: string[],
+  userId?: string,
+  seed = '',
+  isShorts = false
+): string[] {
+  const interestKeywords = userId ? db.getUserInterestKeywords(userId) : [];
+  const personalQueries = interestKeywords.slice(0, 3).map((kw) =>
+    isShorts ? `${kw} #shorts` : `${kw} video`
+  );
+  const deduped = Array.from(new Set([...personalQueries, ...baseQueries]));
+  if (!seed || deduped.length <= 1) return deduped;
+  const startOffset = hashSeedNumber(`${seed}_qrot`) % deduped.length;
+  // Keep top personalized query first when present, rotate the discovery tail for fresh sessions
+  const head = personalQueries.length > 0 ? deduped.slice(0, 1) : [];
+  const rest = deduped.slice(head.length);
+  if (rest.length <= 1) return [...head, ...rest];
+  const rOff = startOffset % rest.length;
+  return [...head, ...rest.slice(rOff), ...rest.slice(0, rOff)];
+}
 
 interface CachedChannelMeta {
   avatar: string;
@@ -906,12 +1032,14 @@ async function searchYouTubeDynamic(query: string, pageNum = 1, pageSize = 15): 
   };
 }
 
-// YouTube Video & Channel Search (Part 6 & Part 7)
+// YouTube Video & Channel Search (Part 6 & Part 7 + Continuous Multi-Query Cursor Chaining)
 app.get('/api/youtube/search', async (req: Request, res: Response) => {
   const query = (req.query.q as string) || 'Bangladesh travel documentary';
-  const pageToken = (req.query.pageToken as string) || '';
-  const maxResults = (req.query.maxResults as string) || '15';
+  const rawPageToken = (req.query.pageToken as string) || '';
+  const maxResults = Math.min(25, Math.max(5, parseInt((req.query.maxResults as string) || '15', 10) || 15));
   const videoDuration = (req.query.videoDuration as string) || ''; // 'short', 'medium', 'long'
+  const continuous = req.query.continuous === '1';
+  const excludeIds = getExcludeSetFromReq(req);
 
   try {
     const directId = extractYouTubeVideoId(query);
@@ -930,93 +1058,153 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
       });
     }
 
-    const params: Record<string, string> = {
-      part: 'snippet',
-      q: query,
-      type: 'video',
-      maxResults: String(Math.min(Number(maxResults) || 15, 50)),
+    const buildSearchChain = (baseQ: string): string[] => {
+      const clean = baseQ.trim();
+      const related = CATEGORY_DISCOVERY_QUERIES[clean.toLowerCase()] || CATEGORY_DISCOVERY_QUERIES.all;
+      return Array.from(
+        new Set([
+          clean,
+          `${clean} 2026`,
+          `${clean} documentary`,
+          `${clean} Bangladesh`,
+          `${clean} latest`,
+          ...related,
+          ...CATEGORY_DISCOVERY_QUERIES.bangla,
+          ...CATEGORY_DISCOVERY_QUERIES.trending,
+        ])
+      );
     };
-    if (pageToken && !pageToken.startsWith('dyn_') && !pageToken.startsWith('page_')) {
-      params.pageToken = pageToken;
+
+    const queryChain = buildSearchChain(query);
+    let qIdx = 0;
+    let ytToken = rawPageToken;
+
+    if (rawPageToken.startsWith('mlqs_')) {
+      try {
+        const decoded = JSON.parse(Buffer.from(rawPageToken.slice(5), 'base64url').toString('utf-8'));
+        qIdx = Math.max(0, Number(decoded.qIdx) || 0);
+        ytToken = typeof decoded.pt === 'string' ? decoded.pt : '';
+      } catch {
+        qIdx = 0;
+        ytToken = '';
+      }
     }
-    if (videoDuration) params.videoDuration = videoDuration;
 
     let items: any[] = [];
     let nextPageToken: string | null = null;
     let prevPageToken: string | null = null;
     let quotaFallback = false;
+    const seenSearchIds = new Set<string>();
+    const maxAttempts = continuous ? 3 : 1;
+    let attempts = 0;
 
-    try {
-      if (pageToken.startsWith('dyn_') || pageToken.startsWith('page_')) {
-        throw { reason: 'rateLimitExceeded', message: 'Using dynamic pagination' };
+    while (items.length < maxResults && attempts < maxAttempts) {
+      attempts++;
+      const activeQuery = queryChain[qIdx] || query;
+      const params: Record<string, string> = {
+        part: 'snippet',
+        q: activeQuery,
+        type: 'video',
+        maxResults: String(maxResults),
+      };
+      if (ytToken && !ytToken.startsWith('dyn_') && !ytToken.startsWith('page_') && !ytToken.startsWith('mlqs_')) {
+        params.pageToken = ytToken;
       }
+      if (videoDuration) params.videoDuration = videoDuration;
 
-      const searchData = await fetchFromYouTubeApi('search', params);
-      nextPageToken = searchData.nextPageToken || null;
-      prevPageToken = searchData.prevPageToken || null;
+      try {
+        if (ytToken.startsWith('dyn_') || ytToken.startsWith('page_')) {
+          throw { reason: 'rateLimitExceeded', message: 'Using dynamic pagination' };
+        }
 
-      const videoIds = (searchData.items || [])
-        .map((item: any) => item?.id?.videoId)
-        .filter(Boolean)
-        .join(',');
+        const searchData = await fetchFromYouTubeApi('search', params);
+        prevPageToken = searchData.prevPageToken || null;
 
-      let videoStatsMap: Record<string, any> = {};
-      if (videoIds) {
-        try {
+        const videoIds = (searchData.items || [])
+          .map((item: any) => item?.id?.videoId)
+          .filter((vid: string | undefined) => Boolean(vid) && !seenSearchIds.has(vid!) && !excludeIds.has(vid!));
+
+        let videoStatsMap: Record<string, any> = {};
+        if (videoIds.length > 0) {
+          try {
+            const statsData = await fetchFromYouTubeApi('videos', {
+              part: 'snippet,contentDetails,statistics',
+              id: videoIds.slice(0, 25).join(','),
+            });
+            for (const item of statsData.items || []) {
+              videoStatsMap[item.id] = item;
+            }
+          } catch (statsErr) {
+            console.warn('Failed to fetch detailed statistics for videos batch:', statsErr);
+          }
+        }
+
+        for (const item of searchData.items || []) {
+          const vId = item?.id?.videoId;
+          if (!vId || seenSearchIds.has(vId) || excludeIds.has(vId)) continue;
+          seenSearchIds.add(vId);
+          const details = videoStatsMap[vId];
+          if (details) {
+            items.push(mapYouTubeVideoDetailsToItem(details));
+          } else {
+            const channelId = item?.snippet?.channelId || '';
+            items.push({
+              id: vId,
+              source: 'youtube',
+              youtubeId: vId,
+              title: item?.snippet?.title || 'Unavailable',
+              description: item?.snippet?.description || '',
+              publishedAt: item?.snippet?.publishedAt,
+              channel: {
+                id: channelId,
+                title: item?.snippet?.channelTitle || 'Unavailable',
+                avatar: '',
+                url: channelId ? `https://www.youtube.com/channel/${channelId}` : undefined,
+              },
+              thumbnailUrl:
+                item?.snippet?.thumbnails?.maxres?.url ||
+                item?.snippet?.thumbnails?.high?.url ||
+                item?.snippet?.thumbnails?.medium?.url ||
+                item?.snippet?.thumbnails?.default?.url,
+              duration: '0:00',
+              stats: { views: 0, likes: 0, comments: 0 },
+            });
+          }
+        }
+
+        if (searchData.nextPageToken) {
+          ytToken = searchData.nextPageToken;
+          nextPageToken = continuous
+            ? 'mlqs_' + Buffer.from(JSON.stringify({ qIdx, pt: ytToken })).toString('base64url')
+            : ytToken;
+        } else if (continuous && qIdx + 1 < queryChain.length) {
+          qIdx = qIdx + 1;
+          ytToken = '';
+          nextPageToken = 'mlqs_' + Buffer.from(JSON.stringify({ qIdx, pt: '' })).toString('base64url');
+        } else {
+          nextPageToken = null;
+          break;
+        }
+      } catch (searchErr: any) {
+        quotaFallback = true;
+        const pageMatch = (ytToken || '').match(/(?:page_|dyn_)(\d+)/);
+        const pageNum = pageMatch ? parseInt(pageMatch[1], 10) : 1;
+        const dynamicResult = await searchYouTubeDynamic(activeQuery, pageNum, maxResults);
+        nextPageToken = dynamicResult.nextPageToken;
+
+        if (dynamicResult.videoIds.length > 0) {
           const statsData = await fetchFromYouTubeApi('videos', {
             part: 'snippet,contentDetails,statistics',
-            id: videoIds,
+            id: dynamicResult.videoIds.join(','),
           });
-          for (const item of statsData.items || []) {
-            videoStatsMap[item.id] = item;
+          for (const rawItem of statsData.items || []) {
+            if (!seenSearchIds.has(rawItem.id)) {
+              seenSearchIds.add(rawItem.id);
+              items.push(mapYouTubeVideoDetailsToItem(rawItem));
+            }
           }
-        } catch (statsErr) {
-          console.warn('Failed to fetch detailed statistics for videos batch:', statsErr);
         }
-      }
-
-      items = (searchData.items || []).map((item: any) => {
-        const vId = item?.id?.videoId;
-        const details = videoStatsMap[vId];
-        if (details) return mapYouTubeVideoDetailsToItem(details);
-        const channelId = item?.snippet?.channelId || '';
-        return {
-          id: vId,
-          source: 'youtube',
-          youtubeId: vId,
-          title: item?.snippet?.title || 'Unavailable',
-          description: item?.snippet?.description || '',
-          publishedAt: item?.snippet?.publishedAt,
-          channel: {
-            id: channelId,
-            title: item?.snippet?.channelTitle || 'Unavailable',
-            avatar: '',
-            url: channelId ? `https://www.youtube.com/channel/${channelId}` : undefined,
-          },
-          thumbnailUrl:
-            item?.snippet?.thumbnails?.maxres?.url ||
-            item?.snippet?.thumbnails?.high?.url ||
-            item?.snippet?.thumbnails?.medium?.url ||
-            item?.snippet?.thumbnails?.default?.url,
-          duration: '0:00',
-          stats: { views: 0, likes: 0, comments: 0 },
-        };
-      });
-    } catch {
-      quotaFallback = true;
-      const pageMatch = pageToken.match(/(?:page_|dyn_)(\d+)/);
-      const pageNum = pageMatch ? parseInt(pageMatch[1], 10) : 1;
-      const dynamicResult = await searchYouTubeDynamic(query, pageNum, Number(maxResults) || 15);
-      nextPageToken = dynamicResult.nextPageToken;
-
-      if (dynamicResult.videoIds.length > 0) {
-        const statsData = await fetchFromYouTubeApi('videos', {
-          part: 'snippet,contentDetails,statistics',
-          id: dynamicResult.videoIds.join(','),
-        });
-        items = (statsData.items || []).map(mapYouTubeVideoDetailsToItem);
-      } else {
-        items = [];
+        break;
       }
     }
 
@@ -1028,7 +1216,7 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
       prevPageToken,
       quotaFallback,
       message: quotaFallback
-        ? 'Search query quota limit reached on Google Cloud project. Loaded available results via videos.list.'
+        ? 'Search query quota limit notice: loaded available results via YouTube videos API.'
         : undefined,
     });
   } catch (err: any) {
@@ -1048,8 +1236,9 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
   }
 });
 
-// Progressive Non-Repeating YouTube & Shorts Feed (Seeded fresh rotation + 7-day watch suppression)
+// Progressive Non-Repeating YouTube & Shorts Feed (Seeded fresh rotation + personalized signals + >200 item pagination + 7-day watch suppression)
 app.get('/api/youtube/feed', async (req: Request, res: Response) => {
+  const currentUserId = (req as any).userId as string | undefined;
   const type = (req.query.type as string) || 'long'; // 'long' or 'shorts'
   const category = (req.query.category as string) || 'all';
   const rawToken = (req.query.pageToken as string) || '';
@@ -1060,16 +1249,18 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
   const excludeIds = getExcludeSetFromReq(req);
   const fetchSize = suppressedIds.size > 0 || excludeIds.size > 0 ? Math.min(25, pageSize + 10) : pageSize;
 
-  const queryList =
+  const baseQueryList =
     type === 'shorts'
       ? SHORTS_DISCOVERY_QUERIES
-      : CATEGORY_DISCOVERY_QUERIES[category] || [`${category} 4K video`];
-  const initialQIdx = hashSeedNumber(`${seed}_${category}_${type}`) % queryList.length;
+      : CATEGORY_DISCOVERY_QUERIES[category] || [`${category} 4K video`, `${category} documentary`, `${category} Bangladesh`];
+  const queryList = buildPersonalizedDiscoveryQueries(baseQueryList, currentUserId, `${seed}_${category}_${type}`, type === 'shorts');
 
   try {
     let cursor: FeedCursor = decodeFeedCursor(rawToken) || {
       mode: 'api_search',
-      qIdx: initialQIdx,
+      qIdx: 0,
+      rIdx: 0,
+      stepsDone: 0,
       pageToken: '',
       offset: 0,
     };
@@ -1077,9 +1268,9 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     if (rawToken && !rawToken.startsWith('mlc_')) {
       const pm = rawToken.match(/page_(\d+)/);
       if (pm) {
-        cursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: (parseInt(pm[1], 10) - 1) * pageSize };
+        cursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: (parseInt(pm[1], 10) - 1) * pageSize };
       } else {
-        cursor = { mode: 'api_popular', qIdx: 0, pageToken: rawToken, offset: 0 };
+        cursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: rawToken, offset: 0 };
       }
     }
 
@@ -1088,12 +1279,15 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     let nextCursor: FeedCursor | null = null;
     let quotaExceeded = false;
     let exhaustedReason: string | undefined;
-    const maxAttempts = type === 'shorts' ? 4 : 2;
+    const maxAttempts = type === 'shorts' ? 8 : 5;
     let attempts = 0;
+
+    const regionOrder = category === 'bangla' ? ['BD', 'IN', 'GB', 'US', 'SG', 'MY'] : POPULAR_REGION_CODES;
 
     const pushEligibleItem = (rawItem: any) => {
       const mapped = mapYouTubeVideoDetailsToItem(rawItem);
       if (suppressedIds.has(mapped.id) || suppressedIds.has(mapped.youtubeId)) return;
+      if (excludeIds.has(mapped.id) || excludeIds.has(mapped.youtubeId)) return;
       if (seenVideoIds.has(mapped.id)) return;
       // Strict <= 180s (3 min) verification for Shorts feed
       if (type === 'shorts') {
@@ -1108,7 +1302,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
       attempts++;
       const prevCount = items.length;
 
-      // 1. Try YouTube Data API search.list with videoDuration=short for shorts (or rotated multi-query discovery)
+      // 1. Try YouTube Data API search.list across expanded query pool
       if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
         try {
           const searchParams: Record<string, string> = {
@@ -1139,6 +1333,8 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
             nextCursor = {
               mode: 'api_search',
               qIdx: cursor.qIdx,
+              rIdx: 0,
+              stepsDone: (cursor.stepsDone || 0) + 1,
               pageToken: searchData.nextPageToken,
               offset: 0,
             };
@@ -1146,26 +1342,31 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
             nextCursor = {
               mode: 'api_search',
               qIdx: cursor.qIdx + 1,
+              rIdx: 0,
+              stepsDone: (cursor.stepsDone || 0) + 1,
               pageToken: '',
               offset: 0,
             };
           } else {
-            nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+            nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
           }
         } catch (searchErr: any) {
           if (searchErr?.reason === 'quotaExceeded' || searchErr?.reason === 'dailyLimitExceeded' || searchErr?.status === 403) {
             quotaExceeded = true;
+            exhaustedReason = 'YouTube Data API search quota reached; switching to YouTube charts & verified discovery.';
           }
-          nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
         }
       } else if (cursor.mode === 'api_popular') {
-        // 2. Try YouTube chart=mostPopular pagination (filtered strictly for Shorts <= 180s)
+        // 2. Multi-region chart=mostPopular pagination (BD first for regional relevance, cycling global regions)
+        const rIdx = Math.max(0, Number(cursor.rIdx) || 0);
+        const activeRegion = regionOrder[rIdx] || 'US';
         try {
           const popParams: Record<string, string> = {
             part: 'snippet,contentDetails,statistics',
             chart: 'mostPopular',
             maxResults: String(Math.min(25, fetchSize + (type === 'shorts' ? 10 : 0))),
-            regionCode: category === 'bangla' ? 'BD' : 'US',
+            regionCode: activeRegion,
           };
           if (cursor.pageToken) popParams.pageToken = cursor.pageToken;
 
@@ -1174,27 +1375,39 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
             for (const rawItem of popData.items) {
               pushEligibleItem(rawItem);
             }
-            if (popData.nextPageToken) {
-              nextCursor = {
-                mode: 'api_popular',
-                qIdx: 0,
-                pageToken: popData.nextPageToken,
-                offset: 0,
-              };
-            } else {
-              nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
-            }
+          }
+          if (popData?.nextPageToken) {
+            nextCursor = {
+              mode: 'api_popular',
+              qIdx: 0,
+              rIdx,
+              pageToken: popData.nextPageToken,
+              offset: 0,
+            };
+          } else if (rIdx + 1 < regionOrder.length) {
+            nextCursor = {
+              mode: 'api_popular',
+              qIdx: 0,
+              rIdx: rIdx + 1,
+              pageToken: '',
+              offset: 0,
+            };
           } else {
-            nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
+            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
           }
         } catch (popErr: any) {
-          if (popErr?.reason === 'quotaExceeded' || popErr?.reason === 'dailyLimitExceeded') {
+          if (popErr?.reason === 'quotaExceeded' || popErr?.reason === 'dailyLimitExceeded' || popErr?.status === 403) {
             quotaExceeded = true;
+            exhaustedReason = 'YouTube Data API quota limit reached.';
+            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+          } else if (rIdx + 1 < regionOrder.length) {
+            nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, pageToken: '', offset: 0 };
+          } else {
+            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
           }
-          nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
         }
       } else if (cursor.mode === 'catalog') {
-        // 3. Verified catalog videos slice (rotated cleanly by seed + excludeIds + 7-day suppression)
+        // 3. Verified backup catalog slice (rotated cleanly by seed + excludeIds + 7-day suppression)
         const poolKey = type === 'shorts' ? 'shorts' : category;
         const poolPageNum = Math.floor(cursor.offset / pageSize) + 1;
         const basePool = seededShuffle(
@@ -1234,19 +1447,27 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
           nextCursor = {
             mode: 'catalog',
             qIdx: 0,
+            rIdx: 0,
             pageToken: '',
             offset: cursor.offset + pageSize,
           };
         } else {
           nextCursor = null;
           exhaustedReason = quotaExceeded
-            ? 'YouTube search quota reached and all verified backup clips have been loaded.'
+            ? 'YouTube Data API quota temporarily reached and all currently available backup videos have been loaded.'
             : 'You have reached the end of currently available videos.';
         }
       }
 
       if (!nextCursor) break;
-      if (items.length === prevCount && nextCursor.mode === cursor.mode && nextCursor.qIdx === cursor.qIdx && nextCursor.offset === cursor.offset && !nextCursor.pageToken) {
+      if (
+        items.length === prevCount &&
+        nextCursor.mode === cursor.mode &&
+        nextCursor.qIdx === cursor.qIdx &&
+        (nextCursor.rIdx || 0) === (cursor.rIdx || 0) &&
+        nextCursor.offset === cursor.offset &&
+        !nextCursor.pageToken
+      ) {
         break;
       }
       cursor = nextCursor;
@@ -3466,6 +3687,12 @@ app.put('/api/users/profile', (req: Request, res: Response) => {
     };
   }
   if (typeof dataSaver === 'boolean') updates.dataSaver = dataSaver;
+  if (req.body.translationPrefs && typeof req.body.translationPrefs === 'object') {
+    updates.translationPrefs = {
+      enabled: req.body.translationPrefs.enabled !== false,
+      targetLang: String(req.body.translationPrefs.targetLang || 'bn').trim().toLowerCase() || 'bn',
+    };
+  }
   if (socialLinks) updates.socialLinks = { ...user.socialLinks, ...socialLinks };
   if (isPrivate !== undefined) updates.isPrivate = isPrivate;
   if (twoFactorEnabled !== undefined) updates.twoFactorEnabled = twoFactorEnabled;
@@ -3477,7 +3704,7 @@ app.put('/api/users/profile', (req: Request, res: Response) => {
 app.put('/api/users/preferences', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const { privacy, notificationPrefs, dataSaver } = req.body || {};
+  const { privacy, notificationPrefs, translationPrefs, dataSaver } = req.body || {};
   const updates: Partial<UserAccount> = {};
   if (privacy && typeof privacy === 'object') {
     updates.privacy = { ...user.privacy, ...privacy };
@@ -3494,11 +3721,181 @@ app.put('/api/users/preferences', (req: Request, res: Response) => {
       ...notificationPrefs,
     };
   }
+  if (translationPrefs && typeof translationPrefs === 'object') {
+    updates.translationPrefs = {
+      enabled: translationPrefs.enabled !== false,
+      targetLang: String(translationPrefs.targetLang || 'bn').trim().toLowerCase() || 'bn',
+    };
+  }
   if (typeof dataSaver === 'boolean') {
     updates.dataSaver = dataSaver;
   }
   const updated = db.updateUser(user.id, updates);
   res.json({ success: true, user: db.toPublicProfile(updated || user, user.id, getOnlineUserIds()) });
+});
+
+// ==========================================
+// AUTOMATIC TRANSLATOR ENGINE (DEFAULT: BENGALI 'bn')
+// ==========================================
+const SERVER_TRANSLATION_CACHE = new Map<string, { translatedText: string; detectedSourceLanguage: string; unchanged: boolean }>();
+
+function detectLikelySameTargetScript(text: string, targetLang: string): boolean {
+  const clean = text.trim();
+  if (!clean) return true;
+  if (targetLang === 'bn') {
+    const bengaliChars = (clean.match(/[\u0980-\u09FF]/g) || []).length;
+    const latinChars = (clean.match(/[A-Za-z]/g) || []).length;
+    return bengaliChars >= 2 && bengaliChars >= latinChars * 0.4;
+  }
+  if (targetLang === 'ar' || targetLang === 'ur') {
+    const arabicChars = (clean.match(/[\u0600-\u06FF]/g) || []).length;
+    const latinChars = (clean.match(/[A-Za-z]/g) || []).length;
+    return arabicChars >= 2 && arabicChars >= latinChars * 0.4;
+  }
+  if (targetLang === 'hi') {
+    const devChars = (clean.match(/[\u0900-\u097F]/g) || []).length;
+    const latinChars = (clean.match(/[A-Za-z]/g) || []).length;
+    return devChars >= 2 && devChars >= latinChars * 0.4;
+  }
+  if (targetLang === 'en') {
+    const nonAsciiLetters = (clean.match(/[^\x00-\x7F]/g) || []).filter((ch) => /[\p{L}]/u.test(ch)).length;
+    return nonAsciiLetters === 0;
+  }
+  return false;
+}
+
+async function translateSingleText(
+  rawText: string,
+  targetLang = 'bn'
+): Promise<{ translatedText: string; detectedSourceLanguage: string; unchanged: boolean; provider?: string }> {
+  const text = String(rawText || '');
+  const clean = text.trim();
+  const tl = String(targetLang || 'bn').toLowerCase().split('-')[0] || 'bn';
+
+  if (!clean || clean.length < 2 || detectLikelySameTargetScript(clean, tl)) {
+    return { translatedText: text, detectedSourceLanguage: tl, unchanged: true };
+  }
+
+  const cacheKey = `${tl}:${clean}`;
+  const cached = SERVER_TRANSLATION_CACHE.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const bounded = clean.slice(0, 1800);
+
+  // 1. Optional Gemini translation if GEMINI_API_KEY is configured
+  const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (geminiKey) {
+    try {
+      const mod: any = await import('@google/genai');
+      const GoogleGenAI = mod?.GoogleGenAI;
+      if (GoogleGenAI) {
+        const ai = new GoogleGenAI({ apiKey: geminiKey });
+        const langNames: Record<string, string> = {
+          bn: 'Bengali (বাংলা)',
+          en: 'English',
+          hi: 'Hindi (हिन्दी)',
+          ar: 'Arabic (العربية)',
+          ur: 'Urdu (اردو)',
+          es: 'Spanish',
+          fr: 'French',
+        };
+        const resp = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: `Translate the following social/video text naturally into ${langNames[tl] || tl}. Preserve hashtags, handles (@...), URLs, and line breaks. Output ONLY the translated text without quotes or explanations.\n\n${bounded}`,
+        });
+        const outText = String(resp?.text || '').trim();
+        if (outText) {
+          const result = { translatedText: outText, detectedSourceLanguage: 'auto', unchanged: outText === clean, provider: 'gemini' };
+          if (SERVER_TRANSLATION_CACHE.size > 2000) SERVER_TRANSLATION_CACHE.clear();
+          SERVER_TRANSLATION_CACHE.set(cacheKey, result);
+          return result;
+        }
+      }
+    } catch {
+      // Fall through cleanly to HTTP translation endpoints
+    }
+  }
+
+  // 2. Google Translate public gtx endpoint (zero-config reliable fallback)
+  try {
+    const gtUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(tl)}&dt=t&q=${encodeURIComponent(bounded)}`;
+    const gtRes = await fetch(gtUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (gtRes.ok) {
+      const payload: any = await gtRes.json();
+      const chunks = Array.isArray(payload?.[0]) ? payload[0] : [];
+      const joined = chunks.map((c: any) => (Array.isArray(c) ? String(c[0] || '') : '')).join('').trim();
+      const detected = String(payload?.[2] || 'auto').toLowerCase();
+      if (joined) {
+        const unchanged = detected === tl || joined.toLowerCase() === clean.toLowerCase();
+        const result = {
+          translatedText: unchanged ? text : joined,
+          detectedSourceLanguage: detected,
+          unchanged,
+          provider: 'google_gtx',
+        };
+        if (SERVER_TRANSLATION_CACHE.size > 2000) SERVER_TRANSLATION_CACHE.clear();
+        SERVER_TRANSLATION_CACHE.set(cacheKey, result);
+        return result;
+      }
+    }
+  } catch {
+    // Fall through to MyMemory
+  }
+
+  // 3. MyMemory public API fallback
+  try {
+    const mmUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(bounded.slice(0, 480))}&langpair=autodetect|${encodeURIComponent(tl)}`;
+    const mmRes = await fetch(mmUrl);
+    if (mmRes.ok) {
+      const mmData: any = await mmRes.json();
+      const translated = String(mmData?.responseData?.translatedText || '').trim();
+      if (translated && !translated.includes('INVALID LANGUAGE PAIR')) {
+        const unchanged = translated.toLowerCase() === clean.toLowerCase();
+        const result = {
+          translatedText: unchanged ? text : translated,
+          detectedSourceLanguage: 'auto',
+          unchanged,
+          provider: 'mymemory',
+        };
+        if (SERVER_TRANSLATION_CACHE.size > 2000) SERVER_TRANSLATION_CACHE.clear();
+        SERVER_TRANSLATION_CACHE.set(cacheKey, result);
+        return result;
+      }
+    }
+  } catch {
+    // Offline fallback: return unchanged original safely
+  }
+
+  return { translatedText: text, detectedSourceLanguage: tl, unchanged: true };
+}
+
+app.post('/api/translate', async (req: Request, res: Response) => {
+  const { text, targetLang } = req.body || {};
+  if (typeof text !== 'string') {
+    return res.status(400).json({ error: 'text field is required' });
+  }
+  const result = await translateSingleText(text, targetLang || 'bn');
+  res.json({ ...result, targetLang: String(targetLang || 'bn').toLowerCase() });
+});
+
+app.post('/api/translate/batch', async (req: Request, res: Response) => {
+  const { items, targetLang } = req.body || {};
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: 'items array is required' });
+  }
+  const tl = String(targetLang || 'bn').toLowerCase();
+  const boundedItems = items.slice(0, 25);
+  const results = await Promise.all(
+    boundedItems.map(async (entry: any) => {
+      const id = String(entry?.id || '');
+      const text = String(entry?.text || '');
+      const tr = await translateSingleText(text, tl);
+      return { id, ...tr, targetLang: tl };
+    })
+  );
+  res.json({ results, targetLang: tl });
 });
 
 app.get('/api/users', (req: Request, res: Response) => {
@@ -3660,14 +4057,15 @@ async function getUnifiedFeedYouTubePosts(
   suppressedIds: Set<string> = new Set(),
   seed = '',
   excludeIds: Set<string> = new Set(),
-  rawYtCursor = ''
+  rawYtCursor = '',
+  userId?: string
 ): Promise<{ posts: Post[]; nextYtCursor: string | null; quotaExceeded: boolean; errorMessage?: string }> {
-  const queryList = CATEGORY_DISCOVERY_QUERIES.all;
-  const initialQIdx = hashSeedNumber(`${seed || 'home'}_unified_q`) % queryList.length;
+  const queryList = buildPersonalizedDiscoveryQueries(CATEGORY_DISCOVERY_QUERIES.all, userId, `${seed || 'home'}_unified`, false);
 
   let cursor: FeedCursor = decodeFeedCursor(rawYtCursor) || {
     mode: 'api_search',
-    qIdx: initialQIdx,
+    qIdx: 0,
+    rIdx: 0,
     pageToken: '',
     offset: Math.max(0, (page - 1) * pageSize),
   };
@@ -3678,7 +4076,7 @@ async function getUnifiedFeedYouTubePosts(
   let quotaExceeded = false;
   let errorMessage: string | undefined;
   let attempts = 0;
-  const maxAttempts = 3;
+  const maxAttempts = 5;
 
   const pushRawItems = (rawItems: any[]) => {
     for (const rawItem of rawItems || []) {
@@ -3702,7 +4100,7 @@ async function getUnifiedFeedYouTubePosts(
           part: 'snippet',
           type: 'video',
           q: queryList[cursor.qIdx],
-          maxResults: String(Math.min(25, pageSize + 8)),
+          maxResults: String(Math.min(25, pageSize + 10)),
         };
         if (cursor.pageToken) searchParams.pageToken = cursor.pageToken;
 
@@ -3723,6 +4121,7 @@ async function getUnifiedFeedYouTubePosts(
           nextCursor = {
             mode: 'api_search',
             qIdx: cursor.qIdx,
+            rIdx: 0,
             pageToken: searchData.nextPageToken,
             offset: 0,
           };
@@ -3730,26 +4129,29 @@ async function getUnifiedFeedYouTubePosts(
           nextCursor = {
             mode: 'api_search',
             qIdx: cursor.qIdx + 1,
+            rIdx: 0,
             pageToken: '',
             offset: 0,
           };
         } else {
-          nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
         }
       } catch (err: any) {
         if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
           quotaExceeded = true;
         }
         errorMessage = err?.message || 'YouTube search pagination fallback active';
-        nextCursor = { mode: 'api_popular', qIdx: 0, pageToken: '', offset: 0 };
+        nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
       }
     } else if (cursor.mode === 'api_popular') {
+      const rIdx = Math.max(0, Number(cursor.rIdx) || 0);
+      const regionCode = POPULAR_REGION_CODES[rIdx] || 'BD';
       try {
         const popParams: Record<string, string> = {
           part: 'snippet,contentDetails,statistics',
           chart: 'mostPopular',
-          maxResults: String(Math.min(25, pageSize + 8)),
-          regionCode: 'BD',
+          maxResults: String(Math.min(25, pageSize + 10)),
+          regionCode,
         };
         if (cursor.pageToken) popParams.pageToken = cursor.pageToken;
 
@@ -3760,18 +4162,32 @@ async function getUnifiedFeedYouTubePosts(
           nextCursor = {
             mode: 'api_popular',
             qIdx: 0,
+            rIdx,
             pageToken: popData.nextPageToken,
             offset: 0,
           };
+        } else if (rIdx + 1 < POPULAR_REGION_CODES.length) {
+          nextCursor = {
+            mode: 'api_popular',
+            qIdx: 0,
+            rIdx: rIdx + 1,
+            pageToken: '',
+            offset: 0,
+          };
         } else {
-          nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
         }
       } catch (err: any) {
         if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
           quotaExceeded = true;
+          errorMessage = err?.message || errorMessage;
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+        } else if (rIdx + 1 < POPULAR_REGION_CODES.length) {
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, pageToken: '', offset: 0 };
+        } else {
+          errorMessage = err?.message || errorMessage;
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
         }
-        errorMessage = err?.message || errorMessage;
-        nextCursor = { mode: 'catalog', qIdx: 0, pageToken: '', offset: 0 };
       }
     } else {
       // Verified catalog videos slice (never repeats already-shown IDs)
@@ -3804,6 +4220,7 @@ async function getUnifiedFeedYouTubePosts(
         nextCursor = {
           mode: 'catalog',
           qIdx: 0,
+          rIdx: 0,
           pageToken: '',
           offset: start + ids.length,
         };
@@ -3817,6 +4234,7 @@ async function getUnifiedFeedYouTubePosts(
       collected.length === prevCount &&
       nextCursor.mode === cursor.mode &&
       nextCursor.qIdx === cursor.qIdx &&
+      (nextCursor.rIdx || 0) === (cursor.rIdx || 0) &&
       nextCursor.offset === cursor.offset &&
       nextCursor.pageToken === cursor.pageToken
     ) {
@@ -3867,7 +4285,7 @@ app.get('/api/posts', async (req: Request, res: Response) => {
     const mlSlice = scoredAll.slice(start, start + pageSize).map((p) => db.hydratePostForUser(p, currentUserId));
     const ytRes =
       mlSlice.length < pageSize
-        ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds, seed, excludeIds, rawYtCursor)
+        ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds, seed, excludeIds, rawYtCursor, currentUserId)
         : { posts: [], nextYtCursor: rawYtCursor || null, quotaExceeded: false, errorMessage: '' };
     const combined = [...mlSlice, ...ytRes.posts];
     return res.json({
@@ -3914,7 +4332,7 @@ app.get('/api/posts', async (req: Request, res: Response) => {
       .map((p) => db.hydratePostForUser(p, currentUserId));
 
     const ytTargetCount = Math.max(4, pageSize - hydratedMotherland.length);
-    const ytRes = await getUnifiedFeedYouTubePosts(page, ytTargetCount, suppressedIds, seed, excludeIds, rawYtCursor);
+    const ytRes = await getUnifiedFeedYouTubePosts(page, ytTargetCount, suppressedIds, seed, excludeIds, rawYtCursor, currentUserId);
 
     const unifiedPosts: Post[] = [];
     const seenUnifiedIds = new Set<string>();
@@ -4442,6 +4860,7 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
 
+  const currentUserId = (req as any).userId as string | undefined;
   const filteredLocal = prioritizeFreshItems(
     allLocal.filter((s) => !suppressed.has(s.id) && !(s.youtubeId && suppressed.has(s.youtubeId))),
     excludeIds,
@@ -4450,79 +4869,149 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
   const localStart = (page - 1) * pageSize;
   const localSlice = filteredLocal.slice(localStart, localStart + pageSize);
 
-  let ytShorts: ShortVideo[] = [];
-  let nextPageToken: string | null = null;
-  let hasMoreYt = false;
+  const shortsQueryPool = buildPersonalizedDiscoveryQueries(
+    SHORTS_DISCOVERY_QUERIES,
+    currentUserId,
+    `${seed}_shorts`,
+    true
+  );
 
-  try {
-    let ytIds: string[] = [];
-    let qIdx = hashSeedNumber(`${seed}_shorts_v2`) % SHORTS_DISCOVERY_QUERIES.length;
-    let ytSearchToken = '';
+  let cursor: FeedCursor = decodeFeedCursor(rawToken) || {
+    mode: 'api_search',
+    qIdx: 0,
+    rIdx: 0,
+    pageToken: '',
+    offset: 0,
+  };
 
-    if (rawToken.startsWith('mls_')) {
-      try {
-        const parsed = JSON.parse(Buffer.from(rawToken.slice(4), 'base64url').toString('utf-8'));
-        qIdx = Number.isFinite(parsed.qIdx) ? parsed.qIdx : qIdx;
-        ytSearchToken = typeof parsed.pt === 'string' ? parsed.pt : '';
-      } catch {
-        // ignore invalid cursor
-      }
-    } else if (page > 1) {
-      qIdx = (qIdx + (page - 1)) % SHORTS_DISCOVERY_QUERIES.length;
-    }
-
+  if (rawToken.startsWith('mls_')) {
     try {
-      const searchData = await fetchFromYouTubeApi('search', {
-        part: 'snippet',
-        type: 'video',
-        q: SHORTS_DISCOVERY_QUERIES[qIdx % SHORTS_DISCOVERY_QUERIES.length],
-        videoDuration: 'short',
-        maxResults: '20',
-        ...(ytSearchToken ? { pageToken: ytSearchToken } : {}),
-      });
-      ytIds = (searchData.items || [])
-        .map((it: any) => it?.id?.videoId)
-        .filter((vid: string | undefined) => Boolean(vid) && !suppressed.has(vid!) && !excludeIds.has(vid!));
-
-      if (searchData.nextPageToken) {
-        nextPageToken = 'mls_' + Buffer.from(JSON.stringify({ qIdx, pt: searchData.nextPageToken })).toString('base64url');
-        hasMoreYt = true;
+      const parsed = JSON.parse(Buffer.from(rawToken.slice(4), 'base64url').toString('utf-8'));
+      if (Number.isFinite(parsed.catPage)) {
+        cursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: (Math.max(1, Number(parsed.catPage)) - 1) * pageSize };
       } else {
-        const nextQ = (qIdx + 1) % SHORTS_DISCOVERY_QUERIES.length;
-        nextPageToken = 'mls_' + Buffer.from(JSON.stringify({ qIdx: nextQ, pt: '' })).toString('base64url');
-        hasMoreYt = page < SHORTS_DISCOVERY_QUERIES.length;
+        cursor = {
+          mode: parsed.mode === 'api_popular' ? 'api_popular' : 'api_search',
+          qIdx: Math.max(0, Number(parsed.qIdx) || 0),
+          rIdx: Math.max(0, Number(parsed.rIdx) || 0),
+          pageToken: typeof parsed.pt === 'string' ? parsed.pt : '',
+          offset: 0,
+        };
       }
     } catch {
-      const fallbackPool = seededShuffle(
-        Array.from(new Set(REAL_YOUTUBE_CATALOG.shorts)).filter((vid) => !suppressed.has(vid)),
-        `${seed}_yt_shorts`
-      );
-      const startCat = (page - 1) * pageSize;
-      ytIds = fallbackPool.slice(startCat, startCat + pageSize);
-      hasMoreYt = startCat + ytIds.length < fallbackPool.length;
-      if (hasMoreYt) {
-        nextPageToken = 'mls_' + Buffer.from(JSON.stringify({ catPage: page + 1 })).toString('base64url');
-      }
+      // ignore invalid cursor
     }
+  }
 
-    if (ytIds.length > 0) {
-      const statsData = await fetchFromYouTubeApi('videos', {
-        part: 'snippet,contentDetails,statistics',
-        id: ytIds.slice(0, 20).join(','),
-      });
-      const channelMetaMap = await fetchChannelMetaMap(
-        (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
-      );
-      ytShorts = (statsData.items || [])
-        .filter((item: any) => {
+  const ytShorts: ShortVideo[] = [];
+  const seenYtIds = new Set<string>(localSlice.map((s) => s.youtubeId || s.id));
+  let nextCursor: FeedCursor | null = null;
+  let quotaExceeded = false;
+  let exhaustedReason: string | undefined;
+  const maxAttempts = 6;
+  let attempts = 0;
+
+  while (ytShorts.length < pageSize && attempts < maxAttempts) {
+    attempts++;
+    const prevCount = ytShorts.length;
+
+    if (cursor.mode === 'api_search' && cursor.qIdx < shortsQueryPool.length) {
+      try {
+        const searchData = await fetchFromYouTubeApi('search', {
+          part: 'snippet',
+          type: 'video',
+          q: shortsQueryPool[cursor.qIdx],
+          videoDuration: 'short',
+          maxResults: '25',
+          ...(cursor.pageToken ? { pageToken: cursor.pageToken } : {}),
+        });
+        const ytIds = (searchData.items || [])
+          .map((it: any) => it?.id?.videoId)
+          .filter((vid: string | undefined) => Boolean(vid) && !suppressed.has(vid!) && !excludeIds.has(vid!) && !seenYtIds.has(vid!));
+
+        if (ytIds.length > 0) {
+          const statsData = await fetchFromYouTubeApi('videos', {
+            part: 'snippet,contentDetails,statistics',
+            id: ytIds.slice(0, 25).join(','),
+          });
+          const channelMetaMap = await fetchChannelMetaMap(
+            (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
+          );
+          for (const item of statsData.items || []) {
+            if (seenYtIds.has(item.id)) continue;
+            const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
+            if (!Number.isFinite(dur) || dur <= 0 || dur > 180) continue;
+            seenYtIds.add(item.id);
+            const channelId = item.snippet?.channelId || '';
+            const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
+            ytShorts.push({
+              id: item.id,
+              source: 'youtube' as const,
+              youtubeId: item.id,
+              videoUrl: '',
+              durationSeconds: dur,
+              thumbnailUrl:
+                item.snippet?.thumbnails?.maxres?.url ||
+                item.snippet?.thumbnails?.high?.url ||
+                item.snippet?.thumbnails?.medium?.url ||
+                `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+              title: item.snippet?.title || 'Unavailable',
+              caption: item.snippet?.description || item.snippet?.title || '',
+              hashtags: ['Shorts'],
+              creator: {
+                id: channelId,
+                name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
+                username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
+                avatar: chMeta?.avatar || '',
+                isVerified: Boolean(item.snippet?.channelTitle),
+              },
+              stats: {
+                views: Number(item.statistics?.viewCount || 0),
+                likes: Number(item.statistics?.likeCount || 0),
+                comments: Number(item.statistics?.commentCount || 0),
+                shares: 0,
+              },
+              createdAt: item.snippet?.publishedAt || new Date().toISOString(),
+            });
+          }
+        }
+
+        if (searchData.nextPageToken) {
+          nextCursor = { mode: 'api_search', qIdx: cursor.qIdx, rIdx: 0, pageToken: searchData.nextPageToken, offset: 0 };
+        } else if (cursor.qIdx + 1 < shortsQueryPool.length) {
+          nextCursor = { mode: 'api_search', qIdx: cursor.qIdx + 1, rIdx: 0, pageToken: '', offset: 0 };
+        } else {
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+        }
+      } catch (err: any) {
+        if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
+          quotaExceeded = true;
+          exhaustedReason = 'YouTube search quota reached; loading verified short clips.';
+        }
+        nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+      }
+    } else if (cursor.mode === 'api_popular') {
+      const rIdx = Math.max(0, Number(cursor.rIdx) || 0);
+      const regionCode = POPULAR_REGION_CODES[rIdx] || 'BD';
+      try {
+        const popData = await fetchFromYouTubeApi('videos', {
+          part: 'snippet,contentDetails,statistics',
+          chart: 'mostPopular',
+          maxResults: '25',
+          regionCode,
+          ...(cursor.pageToken ? { pageToken: cursor.pageToken } : {}),
+        });
+        const channelMetaMap = await fetchChannelMetaMap(
+          (popData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
+        );
+        for (const item of popData.items || []) {
+          if (seenYtIds.has(item.id) || suppressed.has(item.id) || excludeIds.has(item.id)) continue;
           const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
-          return Number.isFinite(dur) && dur > 0 && dur <= 180;
-        })
-        .map((item: any) => {
-          const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
+          if (!Number.isFinite(dur) || dur <= 0 || dur > 180) continue;
+          seenYtIds.add(item.id);
           const channelId = item.snippet?.channelId || '';
           const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
-          return {
+          ytShorts.push({
             id: item.id,
             source: 'youtube' as const,
             youtubeId: item.id,
@@ -4534,7 +5023,7 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
               item.snippet?.thumbnails?.medium?.url ||
               `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
             title: item.snippet?.title || 'Unavailable',
-            caption: item.snippet?.title || '',
+            caption: item.snippet?.description || item.snippet?.title || '',
             hashtags: ['Shorts'],
             creator: {
               id: channelId,
@@ -4550,17 +5039,119 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
               shares: 0,
             },
             createdAt: item.snippet?.publishedAt || new Date().toISOString(),
-          };
-        });
+          });
+        }
+        if (popData.nextPageToken) {
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx, pageToken: popData.nextPageToken, offset: 0 };
+        } else if (rIdx + 1 < POPULAR_REGION_CODES.length) {
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, pageToken: '', offset: 0 };
+        } else {
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+        }
+      } catch (popErr: any) {
+        if (popErr?.reason === 'quotaExceeded' || popErr?.reason === 'dailyLimitExceeded' || popErr?.status === 403) {
+          quotaExceeded = true;
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+        } else if (rIdx + 1 < POPULAR_REGION_CODES.length) {
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, pageToken: '', offset: 0 };
+        } else {
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+        }
+      }
+    } else {
+      const fallbackPool = seededShuffle(
+        Array.from(new Set(REAL_YOUTUBE_CATALOG.shorts)).filter(
+          (vid) => !suppressed.has(vid) && !excludeIds.has(vid) && !seenYtIds.has(vid)
+        ),
+        `${seed}_yt_shorts`
+      );
+      const sliceIds = fallbackPool.slice(cursor.offset, cursor.offset + pageSize);
+      if (sliceIds.length > 0) {
+        try {
+          const statsData = await fetchFromYouTubeApi('videos', {
+            part: 'snippet,contentDetails,statistics',
+            id: sliceIds.join(','),
+          });
+          const channelMetaMap = await fetchChannelMetaMap(
+            (statsData.items || []).map((item: any) => item.snippet?.channelId || '').filter(Boolean)
+          );
+          for (const item of statsData.items || []) {
+            if (seenYtIds.has(item.id)) continue;
+            const dur = parseIsoDurationToSeconds(item.contentDetails?.duration);
+            if (!Number.isFinite(dur) || dur <= 0 || dur > 180) continue;
+            seenYtIds.add(item.id);
+            const channelId = item.snippet?.channelId || '';
+            const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
+            ytShorts.push({
+              id: item.id,
+              source: 'youtube' as const,
+              youtubeId: item.id,
+              videoUrl: '',
+              durationSeconds: dur,
+              thumbnailUrl:
+                item.snippet?.thumbnails?.maxres?.url ||
+                item.snippet?.thumbnails?.high?.url ||
+                item.snippet?.thumbnails?.medium?.url ||
+                `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+              title: item.snippet?.title || 'Unavailable',
+              caption: item.snippet?.description || item.snippet?.title || '',
+              hashtags: ['Shorts'],
+              creator: {
+                id: channelId,
+                name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
+                username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/\s+/g, ''),
+                avatar: chMeta?.avatar || '',
+                isVerified: Boolean(item.snippet?.channelTitle),
+              },
+              stats: {
+                views: Number(item.statistics?.viewCount || 0),
+                likes: Number(item.statistics?.likeCount || 0),
+                comments: Number(item.statistics?.commentCount || 0),
+                shares: 0,
+              },
+              createdAt: item.snippet?.publishedAt || new Date().toISOString(),
+            });
+          }
+        } catch (catErr: any) {
+          if (catErr?.reason === 'quotaExceeded' || catErr?.reason === 'dailyLimitExceeded') {
+            quotaExceeded = true;
+            exhaustedReason = 'YouTube Data API quota temporarily exhausted. Please try again shortly.';
+          }
+        }
+      }
+      if (cursor.offset + sliceIds.length < fallbackPool.length) {
+        nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: cursor.offset + sliceIds.length };
+      } else {
+        nextCursor = null;
+      }
     }
-  } catch {
-    // Graceful fallback if API key quota is limited
+
+    if (!nextCursor) break;
+    if (
+      ytShorts.length === prevCount &&
+      nextCursor.mode === cursor.mode &&
+      nextCursor.qIdx === cursor.qIdx &&
+      (nextCursor.rIdx || 0) === (cursor.rIdx || 0) &&
+      nextCursor.offset === cursor.offset &&
+      nextCursor.pageToken === cursor.pageToken
+    ) {
+      break;
+    }
+    cursor = nextCursor;
   }
 
   const seen = new Set(localSlice.map((s) => s.youtubeId || s.id));
   const merged = [...localSlice, ...ytShorts.filter((s) => !seen.has(s.id))];
-  const hasMore = localStart + localSlice.length < filteredLocal.length || hasMoreYt;
-  res.json({ shorts: merged, page, nextPageToken, hasMore });
+  const nextPageToken = nextCursor ? encodeFeedCursor(nextCursor) : null;
+  const hasMore = localStart + localSlice.length < filteredLocal.length || Boolean(nextPageToken);
+  res.json({
+    shorts: merged,
+    page,
+    nextPageToken,
+    hasMore,
+    quotaExceeded,
+    exhaustedReason,
+  });
 });
 
 app.post('/api/videos/shorts', (req: Request, res: Response) => {

@@ -44,6 +44,10 @@ import {
   WATCH_SUPPRESSED_EVENT,
 } from '../services/watchSuppression';
 import type { CreatorProfileTarget } from './CreatorProfileModal';
+import {
+  CollapsibleDescription,
+  TranslatableText,
+} from './common/ExpandableTranslatableText';
 
 interface VideoSectionProps {
   currentUser: UserProfile | null;
@@ -136,12 +140,12 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const [savedMap, setSavedMap] = useState<Record<string, boolean>>({});
   const [subscribedMap, setSubscribedMap] = useState<Record<string, boolean>>({});
   const [watchActionNotice, setWatchActionNotice] = useState<{ text: string; url?: string } | null>(null);
-  const [showFullDesc, setShowFullDesc] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
 
   const savedScrollYRef = useRef(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const queryAbortRef = useRef<AbortController | null>(null);
 
   const isWatchPageOpen = Boolean(watchingVideo && !isWatchMinimized);
 
@@ -227,7 +231,6 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
 
   // Reset per-video UI toggles when switching watching video
   useEffect(() => {
-    setShowFullDesc(false);
     setMoreMenuOpen(false);
     setWatchActionNotice(null);
     if (watchingVideo?.source === 'youtube' && watchingVideo.channel?.id && api.getToken()) {
@@ -420,6 +423,10 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const handleSearch = async (q: string) => {
     const clean = q.trim();
     if (!clean) return;
+    queryAbortRef.current?.abort();
+    const controller = new AbortController();
+    queryAbortRef.current = controller;
+
     setIsSearching(true);
     setShowHistory(false);
     setIsLiveViewOpen(false);
@@ -430,7 +437,11 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
     }
 
     try {
-      const ytRes = await api.searchYouTube(clean, '', 16);
+      const ytRes = await api.searchYouTube(clean, '', 16, '', {
+        continuous: true,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
       const localMatches = initialLongVideos.filter(
         (v) =>
           v.title.toLowerCase().includes(clean.toLowerCase()) ||
@@ -452,12 +463,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
 
       setLongVideosList([...localMatches, ...ytVideos]);
       setNextPageToken(ytRes.nextPageToken || null);
+      setHasMoreVideos(Boolean(ytRes.nextPageToken));
       setLongPage(1);
       setYoutubeFeedNotice(ytRes.message || '');
-    } catch (err) {
-      console.error('Video search error:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        console.error('Video search error:', err);
+      }
     } finally {
-      setIsSearching(false);
+      if (!controller.signal.aborted) {
+        setIsSearching(false);
+      }
     }
   };
 
@@ -488,6 +504,10 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   };
 
   const handleSelectCategory = async (cat: { id: string; label: string }) => {
+    queryAbortRef.current?.abort();
+    const controller = new AbortController();
+    queryAbortRef.current = controller;
+
     setSelectedCategory(cat.id);
     setSearchQuery('');
     setIsSearching(true);
@@ -500,7 +520,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         category: cat.id,
         page: 1,
         pageSize: 16,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
 
       if (feedRes.items && feedRes.items.length > 0) {
         const filteredCat = filterUnsuppressed(
@@ -515,21 +537,29 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         setLongVideosList(filterUnsuppressed(initialLongVideos));
         setHasMoreVideos(false);
       }
-    } catch (err) {
-      console.error('Category switch error:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        console.error('Category switch error:', err);
+      }
     } finally {
-      setIsSearching(false);
+      if (!controller.signal.aborted) {
+        setIsSearching(false);
+      }
     }
   };
 
   const loadMoreVideos = useCallback(async () => {
     if (isLoadingMore || !hasMoreVideos) return;
     setIsLoadingMore(true);
+    const controller = new AbortController();
     try {
       if (searchQuery.trim()) {
-        const ytRes = await api.searchYouTube(searchQuery, nextPageToken || '', 12);
+        const ytRes = await api.searchYouTube(searchQuery, nextPageToken || '', 12, '', {
+          continuous: true,
+          signal: controller.signal,
+        });
         const items: LongVideo[] = (ytRes.items || []).map((item: any) => ({
-          id: `${item.id}_${Date.now()}`,
+          id: item.id || `${item.youtubeId}_${Date.now()}`,
           source: 'youtube',
           youtubeId: item.youtubeId,
           thumbnailUrl: item.thumbnailUrl,
@@ -556,6 +586,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           pageToken: nextPageToken || '',
           page: nextPage,
           pageSize: 12,
+          signal: controller.signal,
         });
         if (feedRes.items && feedRes.items.length > 0) {
           setLongVideosList((prev) => {
@@ -748,7 +779,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         </button>
         <div className="min-w-0 flex-1">
           <h3 className="text-xs sm:text-sm font-bold text-[var(--text-primary)] line-clamp-2 leading-snug group-hover:text-[var(--accent-primary)] transition-colors">
-            {video.title}
+            <TranslatableText text={video.title} showToggle={false} />
           </h3>
           <button
             type="button"
@@ -899,7 +930,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
             {/* 2. Title & Stats */}
             <div data-testid="watch-desktop-title-block">
               <h1 className="text-xl font-extrabold text-[var(--text-primary)] leading-snug">
-                {watchingVideo.title}
+                <TranslatableText text={watchingVideo.title} />
               </h1>
               <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] mt-1.5 tabular-nums flex-wrap">
                 {watchingVideo.isLive ? (
@@ -926,26 +957,14 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               </div>
             </div>
 
-            {/* 3. Description */}
+            {/* 3. Compact 1-Line Collapsible Description + Auto-Translation */}
             {watchingVideo.description && (
               <div data-testid="watch-desktop-description" className="p-3.5 rounded-2xl ml-glass">
-                <p
-                  className={`text-xs text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap ${
-                    showFullDesc ? '' : 'line-clamp-3'
-                  }`}
-                >
-                  {watchingVideo.description}
-                </p>
-                {watchingVideo.description.length > 140 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowFullDesc((d) => !d)}
-                    className="mt-1.5 text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1"
-                  >
-                    <span>{showFullDesc ? 'Show less' : 'Read more'}</span>
-                    {showFullDesc ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </button>
-                )}
+                <CollapsibleDescription
+                  text={watchingVideo.description}
+                  minLengthToCollapse={60}
+                  className="text-xs text-[var(--text-secondary)] leading-relaxed"
+                />
               </div>
             )}
 
@@ -1147,7 +1166,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
             {/* 2. Mobile Title & Stats */}
             <div data-testid="watch-mobile-title-block">
               <h1 className="text-base font-extrabold text-[var(--text-primary)] leading-snug">
-                {watchingVideo.title}
+                <TranslatableText text={watchingVideo.title} />
               </h1>
               <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)] mt-1.5 tabular-nums flex-wrap">
                 {watchingVideo.isLive ? (
@@ -1174,26 +1193,14 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               </div>
             </div>
 
-            {/* 3. Mobile Description */}
+            {/* 3. Mobile Compact 1-Line Collapsible Description + Auto-Translation */}
             {watchingVideo.description && (
               <div data-testid="watch-mobile-description" className="p-3.5 rounded-2xl ml-glass">
-                <p
-                  className={`text-xs text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap ${
-                    showFullDesc ? '' : 'line-clamp-3'
-                  }`}
-                >
-                  {watchingVideo.description}
-                </p>
-                {watchingVideo.description.length > 140 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowFullDesc((d) => !d)}
-                    className="mt-1.5 text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1"
-                  >
-                    <span>{showFullDesc ? 'Show less' : 'Read more'}</span>
-                    {showFullDesc ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  </button>
-                )}
+                <CollapsibleDescription
+                  text={watchingVideo.description}
+                  minLengthToCollapse={60}
+                  className="text-xs text-[var(--text-secondary)] leading-relaxed"
+                />
               </div>
             )}
 
@@ -1302,7 +1309,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                   </div>
                   <div className="flex-1 min-w-0 py-0.5">
                     <h3 className="text-xs font-bold text-[var(--text-primary)] line-clamp-2 leading-snug group-hover:text-[var(--accent-primary)]">
-                      {video.title}
+                      <TranslatableText text={video.title} showToggle={false} />
                     </h3>
                     <p className="text-[11px] text-[var(--text-secondary)] mt-1 truncate">
                       {video.channel.title}

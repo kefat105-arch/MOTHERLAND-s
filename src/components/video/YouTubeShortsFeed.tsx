@@ -37,6 +37,7 @@ import { FireLikeIcon, FireDislikeIcon, TalkIcon, BoostIcon } from '../fire/Moth
 import { FireEmojiPicker } from '../fire/FireEmojiPicker';
 import { FireRichText } from '../fire/FireRichText';
 import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
+import { CollapsibleDescription } from '../common/ExpandableTranslatableText';
 
 interface YouTubeShortsFeedProps {
   onBackToHome?: () => void;
@@ -80,6 +81,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   const isSwipingRef = useRef<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
+  const shortsAbortRef = useRef<AbortController | null>(null);
 
   const mapFeedItemToShort = (item: any): UnifiedVideo | null => {
     if (typeof item.durationSeconds !== 'number' || item.durationSeconds <= 0 || item.durationSeconds > 180) {
@@ -110,48 +112,78 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     };
   };
 
-  // Load YouTube Shorts fresh from backend strict-duration Shorts feed (no stale local cache)
+  // Load YouTube Shorts fresh from backend strict-duration Shorts feed (chained multi-page retry if first batch is heavily suppressed)
   const loadInitialShorts = useCallback(async () => {
+    shortsAbortRef.current?.abort();
+    const controller = new AbortController();
+    shortsAbortRef.current = controller;
+
     setInitialLoading(true);
     try {
-      const res = await api.getYouTubeFeed({
-        type: 'shorts',
-        category: 'shorts',
-        page: 1,
-        pageSize: 16,
-      });
-
-      const validShorts: UnifiedVideo[] = [];
+      let curToken: string | undefined = undefined;
+      let curPage = 1;
+      let keepTrying = true;
+      const accumulated: UnifiedVideo[] = [];
       const initialLikes: Record<string, number> = {};
-      for (const item of res.items || []) {
-        const mapped = mapFeedItemToShort(item);
-        if (!mapped) continue;
-        if (!seenIdsRef.current.has(mapped.id) && !seenIdsRef.current.has(mapped.videoId)) {
-          seenIdsRef.current.add(mapped.id);
-          seenIdsRef.current.add(mapped.videoId);
-          validShorts.push(mapped);
-          initialLikes[mapped.videoId] = Number(item.stats?.likes ?? 0);
+      let attempts = 0;
+
+      while (attempts < 3 && keepTrying && accumulated.length < 4 && !controller.signal.aborted) {
+        attempts++;
+        const res = await api.getYouTubeFeed({
+          type: 'shorts',
+          category: 'shorts',
+          page: curPage,
+          pageToken: curToken,
+          pageSize: 16,
+          signal: controller.signal,
+        });
+
+        for (const item of res.items || []) {
+          const mapped = mapFeedItemToShort(item);
+          if (!mapped) continue;
+          if (!seenIdsRef.current.has(mapped.id) && !seenIdsRef.current.has(mapped.videoId)) {
+            seenIdsRef.current.add(mapped.id);
+            seenIdsRef.current.add(mapped.videoId);
+            const cleanBatch = filterUnsuppressed([mapped]);
+            if (cleanBatch.length > 0) {
+              accumulated.push(mapped);
+              initialLikes[mapped.videoId] = Number(item.stats?.likes ?? 0);
+            }
+          }
         }
+
+        curToken = res.nextPageToken || undefined;
+        keepTrying = Boolean(curToken) || (res as any).hasMore !== false;
+        curPage++;
+        if (!curToken) break;
       }
 
-      const unsuppressed = filterUnsuppressed(validShorts);
-      setShorts(unsuppressed);
+      if (controller.signal.aborted) return;
+
+      setShorts(accumulated);
       setLikeCountMap(initialLikes);
       setCurrentIndex(0);
-      setPage(1);
-      setNextPageToken(res.nextPageToken || undefined);
-      setHasMore(Boolean(res.nextPageToken) || (res as any).hasMore !== false);
-      recordShownFeedIds('shorts', unsuppressed.map((s) => s.videoId));
-    } catch (err) {
-      console.warn('Failed loading initial shorts:', err);
+      setPage(Math.max(1, curPage - 1));
+      setNextPageToken(curToken);
+      setHasMore(keepTrying);
+      recordShownFeedIds('shorts', accumulated.map((s) => s.videoId));
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        console.warn('Failed loading initial shorts:', err);
+      }
     } finally {
-      setInitialLoading(false);
+      if (!controller.signal.aborted) {
+        setInitialLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     seenIdsRef.current.clear();
     loadInitialShorts();
+    return () => {
+      shortsAbortRef.current?.abort();
+    };
   }, [refreshSignal, loadInitialShorts]);
 
   // Listen for live watch suppression events
@@ -163,15 +195,16 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
   }, []);
 
-  // Track 4s genuine Short watch for 14-day suppression + preload next Short thumbnail
+  // Track 4s genuine Short watch for 7-day suppression + preload next 2 Short thumbnails
   const activeShortForTrack = shorts[currentIndex];
   useEffect(() => {
     if (!activeShortForTrack) return;
-    const next = shorts[currentIndex + 1];
-    if (next?.thumbnailUrl) {
-      const img = new Image();
-      img.src = next.thumbnailUrl;
-    }
+    [shorts[currentIndex + 1], shorts[currentIndex + 2]].forEach((upcoming) => {
+      if (upcoming?.thumbnailUrl) {
+        const img = new Image();
+        img.src = upcoming.thumbnailUrl;
+      }
+    });
     const timer = window.setTimeout(() => {
       if (isPlaying) {
         recordWatchedSuppression(activeShortForTrack.id, activeShortForTrack.videoId);
@@ -184,6 +217,7 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
   const fetchMoreShorts = useCallback(async () => {
     if (isLoadingMore || !hasMore) return;
     setIsLoadingMore(true);
+    const controller = new AbortController();
 
     try {
       const nextPage = page + 1;
@@ -193,7 +227,9 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
         pageToken: nextPageToken || undefined,
         page: nextPage,
         pageSize: 16,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
 
       const newShorts: UnifiedVideo[] = [];
       const extraLikes: Record<string, number> = {};
@@ -219,8 +255,10 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
       if (!res.nextPageToken && (res as any).hasMore === false) {
         setHasMore(false);
       }
-    } catch (err) {
-      console.warn('Pagination load shorts error:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        console.warn('Pagination load shorts error:', err);
+      }
     } finally {
       setIsLoadingMore(false);
     }
@@ -390,15 +428,30 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
 
   if (!activeShort) {
     return (
-      <div className="w-full h-[60vh] flex flex-col items-center justify-center gap-3 text-slate-400">
+      <div className="w-full h-[60vh] flex flex-col items-center justify-center gap-3 text-slate-400 px-4 text-center">
         <Sparkles className="w-8 h-8 text-red-500" />
-        <p className="text-sm font-semibold">No YouTube Shorts available right now.</p>
-        <button
-          onClick={onBackToHome}
-          className="px-4 py-2 rounded-xl bg-red-600 text-white font-bold text-xs"
-        >
-          Return to YouTube Home
-        </button>
+        <p className="text-sm font-semibold text-white">No unseen Shorts available in this batch.</p>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              seenIdsRef.current.clear();
+              void loadInitialShorts();
+            }}
+            className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white font-bold text-xs"
+          >
+            Load Fresh Shorts
+          </button>
+          {onBackToHome && (
+            <button
+              type="button"
+              onClick={onBackToHome}
+              className="px-4 py-2 rounded-xl bg-red-600 text-white font-bold text-xs"
+            >
+              Return to YouTube Home
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -573,10 +626,13 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
           </button>
         </div>
 
-        {/* Video Title */}
-        <p className="text-xs sm:text-sm text-white font-medium line-clamp-2 drop-shadow-md leading-snug">
-          {activeShort.title}
-        </p>
+        {/* Video Title / Description (1-line collapsed + See More + Auto-Translate) */}
+        <CollapsibleDescription
+          text={activeShort.description || activeShort.title}
+          minLengthToCollapse={65}
+          className="text-xs sm:text-sm text-white font-medium drop-shadow-md leading-snug"
+          buttonClassName="!text-red-400"
+        />
 
         {/* Audio Track Tag */}
         <div className="flex items-center gap-1.5 text-[11px] text-slate-300 overflow-hidden">

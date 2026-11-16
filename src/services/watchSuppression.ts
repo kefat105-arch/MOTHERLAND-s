@@ -164,7 +164,7 @@ export function recordShownFeedIds(
     .filter((v): v is string => Boolean(v));
   if (clean.length === 0) return;
   const existing = sessionShownFeedIds[bucket] || [];
-  const merged = [...clean, ...existing.filter((x) => !clean.includes(x))].slice(0, 40);
+  const merged = [...clean, ...existing.filter((x) => !clean.includes(x))].slice(0, 400);
   sessionShownFeedIds[bucket] = merged;
 }
 

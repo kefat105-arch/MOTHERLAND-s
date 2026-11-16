@@ -15,11 +15,7 @@ import {
   Bookmark,
   ArrowLeft,
   LogIn,
-  History,
-  MessageCircle,
   Users,
-  Bell,
-  Globe,
   UserPlus,
   UserCheck,
   X,
@@ -79,6 +75,8 @@ import {
   WATCH_SUPPRESSED_EVENT,
 } from './services/watchSuppression';
 import { parseGoogleOAuthHashRedirect } from './services/youtubeAuthService';
+import { setTranslationPrefs } from './services/translationService';
+import { TranslatableText } from './components/common/ExpandableTranslatableText';
 import { playNotificationChime, playMessageChime } from './utils/motherlandSoundEngine';
 
 const LEGACY_FEED_CACHE_KEY = 'motherland_instant_cache_v1';
@@ -178,6 +176,8 @@ export default function App() {
   const lastAutoRefreshRef = useRef<number>(Date.now());
   const homeSentinelRef = useRef<HTMLDivElement | null>(null);
   const homeYtCursorRef = useRef<string>('');
+  const homePostsAbortRef = useRef<AbortController | null>(null);
+  const isLoadingMorePostsRef = useRef<boolean>(false);
   const sessionExpiredPromptedRef = useRef(false);
   const savedScrollRef = useRef<number>(0);
 
@@ -451,11 +451,15 @@ export default function App() {
       const userData = await api.getCurrentUser().catch(() => ({
         user: null,
         sessionExpired: false,
+        transientError: true,
       }));
       const resolvedUser = userData.user || null;
       setWatchSuppressionUserId(resolvedUser?.id || null);
 
       if (resolvedUser) {
+        if (resolvedUser.translationPrefs) {
+          setTranslationPrefs(resolvedUser.translationPrefs);
+        }
         sessionExpiredPromptedRef.current = false;
         setExpiredSessionHint(null);
         try {
@@ -470,7 +474,7 @@ export default function App() {
         } catch {
           // ignore
         }
-      } else if (userData.sessionExpired) {
+      } else if (userData.sessionExpired && !(userData as any).transientError) {
         api.setToken('');
         setAuthToken('');
         let hint: { displayName?: string; username?: string; avatar?: string } | null = null;
@@ -515,7 +519,17 @@ export default function App() {
       const nextStories = storiesData.stories || [];
       const nextShorts = filterUnsuppressed(shortsData.shorts || []).filter(isEligibleShortVideo);
       const nextLongVideos = filterUnsuppressed(longData.videos || []);
-      const nextPosts = filterUnsuppressed(postsData.posts || [], true);
+      const filteredPosts = filterUnsuppressed(postsData.posts || [], true);
+      const seenPostKeys = new Set<string>();
+      const nextPosts: Post[] = [];
+      for (const p of filteredPosts) {
+        const key = p.externalId || p.id;
+        if (!seenPostKeys.has(p.id) && !seenPostKeys.has(key)) {
+          seenPostKeys.add(p.id);
+          seenPostKeys.add(key);
+          nextPosts.push(p);
+        }
+      }
 
       let resolvedNotifs = notifData.notifications || [];
       let resolvedUnread = (convData as any).totalUnread || 0;
@@ -564,26 +578,43 @@ export default function App() {
   };
 
   const loadPosts = async (type: 'all' | 'for_you' | 'motherland' | 'saved' = feedFilter, reset = true) => {
+    homePostsAbortRef.current?.abort();
+    const controller = new AbortController();
+    homePostsAbortRef.current = controller;
+
     try {
       if (reset) {
         setHomeFeedError('');
         setHomeFeedPage(1);
         homeYtCursorRef.current = '';
-        const data = await api.getPosts(type, 'all', 1, 10, '');
+        const data = await api.getPosts(type, 'all', 1, 10, '', controller.signal);
+        if (controller.signal.aborted) return;
         homeYtCursorRef.current = data.nextYtCursor || '';
         const filtered = filterUnsuppressed(data.posts || [], true);
-        setPosts(filtered);
+        const seen = new Set<string>();
+        const deduped: Post[] = [];
+        for (const p of filtered) {
+          const extKey = p.externalId || p.id;
+          if (!seen.has(p.id) && !seen.has(extKey)) {
+            seen.add(p.id);
+            seen.add(extKey);
+            deduped.push(p);
+          }
+        }
+        setPosts(deduped);
         setHasMorePosts(data.hasMore !== false);
-        recordShownFeedIds('home', filtered.map((p) => p.externalId || p.id));
+        recordShownFeedIds('home', deduped.map((p) => p.externalId || p.id));
       }
     } catch (err: any) {
+      if (err?.name === 'AbortError') return;
       console.error('Failed to load posts:', err);
       setHomeFeedError(err?.message || 'Unable to load posts');
     }
   };
 
   const loadMorePosts = async () => {
-    if (isLoadingMorePosts || !hasMorePosts) return;
+    if (isLoadingMorePostsRef.current || isLoadingMorePosts || !hasMorePosts) return;
+    isLoadingMorePostsRef.current = true;
     setIsLoadingMorePosts(true);
     setHomeFeedError('');
     try {
@@ -594,16 +625,32 @@ export default function App() {
         const filtered = filterUnsuppressed(data.posts, true);
         recordShownFeedIds('home', filtered.map((p) => p.externalId || p.id));
         setPosts((prev) => {
-          const seen = new Set(prev.map((p) => p.id));
-          return [...prev, ...filtered.filter((p) => !seen.has(p.id))];
+          const seen = new Set<string>();
+          prev.forEach((p) => {
+            seen.add(p.id);
+            if (p.externalId) seen.add(p.externalId);
+          });
+          const nextItems: Post[] = [];
+          for (const p of filtered) {
+            const extKey = p.externalId || p.id;
+            if (!seen.has(p.id) && !seen.has(extKey)) {
+              seen.add(p.id);
+              seen.add(extKey);
+              nextItems.push(p);
+            }
+          }
+          return [...prev, ...nextItems];
         });
         setHomeFeedPage(nextPage);
       }
       setHasMorePosts(data.hasMore !== false);
     } catch (err: any) {
-      console.error('Load more posts error:', err);
-      setHomeFeedError(err?.message || 'Failed to load more posts');
+      if (err?.name !== 'AbortError') {
+        console.error('Load more posts error:', err);
+        setHomeFeedError(err?.message || 'Failed to load more posts');
+      }
     } finally {
+      isLoadingMorePostsRef.current = false;
       setIsLoadingMorePosts(false);
     }
   };
@@ -673,8 +720,21 @@ export default function App() {
     };
 
     const onFocusOrVisibility = () => {
-      if (document.visibilityState === 'visible' && Date.now() - lastAutoRefreshRef.current > 15000) {
-        runSilentAutoRefresh();
+      if (document.visibilityState === 'visible') {
+        if (!currentUserRef.current && api.getToken()) {
+          api
+            .getCurrentUser()
+            .then((res) => {
+              if (res.user) {
+                setCurrentUser(res.user);
+                if (res.user.translationPrefs) setTranslationPrefs(res.user.translationPrefs);
+              }
+            })
+            .catch(() => {});
+        }
+        if (Date.now() - lastAutoRefreshRef.current > 15000) {
+          runSilentAutoRefresh();
+        }
       }
     };
 
@@ -853,6 +913,9 @@ export default function App() {
 
   const handleAuthSuccess = (user: UserProfile) => {
     setCurrentUser(user);
+    if (user.translationPrefs) {
+      setTranslationPrefs(user.translationPrefs);
+    }
     setAuthToken(api.getToken() || '');
     bootstrapApp();
   };
@@ -1008,7 +1071,7 @@ export default function App() {
                   <div className="absolute inset-0 bg-gradient-to-t from-[#13161C]/90 via-[#13161C]/15 to-transparent" />
                   <div className="absolute bottom-2.5 left-2.5 right-2.5">
                     <p className="text-[11px] font-bold text-white line-clamp-2 leading-snug drop-shadow">
-                      {short.title}
+                      <TranslatableText text={short.title} showToggle={false} />
                     </p>
                     <p className="text-[10px] text-white/75 mt-1 tabular-nums">
                       {short.stats.views.toLocaleString()} views
@@ -1380,79 +1443,6 @@ export default function App() {
                       </button>
                     </div>
                   )}
-                </div>
-
-                {/* Compact Home Social & BANGLADESH SERVICES Quick Access Bar */}
-                <div
-                  data-testid="home-social-bd-bar"
-                  className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setActiveNav('bd_services')}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-500 text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <Globe className="w-3.5 h-3.5" />
-                    <span>বাংলাদেশ</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (requireSignedIn()) {
-                        refreshUnreadMessages();
-                        setIsMessagesOpen(true);
-                      }
-                    }}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-primary-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <MessageCircle className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
-                    <span>Messages</span>
-                    {currentUser && unreadMessagesCount > 0 && (
-                      <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-gold)] text-[#13161C] text-[10px] font-bold">
-                        {unreadMessagesCount}
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveNav('friends')}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-primary-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <Users className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
-                    <span>Friends</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (requireSignedIn()) {
-                        refreshNotifications();
-                        setIsNotificationsOpen(true);
-                      }
-                    }}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-gold-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <Bell className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
-                    <span>Alerts</span>
-                    {currentUser && unreadNotificationsCount > 0 && (
-                      <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[10px] font-bold">
-                        {unreadNotificationsCount}
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (requireSignedIn()) setIsWatchHistoryOpen(true);
-                    }}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl ml-glass hover:border-[var(--accent-primary-border)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                  >
-                    <History className="w-3.5 h-3.5 text-[var(--accent-primary)]" />
-                    <span>Watch History</span>
-                  </button>
                 </div>
 
                 {/* Feed Filter Tabs (All, For You, MOTHERLAND, Saved) */}

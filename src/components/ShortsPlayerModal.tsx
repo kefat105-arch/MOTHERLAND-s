@@ -33,6 +33,7 @@ import { recordWatchedSuppression } from '../services/watchSuppression';
 import { FireLikeIcon, FireDislikeIcon, TalkIcon, VaultIcon, BoostIcon } from './fire/MotherlandIcons';
 import { FireRichText } from './fire/FireRichText';
 import type { CreatorProfileTarget } from './CreatorProfileModal';
+import { CollapsibleDescription } from './common/ExpandableTranslatableText';
 
 interface ShortsPlayerModalProps {
   isOpen: boolean;
@@ -962,8 +963,14 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
               </button>
             </div>
 
-            <div className="text-xs sm:text-sm text-white font-medium line-clamp-2 leading-snug">
-              <FireRichText text={currentShort.caption || currentShort.title} emojiSize="sm" />
+            <div className="text-xs sm:text-sm text-white font-medium leading-snug">
+              <CollapsibleDescription
+                text={currentShort.caption || currentShort.title}
+                minLengthToCollapse={65}
+                className="text-xs sm:text-sm text-white font-medium leading-snug"
+                buttonClassName="!text-[#D0AF72]"
+                renderText={(val) => <FireRichText text={val} emojiSize="sm" />}
+              />
             </div>
 
             <div className="flex items-center gap-2 text-[11px] text-white/75">

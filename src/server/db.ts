@@ -24,6 +24,7 @@ import type {
   UserProfile,
   UserPrivacySettings,
   NotificationPreferences,
+  TranslationPreferences,
   Post,
   Story,
   ShortVideo,
@@ -78,6 +79,7 @@ export interface UserAccount {
   isPrivate: boolean;
   privacy: UserPrivacySettings;
   notificationPrefs?: NotificationPreferences;
+  translationPrefs?: TranslationPreferences;
   dataSaver?: boolean;
   lastActiveAt?: string;
   socialLinks?: {
@@ -559,6 +561,7 @@ export class MotherlandDatabase {
   }
 
   private load() {
+    getPersistentAuthSecret(this.paths);
     const result = loadDatabaseSafely<DatabaseSchema>(this.paths, getInitialDbData);
     this.data = result.data;
     this.loadedFrom = result.loadedFrom;
@@ -761,6 +764,7 @@ export class MotherlandDatabase {
         ...user.privacy,
       },
       notificationPrefs: isSelf ? { ...defaultNotifPrefs, ...(user.notificationPrefs || {}) } : undefined,
+      translationPrefs: isSelf ? { enabled: true, targetLang: 'bn', ...(user.translationPrefs || {}) } : undefined,
       dataSaver: isSelf ? Boolean(user.dataSaver) : undefined,
       lastActiveAt: showLastSeen ? user.lastActiveAt || user.updatedAt : undefined,
       socialLinks: user.socialLinks,
@@ -871,7 +875,7 @@ export class MotherlandDatabase {
     return { ok: true };
   }
 
-  // Persistent Multi-Device Sessions (HMAC-SHA256 Token Hashes + Sliding 30-day Persistence)
+  // Persistent Multi-Device Sessions (HMAC-SHA256 Token Hashes + Sliding 90-day Persistence)
   public createSession(
     userId: string,
     userAgent?: string,
@@ -889,7 +893,7 @@ export class MotherlandDatabase {
       authMethod: meta?.authMethod || 'password',
       createdAt: nowIso,
       lastUsedAt: nowIso,
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString(), // 30 days sliding
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 90).toISOString(), // 90 days sliding
       userAgent,
     };
 
@@ -941,10 +945,10 @@ export class MotherlandDatabase {
       dirty = true;
     }
 
-    // Sliding window renewal: if less than 20 days remain, automatically extend to 30 days
+    // Sliding window renewal: if less than 75 days remain, automatically extend to 90 days
     const expMs = Date.parse(found.expiresAt);
-    if (expMs - nowMs < 1000 * 60 * 60 * 24 * 20) {
-      found.expiresAt = new Date(nowMs + 1000 * 60 * 60 * 24 * 30).toISOString();
+    if (expMs - nowMs < 1000 * 60 * 60 * 24 * 75) {
+      found.expiresAt = new Date(nowMs + 1000 * 60 * 60 * 24 * 90).toISOString();
       dirty = true;
     }
 
@@ -2959,6 +2963,48 @@ export class MotherlandDatabase {
       return true;
     }
     return false;
+  }
+
+  public getUserInterestKeywords(userId?: string): string[] {
+    if (!userId) return [];
+    const counts = new Map<string, number>();
+    const stopWords = new Set([
+      'the', 'and', 'for', 'with', 'from', 'this', 'that', 'your', 'into', 'video', 'youtube',
+      'official', 'shorts', 'short', 'live', 'part', 'full', 'episode', 'new', 'best', 'top', '2025', '2026'
+    ]);
+    const collectTokens = (text: string, weight: number) => {
+      const words = String(text || '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !stopWords.has(w));
+      for (const w of words.slice(0, 6)) {
+        counts.set(w, (counts.get(w) || 0) + weight);
+      }
+    };
+
+    for (const h of (this.data.watchHistory || []).filter((x) => x.userId === userId).slice(0, 20)) {
+      collectTokens(h.title, h.completed ? 3 : 2);
+      if (h.channelTitle) collectTokens(h.channelTitle, 1);
+    }
+    for (const sv of (this.data.savedVideos || []).filter((x) => x.userId === userId).slice(0, 15)) {
+      collectTokens(sv.title, 3);
+    }
+    const interactedPostIds = new Set([
+      ...this.data.reactions.filter((r) => r.userId === userId).map((r) => r.postId),
+      ...this.data.savedPosts.filter((s) => s.userId === userId).map((s) => s.postId),
+    ]);
+    for (const p of this.data.posts) {
+      if (interactedPostIds.has(p.id)) {
+        for (const tag of p.hashtags || []) collectTokens(tag, 3);
+        collectTokens(p.content.slice(0, 120), 1);
+      }
+    }
+
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([word]) => word);
   }
 
   // ==========================================

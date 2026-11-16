@@ -63,7 +63,6 @@ import {
   History,
   Pencil,
   AlertCircle,
-  Eye,
   EyeOff,
 } from 'lucide-react';
 import { UnifiedVideo } from '../../types/video';
@@ -72,7 +71,10 @@ import { FireEmojiPicker } from '../fire/FireEmojiPicker';
 import { FireRichText } from '../fire/FireRichText';
 import { FireDraftPreview, FirePickerTrigger } from '../fire/FireComposerBar';
 import {
-  searchYouTube,
+  CollapsibleDescription,
+  TranslatableText,
+} from '../common/ExpandableTranslatableText';
+import {
   searchYouTubeChannels,
   searchYouTubePlaylists,
   getYouTubeVideoComments,
@@ -132,44 +134,40 @@ interface YouTubeFullExperienceProps {
   refreshSignal?: number;
 }
 
-const YOUTUBE_FEED_CACHE_KEY = 'motherland_yt_feed_cache_v3';
-
-function readCachedYouTubeFeed(): UnifiedVideo[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(YOUTUBE_FEED_CACHE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed?.videos)) {
-      return filterUnsuppressed(parsed.videos.map((v: UnifiedVideo) => ({ ...v, youtubeId: v.videoId })));
-    }
-    return [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCachedYouTubeFeed(videos: UnifiedVideo[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(
-      YOUTUBE_FEED_CACHE_KEY,
-      JSON.stringify({ savedAt: Date.now(), videos: videos.slice(0, 48) })
-    );
-  } catch {
-    // ignore storage quota
-  }
+function mapApiItemToUnifiedVideo(item: any): UnifiedVideo {
+  const videoId = String(item?.youtubeId || item?.videoId || item?.id || '').replace(/^yt_/, '');
+  return {
+    id: `yt_${videoId}`,
+    platform: 'youtube',
+    videoId,
+    title: String(item?.title || 'YouTube Video'),
+    creatorName: String(item?.channel?.title || item?.creatorName || 'YouTube Creator'),
+    creatorAvatar: item?.channel?.avatar || item?.creatorAvatar || '',
+    originalVideoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+    embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
+    thumbnailUrl:
+      item?.thumbnailUrl ||
+      `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    duration: item?.duration || undefined,
+    publishedAt: item?.publishedAt
+      ? new Date(item.publishedAt).toLocaleDateString()
+      : 'YouTube',
+    playbackAvailability: 'playable_embed',
+    aspectRatio: '16:9',
+    category: 'bangladesh',
+    description: String(item?.description || ''),
+    sourceMetadata: {
+      isOfficialEmbed: true,
+      channelId: String(item?.channel?.id || ''),
+    },
+  };
 }
 
 export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   onOpenVideoDetails,
-  onOpenAddVideo,
-  onOpenVerticalShorts,
   onBackToMotherland,
   refreshSignal = 0,
 }) => {
-  const cachedInitialVideos = useRef<UnifiedVideo[]>(readCachedYouTubeFeed());
-
   // Navigation State
   const [activeNav, setActiveNav] = useState<YouTubeNavSection>('home');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -179,21 +177,26 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [searchType] = useState<'video' | 'channel' | 'playlist'>('video');
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
-  const [channelResults, setChannelResults] = useState<YouTubeChannelItem[]>([]);
+  const [, setChannelResults] = useState<YouTubeChannelItem[]>([]);
   const [playlistResults, setPlaylistResults] = useState<YouTubePlaylistItem[]>([]);
 
-  // Feed Videos & Playback State
-  const [videos, setVideos] = useState<UnifiedVideo[]>(cachedInitialVideos.current);
-  const [activeVideo, setActiveVideo] = useState<UnifiedVideo | null>(
-    cachedInitialVideos.current[0] || null
-  );
+  // Feed Videos & Playback State (ALWAYS starts on clean Browse Grid: activeVideo = null)
+  const [videos, setVideos] = useState<UnifiedVideo[]>([]);
+  const [activeVideo, setActiveVideo] = useState<UnifiedVideo | null>(null);
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
-  const [isLoadingInitial, setIsLoadingInitial] = useState(cachedInitialVideos.current.length === 0);
+  const [feedPage, setFeedPage] = useState<number>(1);
+  const [hasMore, setHasMore] = useState<boolean>(true);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [exhaustedReason, setExhaustedReason] = useState<string | null>(null);
+  const [feedMode, setFeedMode] = useState<'category' | 'search'>('category');
+  const [activeCategory, setActiveCategory] = useState<string>('home');
+  const [isLoadingInitial, setIsLoadingInitial] = useState(true);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedChip, setSelectedChip] = useState('🔥 ট্রেন্ডিং বাংলাদেশ');
-  const [activeQuery, setActiveQuery] = useState('Bangladesh trending music news');
+  const [activeQuery, setActiveQuery] = useState('');
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   // Authenticated YouTube Channel State
   const [authUser, setAuthUser] = useState<GoogleAuthUser | null>(getStoredGoogleAuth());
@@ -219,29 +222,26 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
   // Active Video Comments & Likes State
   const [comments, setComments] = useState<YouTubeCommentItem[]>([]);
-  const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [isPostingComment, setIsPostingComment] = useState(false);
   const [newCommentText, setNewCommentText] = useState('');
   const [firePickerOpen, setFirePickerOpen] = useState(false);
   const [likedVideos, setLikedVideos] = useState<Record<string, boolean>>({});
-  const [subscribedChannels, setSubscribedChannels] = useState<Record<string, boolean>>({
-    'Coke Studio Bangla': true,
-    'BCB Tigers': true,
-  });
+  const [subscribedChannels, setSubscribedChannels] = useState<Record<string, boolean>>({});
 
-  // Notifications State
-  const [notifications, setNotifications] = useState<Array<{ id: string; title: string; channel: string; time: string; read: boolean }>>([
-    { id: 'notif_1', title: 'New release: Coke Studio Bangla Season 4 Official Premiere', channel: 'Coke Studio Bangla', time: '2 hours ago', read: false },
-    { id: 'notif_2', title: 'Bangladesh vs Sri Lanka match highlights live on Tigers TV', channel: 'BCB Tigers', time: '5 hours ago', read: false },
-    { id: 'notif_3', title: 'Dhaka Metro Rail Line 6 Phase 2 operations update', channel: 'DMTCL Official', time: '1 day ago', read: true },
-  ]);
+  // Real Notifications State (hydrated from MOTHERLAND backend when signed in)
+  const [notifications, setNotifications] = useState<
+    Array<{ id: string; title: string; channel: string; time: string; read: boolean }>
+  >([]);
 
   // Fullscreen Player State
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Infinite Scroll & Deduplication Refs
+  // Infinite Scroll, Request Cancellation & Deduplication Refs
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
+  const feedAbortRef = useRef<AbortController | null>(null);
+  const isFetchingMoreRef = useRef<boolean>(false);
   const lastRefreshAtRef = useRef<number>(Date.now());
   const activeVideoRef = useRef<UnifiedVideo | null>(activeVideo);
   activeVideoRef.current = activeVideo;
@@ -259,10 +259,25 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     { label: '🎮 গেমিং ও লাইভ', q: 'Top gaming highlights stream' },
   ];
 
-  // Refresh studio videos & search history
+  // Refresh studio videos, search history & real notifications
   useEffect(() => {
     setStudioVideos(getStudioUploadedVideos());
     setSearchHistory(getYouTubeSearchHistory());
+    if (api.getToken()) {
+      api
+        .getNotifications()
+        .then((res) => {
+          const mapped = (res.notifications || []).slice(0, 20).map((n) => ({
+            id: n.id,
+            title: n.body || n.title || 'MOTHERLAND update',
+            channel: n.sender?.displayName || 'MOTHERLAND',
+            time: n.createdAt ? new Date(n.createdAt).toLocaleDateString() : 'Recent',
+            read: Boolean(n.isRead),
+          }));
+          setNotifications(mapped);
+        })
+        .catch(() => {});
+    }
   }, []);
 
   // Load real YouTube channel videos for Studio / Your Videos / Your Channel
@@ -287,14 +302,29 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     }
   }, [authUser?.accessToken, loadChannelVideos]);
 
-  // Fetch comments whenever active video changes
+  // Fetch real comments & channel subscription status whenever active video changes
   useEffect(() => {
-    if (activeVideo?.videoId) {
-      getYouTubeVideoComments(activeVideo.videoId, 10).then((cmts) => {
-        setComments(cmts);
-      });
+    if (!activeVideo?.videoId) {
+      setComments([]);
+      return;
     }
-  }, [activeVideo]);
+    setActionNotice(null);
+    getYouTubeVideoComments(activeVideo.videoId, 15).then((cmts) => {
+      setComments(cmts);
+    });
+    const channelId = String(activeVideo.sourceMetadata?.channelId || '');
+    if (channelId && api.getToken()) {
+      api
+        .getYouTubeSubscriptionStatus(channelId)
+        .then((res) => {
+          setSubscribedChannels((prev) => ({
+            ...prev,
+            [activeVideo.creatorName]: Boolean(res.subscribed),
+          }));
+        })
+        .catch(() => {});
+    }
+  }, [activeVideo?.videoId, activeVideo?.creatorName, activeVideo?.sourceMetadata?.channelId]);
 
   // Suppress active YouTube video after 6 seconds of playback so it stays hidden for 14 days
   useEffect(() => {
@@ -342,9 +372,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
       setVideos((prev) =>
         prev.filter((v) => {
           if (currentId && v.videoId === currentId) return true;
-          return (
-            filterUnsuppressed([{ id: v.id, youtubeId: v.videoId }]).length > 0
-          );
+          return filterUnsuppressed([{ id: v.id, youtubeId: v.videoId }]).length > 0;
         })
       );
     };
@@ -352,107 +380,209 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
   }, []);
 
-  // Core Feed Loader by Search Query
-  const loadFeed = useCallback(async (searchTerm: string, refresh: boolean = true, silent = false) => {
-    if (refresh) {
-      if (!silent) setIsLoadingInitial((prev) => prev && videos.length === 0);
-      seenIdsRef.current.clear();
-    }
+  // Core Feed Loader via MOTHERLAND Backend (supports >200 videos cursor chaining, AbortController & zero auto-select)
+  const loadCategoryOrSearchFeed = useCallback(
+    async (opts: {
+      mode: 'category' | 'search';
+      category?: string;
+      query?: string;
+      refresh?: boolean;
+      silent?: boolean;
+    }) => {
+      const isRefreshCall = opts.refresh !== false;
+      feedAbortRef.current?.abort();
+      const controller = new AbortController();
+      feedAbortRef.current = controller;
+
+      if (isRefreshCall) {
+        if (!opts.silent) setIsLoadingInitial(true);
+        setFeedError(null);
+        setExhaustedReason(null);
+        seenIdsRef.current.clear();
+        setFeedPage(1);
+        setHasMore(true);
+      }
+
+      try {
+        let mapped: UnifiedVideo[] = [];
+        let nextToken: string | undefined;
+        let nextHasMore = true;
+        let quotaMsg: string | null = null;
+
+        if (opts.mode === 'category') {
+          const cat = opts.category || 'home';
+          const res = await api.getYouTubeFeed({
+            type: 'long',
+            category: cat,
+            page: 1,
+            pageSize: 20,
+            signal: controller.signal,
+          });
+          mapped = (res.items || []).map(mapApiItemToUnifiedVideo);
+          nextToken = res.nextPageToken || undefined;
+          nextHasMore = res.hasMore !== false;
+          if (res.quotaExceeded) {
+            quotaMsg = res.exhaustedReason || 'YouTube API quota limit reached.';
+          } else if (!nextHasMore && res.exhaustedReason) {
+            quotaMsg = res.exhaustedReason;
+          }
+        } else {
+          const q = (opts.query || 'Bangladesh trending').trim();
+          const res = await api.searchYouTube(q, '', 20, '', {
+            continuous: true,
+            signal: controller.signal,
+          });
+          mapped = (res.items || []).map(mapApiItemToUnifiedVideo);
+          nextToken = res.nextPageToken || undefined;
+          nextHasMore = Boolean(nextToken);
+          if (res.quotaFallback || res.message) {
+            quotaMsg = res.message || null;
+          }
+        }
+
+        if (controller.signal.aborted) return;
+
+        const filteredRaw = filterUnsuppressed(
+          mapped.map((v) => ({ ...v, youtubeId: v.videoId }))
+        );
+
+        const uniqueVideos: UnifiedVideo[] = [];
+        for (const v of filteredRaw) {
+          if (v.videoId && !seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
+            seenIdsRef.current.add(v.id);
+            seenIdsRef.current.add(v.videoId);
+            uniqueVideos.push(v);
+          }
+        }
+
+        if (uniqueVideos.length > 0 || !opts.silent) {
+          setVideos(uniqueVideos);
+        }
+        setNextPageToken(nextToken);
+        setFeedPage(1);
+        setHasMore(nextHasMore || Boolean(nextToken));
+        setExhaustedReason(quotaMsg);
+        lastRefreshAtRef.current = Date.now();
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        console.error('Feed loading error:', err);
+        setFeedError(err?.message || 'Unable to load YouTube videos.');
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsLoadingInitial(false);
+        }
+      }
+    },
+    []
+  );
+
+  // Initial feed load on clean Browse Grid (activeVideo remains null!)
+  useEffect(() => {
+    setFeedMode('category');
+    setActiveCategory('home');
+    void loadCategoryOrSearchFeed({ mode: 'category', category: 'home', refresh: true });
+    return () => {
+      feedAbortRef.current?.abort();
+    };
+  }, [loadCategoryOrSearchFeed]);
+
+  // Infinite Scroll Pagination (pushes cleanly past 200 items with zero repeats)
+  const loadNextPage = useCallback(async () => {
+    if (isFetchingMoreRef.current || isFetchingMore || !hasMore) return;
+    isFetchingMoreRef.current = true;
+    setIsFetchingMore(true);
+    setFeedError(null);
 
     try {
-      const res = await searchYouTube({
-        query: searchTerm,
-        pageSize: 24,
-        regionCode: 'BD',
-        safeSearch: 'none',
-      });
+      const nextPageNum = feedPage + 1;
+      let rawItems: any[] = [];
+      let nextToken: string | undefined;
+      let nextHasMore = true;
+      let quotaMsg: string | null = null;
 
-      const filteredRaw = filterUnsuppressed(
-        res.videos.map((v) => ({ ...v, youtubeId: v.videoId }))
-      );
-
-      const uniqueVideos: UnifiedVideo[] = [];
-      for (const v of filteredRaw) {
-        if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
-          seenIdsRef.current.add(v.id);
-          seenIdsRef.current.add(v.videoId);
-          uniqueVideos.push(v);
+      if (feedMode === 'category') {
+        const res = await api.getYouTubeFeed({
+          type: 'long',
+          category: activeCategory,
+          page: nextPageNum,
+          pageToken: nextPageToken || '',
+          pageSize: 20,
+        });
+        rawItems = res.items || [];
+        nextToken = res.nextPageToken || undefined;
+        nextHasMore = res.hasMore !== false;
+        if (res.quotaExceeded || !nextHasMore) {
+          quotaMsg = res.exhaustedReason || null;
+        }
+      } else {
+        if (!nextPageToken) {
+          setHasMore(false);
+          return;
+        }
+        const res = await api.searchYouTube(activeQuery, nextPageToken, 20, '', {
+          continuous: true,
+        });
+        rawItems = res.items || [];
+        nextToken = res.nextPageToken || undefined;
+        nextHasMore = Boolean(nextToken);
+        if (res.quotaFallback || res.message) {
+          quotaMsg = res.message || null;
         }
       }
 
-      if (refresh && uniqueVideos.length > 0) {
-        writeCachedYouTubeFeed(uniqueVideos);
-      }
-
-      setVideos((prev) => (refresh ? (uniqueVideos.length > 0 ? uniqueVideos : prev) : [...prev, ...uniqueVideos]));
-      setNextPageToken(res.nextPageToken);
-      lastRefreshAtRef.current = Date.now();
-
-      if (refresh && uniqueVideos.length > 0) {
-        setActiveVideo((cur) => (silent && cur ? cur : uniqueVideos[0]));
-      }
-    } catch (err) {
-      console.error('Feed loading error:', err);
-    } finally {
-      setIsLoadingInitial(false);
-    }
-  }, [videos.length]);
-
-  // Initial feed load (silent background refresh if cache already hydrated)
-  useEffect(() => {
-    loadFeed(discoveryChips[0].q, true, cachedInitialVideos.current.length > 0);
-  }, []);
-
-  // Infinite Scroll Pagination
-  const loadNextPage = useCallback(async () => {
-    if (isFetchingMore || !nextPageToken) return;
-    setIsFetchingMore(true);
-
-    try {
-      const res = await searchYouTube({
-        query: activeQuery,
-        pageToken: nextPageToken,
-        pageSize: 24,
-        regionCode: 'BD',
-        safeSearch: 'none',
-      });
-
-      const filtered = filterUnsuppressed(
-        res.videos.map((v) => ({ ...v, youtubeId: v.videoId }))
-      );
+      const mapped = rawItems.map(mapApiItemToUnifiedVideo);
+      const filtered = filterUnsuppressed(mapped.map((v) => ({ ...v, youtubeId: v.videoId })));
       const newItems: UnifiedVideo[] = [];
       for (const v of filtered) {
-        if (!seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
+        if (v.videoId && !seenIdsRef.current.has(v.id) && !seenIdsRef.current.has(v.videoId)) {
           seenIdsRef.current.add(v.id);
           seenIdsRef.current.add(v.videoId);
           newItems.push(v);
         }
       }
 
-      setVideos((prev) => [...prev, ...newItems]);
-      setNextPageToken(res.nextPageToken);
-    } catch (err) {
-      console.warn('Pagination load error:', err);
+      if (newItems.length > 0) {
+        setVideos((prev) => [...prev, ...newItems]);
+      }
+      setFeedPage(nextPageNum);
+      setNextPageToken(nextToken);
+      setHasMore(nextHasMore || Boolean(nextToken));
+      if (quotaMsg) setExhaustedReason(quotaMsg);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        console.warn('Pagination load error:', err);
+        setFeedError(err?.message || 'Could not load more videos.');
+      }
     } finally {
+      isFetchingMoreRef.current = false;
       setIsFetchingMore(false);
     }
-  }, [isFetchingMore, nextPageToken, activeQuery]);
+  }, [isFetchingMore, hasMore, feedPage, feedMode, activeCategory, nextPageToken, activeQuery]);
 
   // Edge Swipe Refs
   const edgeStartXRef = useRef<number>(0);
   const edgeStartYRef = useRef<number>(0);
   const isEdgeSwipeRef = useRef<boolean>(false);
 
-  // IntersectionObserver for continuous discovery
+  // IntersectionObserver for continuous discovery past 200 items
   useEffect(() => {
-    if (activeNav !== 'home' && activeNav !== 'explore') return;
+    if (
+      activeNav !== 'home' &&
+      activeNav !== 'explore' &&
+      activeNav !== 'trending' &&
+      activeNav !== 'music' &&
+      activeNav !== 'gaming' &&
+      activeNav !== 'sports'
+    ) {
+      return;
+    }
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && !isFetchingMore && nextPageToken) {
-          loadNextPage();
+        if (entries[0].isIntersecting && !isFetchingMoreRef.current && hasMore) {
+          void loadNextPage();
         }
       },
       { threshold: 0.1, rootMargin: '500px' }
@@ -460,9 +590,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [loadNextPage, isFetchingMore, nextPageToken, activeNav]);
+  }, [loadNextPage, hasMore, activeNav]);
 
-  // Search Action
+  // Search Action (uses continuous search mode & opens Browse Grid for query results)
   const handleSearch = async (e?: React.FormEvent, directTerm?: string) => {
     if (e) e.preventDefault();
     const term = (directTerm !== undefined ? directTerm : searchQuery).trim();
@@ -471,10 +601,12 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     addYouTubeSearchHistory(term);
     setSearchHistory(getYouTubeSearchHistory());
     setActiveQuery(term);
+    setActiveVideo(null);
 
     if (searchType === 'video') {
       setActiveNav('home');
-      loadFeed(term, true);
+      setFeedMode('search');
+      void loadCategoryOrSearchFeed({ mode: 'search', query: term, refresh: true });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else if (searchType === 'channel') {
       setActiveNav('explore');
@@ -491,67 +623,81 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     }
   };
 
-  // Home Button & YouTube Logo Feed Refresh
+  // Home Button & YouTube Logo Feed Refresh (returns to Browse Grid without autoplaying)
   const handleRefreshFeed = useCallback(async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
+    setActiveVideo(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    const refreshPool = [
-      'Bangladesh trending viral music 2026',
-      'Coke Studio Bangla top hit',
-      'Bangla Natok comedy episode 2026',
-      'Bangladesh Tigers cricket match highlights',
-      'Sundarbans travel documentary Bangladesh',
-    ];
-    const chosen = refreshPool[Math.floor(Math.random() * refreshPool.length)];
-    setActiveQuery(chosen);
+    const cat =
+      activeNav === 'trending' ||
+      activeNav === 'music' ||
+      activeNav === 'gaming' ||
+      activeNav === 'sports' ||
+      activeNav === 'explore'
+        ? activeNav
+        : 'home';
+    setFeedMode('category');
+    setActiveCategory(cat);
 
     try {
-      await loadFeed(chosen, true, false);
-      setStudioNotice('YouTube feed refreshed with fresh recommendations!');
+      await loadCategoryOrSearchFeed({ mode: 'category', category: cat, refresh: true });
+      setStudioNotice('YouTube feed refreshed with fresh videos!');
       setTimeout(() => setStudioNotice(null), 2600);
     } finally {
       setIsRefreshing(false);
     }
-  }, [isRefreshing, loadFeed]);
+  }, [isRefreshing, activeNav, loadCategoryOrSearchFeed]);
 
-  // Respond to parent refreshSignal (when user clicks YouTube icon in MOTHERLAND)
+  // Respond to parent refreshSignal (when user clicks YouTube icon in MOTHERLAND -> clean Browse Grid)
   useEffect(() => {
     if (refreshSignal > 0) {
+      setActiveVideo(null);
       if (activeNav === 'shorts') {
         setYtSubRefreshSignal((s) => s + 1);
       } else {
-        handleRefreshFeed();
+        void handleRefreshFeed();
       }
     }
   }, [refreshSignal]);
 
-  // Auto-refresh on tab return (>60s stale)
+  // Auto-refresh on tab return (>60s stale, only when user is on Browse Grid so playback is never interrupted)
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === 'visible' && Date.now() - lastRefreshAtRef.current > 60000) {
-        loadFeed(activeQuery, true, true);
+      if (
+        document.visibilityState === 'visible' &&
+        !activeVideoRef.current &&
+        Date.now() - lastRefreshAtRef.current > 60000
+      ) {
+        if (feedMode === 'search' && activeQuery) {
+          void loadCategoryOrSearchFeed({ mode: 'search', query: activeQuery, refresh: true, silent: true });
+        } else {
+          void loadCategoryOrSearchFeed({ mode: 'category', category: activeCategory, refresh: true, silent: true });
+        }
       }
     };
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
-  }, [activeQuery, loadFeed]);
+  }, [feedMode, activeQuery, activeCategory, loadCategoryOrSearchFeed]);
 
-  // Navigate to ANY YouTube section & refresh it automatically when clicked
+  // Navigate to ANY YouTube section & refresh it cleanly
   const handleSelectYouTubeNav = useCallback(
     (section: YouTubeNavSection) => {
       setDrawerOpen(false);
       setActiveNav(section);
+      setActiveVideo(null);
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
       if (section === 'home') {
-        handleRefreshFeed();
+        setFeedMode('category');
+        setActiveCategory('home');
+        void loadCategoryOrSearchFeed({ mode: 'category', category: 'home', refresh: true });
       } else if (section === 'shorts') {
         setYtSubRefreshSignal((s) => s + 1);
       } else if (section === 'studio' || section === 'my_uploads' || section === 'my_channel') {
         setStudioVideos(getStudioUploadedVideos());
-        loadChannelVideos();
+        void loadChannelVideos();
       } else if (section === 'saved_videos') {
         if (api.getToken()) {
           api
@@ -559,26 +705,21 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
             .then((res) => setSavedVideosList(res.videos || []))
             .catch(() => {});
         }
-      } else if (section === 'trending') {
-        setActiveQuery('Bangladesh trending viral music videos');
-        loadFeed('Bangladesh trending viral music videos', true, true);
-      } else if (section === 'music') {
-        setActiveQuery('Coke Studio Bangla popular music');
-        loadFeed('Coke Studio Bangla popular music', true, true);
-      } else if (section === 'gaming') {
-        setActiveQuery('Gaming highlights livestream 2026');
-        loadFeed('Gaming highlights livestream 2026', true, true);
-      } else if (section === 'sports') {
-        setActiveQuery('Bangladesh cricket football highlights');
-        loadFeed('Bangladesh cricket football highlights', true, true);
-      } else if (section === 'explore') {
-        searchYouTubeChannels('Bangladesh', 12).then(setChannelResults).catch(() => {});
-        loadFeed('Bangladesh viral documentary culture', true, true);
+      } else if (
+        section === 'trending' ||
+        section === 'music' ||
+        section === 'gaming' ||
+        section === 'sports' ||
+        section === 'explore'
+      ) {
+        setFeedMode('category');
+        setActiveCategory(section);
+        void loadCategoryOrSearchFeed({ mode: 'category', category: section, refresh: true });
       } else if (section === 'playlists') {
         searchYouTubePlaylists('Coke Studio Bangla', 12).then(setPlaylistResults).catch(() => {});
       }
     },
-    [handleRefreshFeed, loadChannelVideos, loadFeed]
+    [loadChannelVideos, loadCategoryOrSearchFeed]
   );
 
   // Studio Edit / Delete handlers
@@ -666,7 +807,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     }
   };
 
-  // Universal Back Action
+  // Universal Back Action (returns Watch Screen -> Browse Grid before exiting YouTube)
   const handleBackAction = () => {
     if (createModalOpen) {
       setCreateModalOpen(false);
@@ -674,6 +815,8 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
       setAccountModalOpen(false);
     } else if (drawerOpen) {
       setDrawerOpen(false);
+    } else if (activeVideo) {
+      setActiveVideo(null);
     } else if (activeNav !== 'home') {
       setActiveNav('home');
     } else if (onBackToMotherland) {
@@ -691,7 +834,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [createModalOpen, accountModalOpen, drawerOpen, activeNav, onBackToMotherland]);
+  }, [createModalOpen, accountModalOpen, drawerOpen, activeVideo, activeNav, onBackToMotherland]);
 
   // Fullscreen Toggle
   const togglePlayerFullscreen = async () => {
@@ -895,17 +1038,25 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
           activeNav === 'gaming' ||
           activeNav === 'sports') && (
           <div className="space-y-4 sm:space-y-6">
-            {/* 9 Category Discovery Chips */}
+            {/* 9 Category Discovery Chips (triggers Browse Grid refresh, never auto-plays) */}
             <div className="px-2 sm:px-0 pt-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
-              {discoveryChips.map((chip) => {
+              {discoveryChips.map((chip, idx) => {
                 const isSelected = selectedChip === chip.label;
                 return (
                   <button
                     key={chip.label}
                     onClick={() => {
                       setSelectedChip(chip.label);
-                      setActiveQuery(chip.q);
-                      loadFeed(chip.q, true);
+                      setActiveVideo(null);
+                      if (idx === 0) {
+                        setFeedMode('category');
+                        setActiveCategory('home');
+                        void loadCategoryOrSearchFeed({ mode: 'category', category: 'home', refresh: true });
+                      } else {
+                        setFeedMode('search');
+                        setActiveQuery(chip.q);
+                        void loadCategoryOrSearchFeed({ mode: 'search', query: chip.q, refresh: true });
+                      }
                     }}
                     className={`flex-shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
                       isSelected
@@ -919,16 +1070,36 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
               })}
             </div>
 
-            {/* SECTION 2 & 10: 16:9 Long-Form Video Player (Full Width on Mobile) */}
+            {/* Dedicated Watch Screen (ONLY mounted when user selects a video from Browse Grid) */}
             {activeVideo && (
               <div
                 ref={playerContainerRef}
+                data-testid="yt-watch-screen"
                 className={`bg-[#0f1422] border-0 sm:border border-white/10 overflow-hidden shadow-2xl transition-all ${
                   isFullscreen
                     ? 'fixed inset-0 z-50 rounded-none w-screen h-screen flex flex-col bg-black'
                     : 'rounded-none sm:rounded-3xl'
                 }`}
               >
+                {/* Prominent Back to Browse Bar */}
+                <div className="px-3 sm:px-4 py-2 bg-[#0b101d] border-b border-white/10 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    data-testid="yt-back-to-browse-btn"
+                    onClick={() => {
+                      setActiveVideo(null);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/15 border border-white/10 text-xs font-bold text-white flex items-center gap-1.5 transition-all"
+                  >
+                    <ArrowLeft className="w-4 h-4 text-red-400" />
+                    <span>Back to Browse</span>
+                  </button>
+                  <span className="text-[11px] text-slate-400 truncate max-w-[55%]">
+                    {activeVideo.creatorName}
+                  </span>
+                </div>
+
                 {/* 16:9 Responsive Video Player with Aspect Ratio Preserved */}
                 <div className="relative w-full aspect-video bg-black overflow-hidden flex items-center justify-center">
                   <iframe
@@ -962,28 +1133,54 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                   </button>
                 </div>
 
-                {/* Video Info & Controls Strip (Under player) */}
+                {/* Video Info, 1-line Collapsible Description & Controls Strip */}
                 <div className="p-3 sm:p-5 space-y-3.5">
-                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-white/5">
-                    <div className="space-y-1 max-w-3xl">
+                  <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3 pb-3 border-b border-white/5">
+                    <div className="space-y-1.5 max-w-3xl min-w-0">
                       <h2 className="text-sm sm:text-base md:text-lg font-extrabold text-white leading-snug">
-                        {activeVideo.title}
+                        <TranslatableText text={activeVideo.title} />
                       </h2>
                       <div className="flex items-center gap-2 text-[11px] sm:text-xs text-slate-400">
                         <span>{activeVideo.publishedAt || 'YouTube'}</span>
                         <span>•</span>
                         <span className="text-red-400 font-semibold">{activeVideo.category || 'Trending'}</span>
                       </div>
+                      <CollapsibleDescription
+                        text={activeVideo.description || activeVideo.title}
+                        minLengthToCollapse={60}
+                        className="text-xs text-slate-300 leading-relaxed pt-0.5"
+                        renderText={(content) => <FireRichText text={content} emojiSize="xs" />}
+                      />
                     </div>
 
                     {/* Actions: Support, Fire Like, Boost, External */}
-                    <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap shrink-0">
                       <button
-                        onClick={() => {
-                          setSubscribedChannels((prev) => ({
-                            ...prev,
-                            [activeVideo.creatorName]: !prev[activeVideo.creatorName],
-                          }));
+                        type="button"
+                        onClick={async () => {
+                          const channelId = String(activeVideo.sourceMetadata?.channelId || '');
+                          if (!channelId) {
+                            setActionNotice('Channel ID unavailable for this video.');
+                            return;
+                          }
+                          if (!api.getToken()) {
+                            setActionNotice('Sign in to MOTHERLAND & connect Google account to subscribe.');
+                            return;
+                          }
+                          const prev = Boolean(subscribedChannels[activeVideo.creatorName]);
+                          setActionNotice(null);
+                          try {
+                            const res = await api.subscribeYouTubeChannel(
+                              channelId,
+                              prev ? 'unsubscribe' : 'subscribe'
+                            );
+                            setSubscribedChannels((m) => ({
+                              ...m,
+                              [activeVideo.creatorName]: res.subscribed,
+                            }));
+                          } catch (err: any) {
+                            setActionNotice(err?.message || 'Google YouTube OAuth required to subscribe.');
+                          }
                         }}
                         className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md ${
                           subscribedChannels[activeVideo.creatorName]
@@ -995,8 +1192,20 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                       </button>
 
                       <button
-                        onClick={() => {
-                          setLikedVideos((prev) => ({ ...prev, [activeVideo.videoId]: !prev[activeVideo.videoId] }));
+                        type="button"
+                        onClick={async () => {
+                          if (!api.getToken()) {
+                            setActionNotice('Sign in & connect Google account to like YouTube videos.');
+                            return;
+                          }
+                          const next = !likedVideos[activeVideo.videoId];
+                          setActionNotice(null);
+                          try {
+                            await api.rateYouTubeVideo(activeVideo.videoId, next ? 'like' : 'none');
+                            setLikedVideos((prev) => ({ ...prev, [activeVideo.videoId]: next }));
+                          } catch (err: any) {
+                            setActionNotice(err?.message || 'Google YouTube OAuth required to like videos.');
+                          }
                         }}
                         className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all ${
                           likedVideos[activeVideo.videoId]
@@ -1009,6 +1218,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                       </button>
 
                       <button
+                        type="button"
                         onClick={() => {
                           navigator.clipboard.writeText(activeVideo.originalVideoUrl);
                           setCopiedNotice('Boost link copied!');
@@ -1032,17 +1242,38 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                     </div>
                   </div>
 
+                  {actionNotice && (
+                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-2">
+                      <span>{actionNotice}</span>
+                      <button
+                        type="button"
+                        onClick={() => setActionNotice(null)}
+                        className="text-amber-200 hover:text-white"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
                   {/* Creator Channel Tag */}
                   <div className="flex items-center gap-2.5 p-2.5 rounded-xl bg-[#131b2e] border border-white/5">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-red-600 to-amber-500 flex items-center justify-center font-bold text-white text-xs">
-                      {activeVideo.creatorName.slice(0, 1).toUpperCase()}
-                    </div>
+                    {activeVideo.creatorAvatar ? (
+                      <img
+                        src={activeVideo.creatorAvatar}
+                        alt={activeVideo.creatorName}
+                        className="w-8 h-8 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-red-600 to-amber-500 flex items-center justify-center font-bold text-white text-xs">
+                        {activeVideo.creatorName.slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
                     <div>
                       <h4 className="font-bold text-xs text-white flex items-center gap-1">
                         <span>{activeVideo.creatorName}</span>
                         <CheckCircle2 className="w-3 h-3 text-red-500" />
                       </h4>
-                      <p className="text-[10px] text-slate-400">Official Partner Channel • YouTube Verified</p>
+                      <p className="text-[10px] text-slate-400">YouTube Channel</p>
                     </div>
                   </div>
 
@@ -1053,25 +1284,31 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                         <TalkIcon className="w-4 h-4" active />
                         <span>Talk ({comments.length})</span>
                       </span>
-                      <span className="text-[10px] text-slate-500 font-mono">Live API</span>
+                      <span className="text-[10px] text-slate-500 font-mono">YouTube API</span>
                     </div>
 
                     <form
-                      onSubmit={(e) => {
+                      onSubmit={async (e) => {
                         e.preventDefault();
-                        if (!newCommentText.trim()) return;
-                        setComments([
-                          {
-                            id: 'c_' + Date.now(),
-                            authorDisplayName: authUser?.channelTitle || 'You (Motherland)',
-                            authorProfileImageUrl: authUser?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
-                            textDisplay: newCommentText.trim(),
-                            publishedAt: 'Just now',
-                            likeCount: 0,
-                          },
-                          ...comments,
-                        ]);
-                        setNewCommentText('');
+                        const text = newCommentText.trim();
+                        if (!text || isPostingComment) return;
+                        if (!api.getToken()) {
+                          setActionNotice('Sign in & connect Google account to post comments on YouTube.');
+                          return;
+                        }
+                        setIsPostingComment(true);
+                        setActionNotice(null);
+                        try {
+                          const res = await api.postYouTubeComment(activeVideo.videoId, text);
+                          if (res?.comment) {
+                            setComments((prev) => [res.comment, ...prev]);
+                            setNewCommentText('');
+                          }
+                        } catch (err: any) {
+                          setActionNotice(err?.message || 'Google YouTube OAuth required to post comments.');
+                        } finally {
+                          setIsPostingComment(false);
+                        }
                       }}
                       className="space-y-1.5"
                     >
@@ -1092,10 +1329,14 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                         />
                         <button
                           type="submit"
-                          disabled={!newCommentText.trim()}
+                          disabled={!newCommentText.trim() || isPostingComment}
                           className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white font-bold text-xs"
                         >
-                          <Send className="w-3 h-3" />
+                          {isPostingComment ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Send className="w-3 h-3" />
+                          )}
                         </button>
                       </div>
                     </form>
@@ -1123,80 +1364,118 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
               </div>
             )}
 
-            {/* Continuous Video Discovery Grid (Infinite Non-Stop Feed) */}
+            {/* Continuous Video Discovery Browse Grid */}
             <div className="space-y-3 px-2 sm:px-0">
               <div className="flex items-center justify-between">
                 <h3 className="font-bold text-sm sm:text-base text-white flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-red-500" />
-                  <span>Continuous Video Discovery ({videos.length} Loaded)</span>
+                  <span>
+                    {activeVideo ? 'Up Next & Related Discovery' : 'Browse YouTube Discovery'} ({videos.length} Loaded)
+                  </span>
                 </h3>
-                <span className="text-[11px] font-mono text-slate-400">Up to 50 results per batch</span>
+                <span className="text-[11px] font-mono text-slate-400">
+                  {activeVideo ? 'Tap any video to switch' : 'Tap any video to watch'}
+                </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
-                {videos.map((vid) => {
-                  const isCurrent = activeVideo?.videoId === vid.videoId;
-                  return (
-                    <div
-                      key={vid.id}
-                      onClick={() => {
-                        setActiveVideo(vid);
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                      }}
-                      className={`rounded-2xl border overflow-hidden transition-all duration-200 cursor-pointer flex flex-col justify-between group ${
-                        isCurrent
-                          ? 'bg-red-500/10 border-red-500/50 shadow-lg shadow-red-950/40 ring-1 ring-red-500/30'
-                          : 'bg-[#0f1422] border-white/5 hover:border-white/20'
-                      }`}
-                    >
-                      <div className="relative aspect-video bg-black overflow-hidden">
-                        <img
-                          src={vid.thumbnailUrl}
-                          alt={vid.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          loading="lazy"
-                        />
-                        {isCurrent && (
-                          <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-red-600 text-[10px] font-mono font-bold text-white shadow-md">
-                            PLAYING NOW
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="p-3 flex-1 flex flex-col justify-between">
-                        <div>
-                          <h4
-                            className={`text-xs font-bold line-clamp-2 leading-snug ${
-                              isCurrent ? 'text-red-400' : 'text-white group-hover:text-red-400'
-                            }`}
-                          >
-                            {vid.title}
-                          </h4>
-                          <p className="text-[11px] text-slate-400 mt-1 truncate">{vid.creatorName}</p>
-                        </div>
-
-                        <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
-                          <span>{vid.publishedAt || 'YouTube'}</span>
-                          <span className="text-red-400 font-semibold group-hover:underline flex items-center gap-1">
-                            <Play className="w-3 h-3 fill-current" />
-                            <span>Play</span>
-                          </span>
-                        </div>
+              {isLoadingInitial && videos.length === 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+                  {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+                    <div key={i} className="rounded-2xl bg-[#0f1422] border border-white/5 overflow-hidden animate-pulse">
+                      <div className="aspect-video bg-white/5" />
+                      <div className="p-3 space-y-2">
+                        <div className="h-3 w-4/5 bg-white/10 rounded" />
+                        <div className="h-2.5 w-1/2 bg-white/5 rounded" />
                       </div>
                     </div>
-                  );
-                })}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+                  {videos.map((vid) => {
+                    const isCurrent = activeVideo?.videoId === vid.videoId;
+                    return (
+                      <div
+                        key={vid.id}
+                        data-testid={`yt-browse-card-${vid.videoId}`}
+                        onClick={() => {
+                          setActiveVideo(vid);
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className={`rounded-2xl border overflow-hidden transition-all duration-200 cursor-pointer flex flex-col justify-between group ${
+                          isCurrent
+                            ? 'bg-red-500/10 border-red-500/50 shadow-lg shadow-red-950/40 ring-1 ring-red-500/30'
+                            : 'bg-[#0f1422] border-white/5 hover:border-white/20'
+                        }`}
+                      >
+                        <div className="relative aspect-video bg-black overflow-hidden">
+                          <img
+                            src={vid.thumbnailUrl}
+                            alt={vid.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            loading="lazy"
+                          />
+                          {vid.duration && (
+                            <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/80 text-[10px] font-mono text-white">
+                              {vid.duration}
+                            </span>
+                          )}
+                          {isCurrent && (
+                            <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-red-600 text-[10px] font-mono font-bold text-white shadow-md">
+                              PLAYING NOW
+                            </div>
+                          )}
+                        </div>
 
-              {/* Infinite Sentinel & Load Button */}
-              <div ref={sentinelRef} className="pt-6 pb-12 flex flex-col items-center justify-center">
+                        <div className="p-3 flex-1 flex flex-col justify-between">
+                          <div>
+                            <h4
+                              className={`text-xs font-bold line-clamp-2 leading-snug ${
+                                isCurrent ? 'text-red-400' : 'text-white group-hover:text-red-400'
+                              }`}
+                            >
+                              <TranslatableText text={vid.title} showToggle={false} />
+                            </h4>
+                            <p className="text-[11px] text-slate-400 mt-1 truncate">{vid.creatorName}</p>
+                          </div>
+
+                          <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
+                            <span>{vid.publishedAt || 'YouTube'}</span>
+                            <span className="text-red-400 font-semibold group-hover:underline flex items-center gap-1">
+                              <Play className="w-3 h-3 fill-current" />
+                              <span>Watch</span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Infinite Sentinel, Error Retry & Load Button */}
+              <div ref={sentinelRef} className="pt-6 pb-12 flex flex-col items-center justify-center gap-2">
+                {feedError && (
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
+                    <span>{feedError}</span>
+                    <button
+                      type="button"
+                      onClick={() => (videos.length === 0 ? handleRefreshFeed() : loadNextPage())}
+                      className="px-2.5 py-1 rounded-lg bg-amber-500 text-slate-950 font-bold"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
                 {isFetchingMore ? (
                   <div className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#141b2c] border border-red-500/30 text-white text-xs font-semibold shadow-lg">
                     <Loader2 className="w-4 h-4 text-red-500 animate-spin" />
                     <span>Loading additional YouTube videos...</span>
                   </div>
-                ) : nextPageToken ? (
+                ) : hasMore ? (
                   <button
+                    type="button"
                     onClick={loadNextPage}
                     className="px-6 py-2.5 rounded-full bg-[#141b2c] hover:bg-[#1a233c] border border-white/10 text-slate-300 hover:text-white text-xs font-semibold transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer"
                   >
@@ -1204,8 +1483,8 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                     <span>Fetch Next Page ({videos.length} loaded)</span>
                   </button>
                 ) : (
-                  <p className="text-xs text-slate-500 font-mono">
-                    ✓ All available continuous discovery videos loaded ({videos.length} total)
+                  <p className="text-xs text-slate-500 font-mono text-center">
+                    {exhaustedReason || `All available discovery videos loaded (${videos.length} total)`}
                   </p>
                 )}
               </div>
@@ -1230,28 +1509,41 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
             <div className="flex items-center justify-between">
               <h3 className="font-extrabold text-base text-white flex items-center gap-2">
                 <PulseIcon className="w-4 h-4 text-red-500" active />
-                <span>Supported Channels &amp; Premieres</span>
+                <span>Supported Channels</span>
               </h3>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {['Coke Studio Bangla', 'BCB Tigers', 'Dhaka Post Media', 'Bangla Vision Drama'].map((ch) => (
-                <div key={ch} className="p-3.5 rounded-2xl bg-[#0f1422] border border-white/10 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-red-600/20 text-red-400 flex items-center justify-center font-bold text-sm">
-                      {ch.slice(0, 1)}
+            {Object.keys(subscribedChannels).filter((k) => subscribedChannels[k]).length === 0 ? (
+              <div className="p-6 rounded-2xl bg-[#0f1422] border border-white/10 text-center space-y-2">
+                <p className="text-xs text-slate-300 font-semibold">
+                  No subscribed channels loaded in this session yet.
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Open any video and tap Support (with your Google account connected) to manage subscriptions.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {Object.keys(subscribedChannels)
+                  .filter((ch) => subscribedChannels[ch])
+                  .map((ch) => (
+                    <div key={ch} className="p-3.5 rounded-2xl bg-[#0f1422] border border-white/10 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-red-600/20 text-red-400 flex items-center justify-center font-bold text-sm">
+                          {ch.slice(0, 1).toUpperCase()}
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-xs text-white">{ch}</h4>
+                          <p className="text-[10px] text-slate-400">YouTube Subscription</p>
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-[10px] font-semibold text-emerald-300">
+                        Supporting
+                      </span>
                     </div>
-                    <div>
-                      <h4 className="font-bold text-xs text-white">{ch}</h4>
-                      <p className="text-[10px] text-slate-400">Verified Partner Channel</p>
-                    </div>
-                  </div>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-[10px] font-semibold text-emerald-300">
-                    Supporting
-                  </span>
-                </div>
-              ))}
-            </div>
+                  ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -1638,17 +1930,23 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
               <span>Pulse Notifications</span>
             </h3>
 
-            <div className="space-y-2">
-              {notifications.map((n) => (
-                <div key={n.id} className="p-3.5 rounded-2xl bg-[#0f1422] border border-white/5 flex items-start justify-between gap-3">
-                  <div>
-                    <h5 className="font-bold text-xs text-white">{n.title}</h5>
-                    <p className="text-[11px] text-slate-400 mt-0.5">{n.channel} • {n.time}</p>
+            {notifications.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-[#0f1422] border border-white/10 text-center text-xs text-slate-400">
+                No notifications yet.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {notifications.map((n) => (
+                  <div key={n.id} className="p-3.5 rounded-2xl bg-[#0f1422] border border-white/5 flex items-start justify-between gap-3">
+                    <div>
+                      <h5 className="font-bold text-xs text-white">{n.title}</h5>
+                      <p className="text-[11px] text-slate-400 mt-0.5">{n.channel} • {n.time}</p>
+                    </div>
+                    {!n.read && <span className="w-2 h-2 rounded-full bg-red-500 mt-1" />}
                   </div>
-                  {!n.read && <span className="w-2 h-2 rounded-full bg-red-500 mt-1" />}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -23,6 +23,11 @@ export interface NotificationPreferences {
   groups: boolean;
 }
 
+export interface TranslationPreferences {
+  enabled: boolean;
+  targetLang: string;
+}
+
 export type RelationshipStatus =
   | 'self'
   | 'friend'
@@ -60,6 +65,7 @@ export interface UserProfile {
   smallVideosCount?: number;
   privacy: UserPrivacySettings;
   notificationPrefs?: NotificationPreferences;
+  translationPrefs?: TranslationPreferences;
   dataSaver?: boolean;
   lastActiveAt?: string;
   socialLinks?: {
