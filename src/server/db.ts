@@ -50,7 +50,13 @@ import type {
   AdminConfigChatMessage,
   LoginActivityItem,
   FieldPrivacyVisibility,
+  UserRecommendationProfile,
+  RecommendationSignalPayload,
 } from '../types';
+import {
+  createEmptyRecommendationProfile,
+  applySignalToRecommendationProfile,
+} from './recommendationEngine';
 
 export function normalizeEmailValue(raw?: string): string {
   return String(raw || '').trim().toLowerCase();
@@ -249,6 +255,7 @@ export interface DatabaseSchema {
   serverHistory?: ServerSwitchHistoryEntry[];
   adminConfigMessages?: AdminConfigChatMessage[];
   bdServicePrefs?: Record<string, { favorites: string[]; recent: string[] }>;
+  recommendationProfiles?: Record<string, UserRecommendationProfile>;
 }
 
 export const DEFAULT_PBKDF2_ITERATIONS = 120000;
@@ -3363,6 +3370,31 @@ export class MotherlandDatabase {
     this.data.bdServicePrefs[userId] = { favorites: current.favorites, recent: nextRecent };
     this.save();
     return nextRecent;
+  }
+
+  public getUserFollowingIds(userId: string): string[] {
+    if (!userId) return [];
+    return (this.data.follows || [])
+      .filter((f) => f.followerId === userId)
+      .map((f) => f.followingId);
+  }
+
+  public getRecommendationProfile(userId?: string): UserRecommendationProfile | null {
+    if (!userId) return null;
+    if (!this.data.recommendationProfiles) this.data.recommendationProfiles = {};
+    return this.data.recommendationProfiles[userId] || createEmptyRecommendationProfile(userId);
+  }
+
+  public recordRecommendationSignal(
+    userId: string,
+    payload: RecommendationSignalPayload
+  ): UserRecommendationProfile {
+    if (!this.data.recommendationProfiles) this.data.recommendationProfiles = {};
+    const existing = this.data.recommendationProfiles[userId] || createEmptyRecommendationProfile(userId);
+    const updated = applySignalToRecommendationProfile(existing, payload);
+    this.data.recommendationProfiles[userId] = updated;
+    this.save();
+    return updated;
   }
 }
 

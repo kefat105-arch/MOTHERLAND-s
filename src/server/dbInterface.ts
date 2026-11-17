@@ -23,6 +23,8 @@ import type {
   ServerRegistryEntry,
   ServerSwitchHistoryEntry,
   AdminConfigChatMessage,
+  UserRecommendationProfile,
+  RecommendationSignalPayload,
 } from '../types';
 import type {
   UserAccount,
@@ -190,6 +192,7 @@ export interface DatabaseBackend {
     actingUserId?: string
   ): Promise<{ ok: boolean; error?: string; request?: FriendRequest }>;
   isFollowing(followerId: string, followingId: string): Promise<boolean>;
+  getUserFollowingIds(userId: string): Promise<string[]>;
   follow(followerId: string, followingId: string): Promise<boolean>;
   unfollow(followerId: string, followingId: string): Promise<boolean>;
   isBlocked(userId: string, targetUserId: string): Promise<boolean>;
@@ -399,4 +402,11 @@ export interface DatabaseBackend {
   getBdServicePrefs(userId: string): Promise<{ favorites: string[]; recent: string[] }>;
   toggleBdServiceFavorite(userId: string, serviceId: string): Promise<{ favorites: string[]; isFavorite: boolean }>;
   recordBdServiceRecent(userId: string, serviceId: string): Promise<string[]>;
+
+  // Personalized Recommendations
+  getRecommendationProfile(userId?: string): Promise<UserRecommendationProfile | null>;
+  recordRecommendationSignal(
+    userId: string,
+    payload: RecommendationSignalPayload
+  ): Promise<UserRecommendationProfile>;
 }

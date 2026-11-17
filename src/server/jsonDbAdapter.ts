@@ -23,6 +23,8 @@ import type {
   ServerRegistryEntry,
   ServerSwitchHistoryEntry,
   AdminConfigChatMessage,
+  UserRecommendationProfile,
+  RecommendationSignalPayload,
 } from '../types';
 import {
   MotherlandDatabase,
@@ -854,5 +856,20 @@ export class MotherlandJsonAdapter implements DatabaseBackend {
 
   public async recordBdServiceRecent(userId: string, serviceId: string): Promise<string[]> {
     return this.inner.recordBdServiceRecent(userId, serviceId);
+  }
+
+  public async getUserFollowingIds(userId: string): Promise<string[]> {
+    return this.inner.getUserFollowingIds(userId);
+  }
+
+  public async getRecommendationProfile(userId?: string): Promise<UserRecommendationProfile | null> {
+    return this.inner.getRecommendationProfile(userId);
+  }
+
+  public async recordRecommendationSignal(
+    userId: string,
+    payload: RecommendationSignalPayload
+  ): Promise<UserRecommendationProfile> {
+    return this.inner.recordRecommendationSignal(userId, payload);
   }
 }

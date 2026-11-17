@@ -165,6 +165,10 @@ export interface Post {
   thumbnailUrl?: string;
   sharedPost?: SharedPostSnapshot;
   hashtags: string[];
+  categoryId?: string;
+  categoryLabel?: string;
+  subcategory?: string;
+  language?: 'bn' | 'en' | 'global';
   audience: 'public' | 'friends' | 'only_me';
   createdAt: string;
   isEdited?: boolean;
@@ -803,5 +807,75 @@ export interface LiveSpySecretAssignment {
   category: string;
   secretWord: string | null;
   instruction: string;
+}
+
+export type RecommendationLearningStage =
+  | 'initial_discovery'
+  | 'early_learning'
+  | 'personalization'
+  | 'continuous_adaptation';
+
+export type RecommendationSignalType =
+  | 'watch_progress'
+  | 'complete'
+  | 'replay'
+  | 'like'
+  | 'comment'
+  | 'share'
+  | 'save'
+  | 'follow'
+  | 'search'
+  | 'skip'
+  | 'not_interested'
+  | 'hide_creator'
+  | 'reduce_category';
+
+export interface UserRecommendationProfile {
+  userId: string;
+  categoryScores: Record<string, number>;
+  subcategoryScores: Record<string, number>;
+  creatorScores: Record<string, number>;
+  keywordScores: Record<string, number>;
+  languageScores: Record<string, number>;
+  searchInterests: string[];
+  hiddenCreators: string[];
+  reducedCategories: string[];
+  notInterestedIds: string[];
+  skippedIds: string[];
+  replayedIds: string[];
+  totalSignals: number;
+  learningStage: RecommendationLearningStage;
+  updatedAt: string;
+}
+
+export interface RecommendationSignalPayload {
+  signalType: RecommendationSignalType;
+  videoId?: string;
+  postId?: string;
+  creatorId?: string;
+  creatorName?: string;
+  categoryId?: string;
+  subcategory?: string;
+  title?: string;
+  tags?: string[];
+  language?: 'bn' | 'en' | 'global';
+  watchSeconds?: number;
+  durationSeconds?: number;
+  searchQuery?: string;
+}
+
+export interface ActiveFeedVideoState {
+  activeVideoId: string;
+  currentFeedItemId: string;
+  activeSource: 'youtube' | 'motherland';
+  isPlaying: boolean;
+  isPaused: boolean;
+  hasStarted: boolean;
+  ended: boolean;
+  currentPlaybackTime: number;
+  playbackDuration: number;
+  currentScrollPosition: number;
+  currentQueuePosition: number;
+  updatedAt: number;
 }
 

@@ -59,6 +59,16 @@ import {
   GAME_CATALOG,
   LiveSpyEngine,
 } from './src/server/liveSpyEngine.ts';
+import {
+  GLOBAL_VIDEO_CATEGORIES,
+  YOUTUBE_CHART_CATEGORY_IDS,
+  classifyVideoContent,
+} from './src/shared/videoCategories.ts';
+import {
+  buildDiscoveryQueryPlan,
+  scoreAndDistributeFeedPosts,
+  createEmptyRecommendationProfile,
+} from './src/server/recommendationEngine.ts';
 
 dotenv.config();
 
@@ -764,10 +774,75 @@ function getRelevantVideoIds(query: string, pageNum = 1, pageSize = 12): { ids: 
   };
 }
 
+// ==========================================
+// MULTI-CATEGORY CANDIDATE POOL & QUOTA GUARD
+// ==========================================
+const discoveryRawItemPool = new Map<string, { item: any; fetchedAt: number }>();
+const DISCOVERY_POOL_TTL_MS = 45 * 60 * 1000;
+const DISCOVERY_POOL_MAX = 1200;
+let ytSearchQuotaBackoffUntil = 0;
+
+function storeDiscoveryRawItems(rawItems: any[]) {
+  const now = Date.now();
+  for (const item of rawItems || []) {
+    const id = String(item?.id || '').trim();
+    if (!id) continue;
+    if (discoveryRawItemPool.size >= DISCOVERY_POOL_MAX) {
+      const oldestKey = discoveryRawItemPool.keys().next().value;
+      if (oldestKey) discoveryRawItemPool.delete(oldestKey);
+    }
+    discoveryRawItemPool.set(id, { item, fetchedAt: now });
+  }
+}
+
+function getFreshPoolRawItems(): any[] {
+  const now = Date.now();
+  const out: any[] = [];
+  for (const [id, entry] of discoveryRawItemPool.entries()) {
+    if (now - entry.fetchedAt > DISCOVERY_POOL_TTL_MS) {
+      discoveryRawItemPool.delete(id);
+    } else {
+      out.push(entry.item);
+    }
+  }
+  return out;
+}
+
+// Per-viewer short-term shown tracker so rapid refreshes never loop the same batch even if GET header exclude list is capped
+const recentServerShownByViewer = new Map<string, { ids: string[]; updatedAt: number }>();
+
+function getViewerShownKey(userId?: string, seed?: string): string {
+  return userId ? `u:${userId}` : `s:${seed || 'anon'}`;
+}
+
+function getServerRecentShownSet(viewerKey: string): Set<string> {
+  const entry = recentServerShownByViewer.get(viewerKey);
+  if (!entry) return new Set();
+  if (Date.now() - entry.updatedAt > 45 * 60 * 1000) {
+    recentServerShownByViewer.delete(viewerKey);
+    return new Set();
+  }
+  return new Set(entry.ids);
+}
+
+function recordServerRecentShown(viewerKey: string, ids: string[]) {
+  if (!viewerKey || ids.length === 0) return;
+  const clean = ids.map((id) => normalizeSuppressToken(id)).filter(Boolean);
+  if (clean.length === 0) return;
+  const prev = recentServerShownByViewer.get(viewerKey)?.ids || [];
+  const merged = [...clean, ...prev.filter((x) => !clean.includes(x))].slice(0, 450);
+  if (recentServerShownByViewer.size > 1500) {
+    const firstKey = recentServerShownByViewer.keys().next().value;
+    if (firstKey) recentServerShownByViewer.delete(firstKey);
+  }
+  recentServerShownByViewer.set(viewerKey, { ids: merged, updatedAt: Date.now() });
+}
+
 interface FeedCursor {
-  mode: 'api_search' | 'api_popular' | 'catalog';
+  mode: 'api_chart' | 'api_search' | 'api_popular' | 'catalog';
   qIdx: number;
   rIdx?: number;
+  chartIdx?: number;
   stepsDone?: number;
   pageToken: string;
   offset: number;
@@ -1287,6 +1362,14 @@ app.get('/api/youtube/search', async (req: Request, res: Response) => {
     }
 
     items = await enrichVideoItemsWithChannelMeta(items);
+
+    const reqUserId = (req as any).userId as string | undefined;
+    if (reqUserId && query.trim()) {
+      void db.recordRecommendationSignal(reqUserId, {
+        signalType: 'search',
+        searchQuery: query.trim(),
+      }).catch(() => {});
+    }
 
     res.json({
       items,
@@ -4535,19 +4618,31 @@ app.get('/api/users/:id', ah(async (req: Request, res: Response) => {
 }));
 
 
-function mapYouTubeRawItemToUnifiedPost(item: any): Post {
+function mapYouTubeRawItemToUnifiedPost(item: any, explicitCategoryId?: string): Post {
+  const title = item.snippet?.title || 'Unavailable';
+  const desc = (item.snippet?.description || '').slice(0, 240);
+  const channelTitle = item.snippet?.channelTitle || 'Unavailable';
+  const classification = classifyVideoContent({
+    title,
+    description: item.snippet?.description || '',
+    tags: Array.isArray(item.snippet?.tags) ? item.snippet.tags : [],
+    youtubeCategoryId: item.snippet?.categoryId ? String(item.snippet.categoryId) : undefined,
+    channelTitle,
+    explicitCategoryId,
+  });
+
   return {
     id: `yt_feed_${item.id}`,
     source: 'youtube' as const,
     externalId: item.id,
     author: {
       id: item.snippet?.channelId || `ch_${item.id}`,
-      username: (item.snippet?.channelTitle || 'unavailable').toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 24),
-      displayName: item.snippet?.channelTitle || 'Unavailable',
+      username: channelTitle.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 24),
+      displayName: channelTitle,
       avatar: '',
       isVerified: Boolean(item.snippet?.channelTitle),
     },
-    content: `${item.snippet?.title || 'Unavailable'}\n\n${(item.snippet?.description || '').slice(0, 240)}`,
+    content: `${title}\n\n${desc}`,
     mediaType: 'video' as const,
     mediaUrl: '',
     thumbnailUrl:
@@ -4556,7 +4651,13 @@ function mapYouTubeRawItemToUnifiedPost(item: any): Post {
       item.snippet?.thumbnails?.medium?.url ||
       `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
     videoDuration: formatIsoDuration(item.contentDetails?.duration),
-    hashtags: ['YouTube', 'MOTHERLAND', 'VideoTheater'],
+    hashtags: Array.isArray(item.snippet?.tags) && item.snippet.tags.length > 0
+      ? item.snippet.tags.slice(0, 4)
+      : ['YouTube', 'MOTHERLAND', classification.categoryLabel.split(' ')[0]],
+    categoryId: classification.categoryId,
+    categoryLabel: classification.categoryLabel,
+    subcategory: classification.subcategory,
+    language: classification.language,
     audience: 'public' as const,
     createdAt: item.snippet?.publishedAt || new Date().toISOString(),
     stats: {
@@ -4579,101 +4680,259 @@ async function getUnifiedFeedYouTubePosts(
   seed = '',
   excludeIds: Set<string> = new Set(),
   rawYtCursor = '',
-  userId?: string
+  userId?: string,
+  options?: {
+    feedMode?: 'all' | 'for_you';
+    refreshGen?: number;
+    refreshMode?: string;
+    profile?: any;
+  }
 ): Promise<{ posts: Post[]; nextYtCursor: string | null; quotaExceeded: boolean; errorMessage?: string }> {
-  const queryList = await buildPersonalizedDiscoveryQueries(CATEGORY_DISCOVERY_QUERIES.all, userId, `${seed || 'home'}_unified`, false);
+  const feedMode = options?.feedMode || 'all';
+  const refreshGen = Math.max(0, Number(options?.refreshGen || 0));
+  const viewerKey = getViewerShownKey(userId, seed);
+  const serverShownSet = getServerRecentShownSet(viewerKey);
+  const combinedExclude = new Set<string>([...excludeIds, ...serverShownSet]);
+  const hiddenCreators = new Set<string>(options?.profile?.hiddenCreators || []);
+  const notInterested = new Set<string>(options?.profile?.notInterestedIds || []);
+
+  const interestKeywords = userId ? await db.getUserInterestKeywords(userId) : [];
+  const plan = buildDiscoveryQueryPlan({
+    mode: feedMode,
+    profile: options?.profile || null,
+    interestKeywords,
+    seed: `${seed || 'home'}_unified`,
+    refreshGen,
+    isShorts: false,
+  });
+  const queryList = plan.queries;
+
+  const startChartIdx = Math.abs(hashSeedNumber(`${seed}_${refreshGen}_chart`)) % YOUTUBE_CHART_CATEGORY_IDS.length;
+  const startRegionIdx = Math.abs(hashSeedNumber(`${seed}_${refreshGen}_reg`)) % POPULAR_REGION_CODES.length;
+  const startQueryIdx = refreshGen > 0 && queryList.length > 0
+    ? (refreshGen * 2) % queryList.length
+    : 0;
 
   let cursor: FeedCursor = decodeFeedCursor(rawYtCursor) || {
-    mode: 'api_search',
-    qIdx: 0,
-    rIdx: 0,
+    mode: 'api_chart',
+    qIdx: startQueryIdx,
+    rIdx: startRegionIdx,
+    chartIdx: startChartIdx,
+    stepsDone: 0,
     pageToken: '',
     offset: Math.max(0, (page - 1) * pageSize),
   };
 
-  const collected: Post[] = [];
-  const deferredRawItems: any[] = [];
+  const collectedPosts: Post[] = [];
+  const deferredPosts: Post[] = [];
   const seenIds = new Set<string>();
   const deferredSeenIds = new Set<string>();
   let nextCursor: FeedCursor | null = null;
   let quotaExceeded = false;
   let errorMessage: string | undefined;
   let attempts = 0;
+  // Harvest up to 4 diverse sources per batch so categories mix cleanly instead of flooding one topic
   const maxAttempts = 5;
+  const targetPoolSize = Math.max(pageSize * 2, 16);
 
   const pushRawItems = (rawItems: any[]) => {
+    storeDiscoveryRawItems(rawItems);
     for (const rawItem of rawItems || []) {
-      const vid = String(rawItem?.id || '');
+      const vid = String(rawItem?.id || '').trim();
       if (!vid) continue;
       if (suppressedIds.has(vid) || suppressedIds.has(`yt_feed_${vid}`)) continue;
+      if (notInterested.has(vid) || notInterested.has(`yt_feed_${vid}`)) continue;
+      const channelId = String(rawItem?.snippet?.channelId || '');
+      if (channelId && hiddenCreators.has(channelId)) continue;
       if (seenIds.has(vid)) continue;
-      if (excludeIds.has(vid) || excludeIds.has(`yt_feed_${vid}`)) {
+
+      const mapped = mapYouTubeRawItemToUnifiedPost(rawItem);
+      if (combinedExclude.has(vid) || combinedExclude.has(`yt_feed_${vid}`)) {
         if (!deferredSeenIds.has(vid)) {
           deferredSeenIds.add(vid);
-          deferredRawItems.push(rawItem);
+          deferredPosts.push(mapped);
         }
         continue;
       }
       seenIds.add(vid);
-      collected.push(mapYouTubeRawItemToUnifiedPost(rawItem));
+      collectedPosts.push(mapped);
     }
   };
 
-  while (collected.length < pageSize && attempts < maxAttempts) {
+  // On refresh or page 1, first check fresh unseen items already in our live multi-category pool (0 quota cost!)
+  const poolItems = getFreshPoolRawItems();
+  if (poolItems.length > 0 && (refreshGen > 0 || !rawYtCursor)) {
+    const shuffledPool = seededShuffle(poolItems, `${seed}_${refreshGen}_pool_${page}`);
+    for (const raw of shuffledPool) {
+      if (collectedPosts.length >= pageSize) break;
+      pushRawItems([raw]);
+    }
+  }
+
+  while (collectedPosts.length < targetPoolSize && attempts < maxAttempts) {
     attempts++;
-    const prevCount = collected.length;
+    const prevCount = collectedPosts.length;
+    const step = (cursor.stepsDone || 0);
 
-    if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
+    // 1. Multi-category `videos.list?chart=mostPopular&videoCategoryId=...` (1 quota unit per 20-25 real videos!)
+    if (cursor.mode === 'api_chart') {
+      const cIdx = Math.max(0, Number(cursor.chartIdx || 0)) % YOUTUBE_CHART_CATEGORY_IDS.length;
+      const rIdx = Math.max(0, Number(cursor.rIdx || 0)) % POPULAR_REGION_CODES.length;
+      const ytCatId = YOUTUBE_CHART_CATEGORY_IDS[cIdx];
+      const regionCode = POPULAR_REGION_CODES[rIdx];
       try {
-        const searchParams: Record<string, string> = {
-          part: 'snippet',
-          type: 'video',
-          q: queryList[cursor.qIdx],
-          maxResults: String(Math.min(25, pageSize + 10)),
+        const popParams: Record<string, string> = {
+          part: 'snippet,contentDetails,statistics',
+          chart: 'mostPopular',
+          videoCategoryId: ytCatId,
+          maxResults: '15',
+          regionCode,
         };
-        if (cursor.pageToken) searchParams.pageToken = cursor.pageToken;
+        if (cursor.pageToken) popParams.pageToken = cursor.pageToken;
 
-        const searchData = await fetchFromYouTubeApi('search', searchParams);
-        const videoIds = (searchData.items || [])
-          .map((it: any) => it?.id?.videoId)
-          .filter((vid: string | undefined) => Boolean(vid) && !suppressedIds.has(vid!) && !seenIds.has(vid!));
+        const popData = await fetchFromYouTubeApi('videos', popParams);
+        pushRawItems(popData.items || []);
 
-        if (videoIds.length > 0) {
-          const statsData = await fetchFromYouTubeApi('videos', {
-            part: 'snippet,contentDetails,statistics',
-            id: videoIds.join(','),
-          });
-          pushRawItems(statsData.items || []);
-        }
+        const nextChartIdx = (cIdx + 1) % YOUTUBE_CHART_CATEGORY_IDS.length;
+        const nextRegIdx = (rIdx + 1) % POPULAR_REGION_CODES.length;
 
-        if (searchData.nextPageToken) {
+        // Interleave chart calls with search.list when search quota is healthy so non-chart categories (Agriculture, Documentary, etc.) also flow in!
+        if (popData.nextPageToken && rawYtCursor) {
           nextCursor = {
-            mode: 'api_search',
+            mode: 'api_chart',
             qIdx: cursor.qIdx,
-            rIdx: 0,
-            pageToken: searchData.nextPageToken,
+            rIdx,
+            chartIdx: cIdx,
+            stepsDone: step + 1,
+            pageToken: popData.nextPageToken,
             offset: 0,
           };
-        } else if (cursor.qIdx + 1 < queryList.length) {
+        } else if (Date.now() >= ytSearchQuotaBackoffUntil && step % 2 === 1 && queryList.length > 0) {
           nextCursor = {
             mode: 'api_search',
-            qIdx: cursor.qIdx + 1,
-            rIdx: 0,
+            qIdx: (cursor.qIdx + 1) % queryList.length,
+            rIdx: nextRegIdx,
+            chartIdx: nextChartIdx,
+            stepsDone: step + 1,
+            pageToken: '',
+            offset: 0,
+          };
+        } else if (step < YOUTUBE_CHART_CATEGORY_IDS.length * 2) {
+          nextCursor = {
+            mode: 'api_chart',
+            qIdx: cursor.qIdx,
+            rIdx: nextRegIdx,
+            chartIdx: nextChartIdx,
+            stepsDone: step + 1,
             pageToken: '',
             offset: 0,
           };
         } else {
-          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = {
+            mode: 'api_popular',
+            qIdx: cursor.qIdx,
+            rIdx: nextRegIdx,
+            chartIdx: nextChartIdx,
+            stepsDone: step + 1,
+            pageToken: '',
+            offset: 0,
+          };
         }
       } catch (err: any) {
-        if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
+        if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded') {
           quotaExceeded = true;
+          errorMessage = err?.message || errorMessage;
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
+        } else {
+          // Some regions don't support every videoCategoryId -> advance cleanly to next category/search
+          const canSearch = Date.now() >= ytSearchQuotaBackoffUntil && queryList.length > 0;
+          nextCursor = {
+            mode: canSearch ? 'api_search' : 'api_popular',
+            qIdx: cursor.qIdx % Math.max(1, queryList.length),
+            rIdx: (rIdx + 1) % POPULAR_REGION_CODES.length,
+            chartIdx: (cIdx + 1) % YOUTUBE_CHART_CATEGORY_IDS.length,
+            stepsDone: step + 1,
+            pageToken: '',
+            offset: 0,
+          };
         }
-        errorMessage = err?.message || 'YouTube search pagination fallback active';
-        nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+      }
+    } else if (cursor.mode === 'api_search' && queryList.length > 0) {
+      const qIdx = Math.max(0, Number(cursor.qIdx || 0)) % queryList.length;
+      if (Date.now() < ytSearchQuotaBackoffUntil) {
+        nextCursor = {
+          mode: 'api_popular',
+          qIdx: (qIdx + 1) % queryList.length,
+          rIdx: cursor.rIdx || 0,
+          chartIdx: ((cursor.chartIdx || 0) + 1) % YOUTUBE_CHART_CATEGORY_IDS.length,
+          stepsDone: step + 1,
+          pageToken: '',
+          offset: 0,
+        };
+      } else {
+        try {
+          const searchParams: Record<string, string> = {
+            part: 'snippet',
+            type: 'video',
+            q: queryList[qIdx],
+            maxResults: String(Math.min(18, pageSize + 8)),
+          };
+          if (cursor.pageToken) searchParams.pageToken = cursor.pageToken;
+
+          const searchData = await fetchFromYouTubeApi('search', searchParams);
+          const videoIds = (searchData.items || [])
+            .map((it: any) => it?.id?.videoId)
+            .filter((vid: string | undefined) => Boolean(vid) && !suppressedIds.has(vid!) && !seenIds.has(vid!));
+
+          if (videoIds.length > 0) {
+            const statsData = await fetchFromYouTubeApi('videos', {
+              part: 'snippet,contentDetails,statistics',
+              id: videoIds.join(','),
+            });
+            pushRawItems(statsData.items || []);
+          }
+
+          if (searchData.nextPageToken && collectedPosts.length < pageSize) {
+            nextCursor = {
+              mode: 'api_search',
+              qIdx,
+              rIdx: cursor.rIdx || 0,
+              chartIdx: cursor.chartIdx || 0,
+              stepsDone: step + 1,
+              pageToken: searchData.nextPageToken,
+              offset: 0,
+            };
+          } else {
+            // Rotate immediately to a different category chart + next query so every batch mixes categories!
+            nextCursor = {
+              mode: 'api_chart',
+              qIdx: (qIdx + 1) % queryList.length,
+              rIdx: ((cursor.rIdx || 0) + 1) % POPULAR_REGION_CODES.length,
+              chartIdx: ((cursor.chartIdx || 0) + 1) % YOUTUBE_CHART_CATEGORY_IDS.length,
+              stepsDone: step + 1,
+              pageToken: searchData.nextPageToken ? '' : '',
+              offset: 0,
+            };
+          }
+        } catch (err: any) {
+          if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
+            quotaExceeded = true;
+            ytSearchQuotaBackoffUntil = Date.now() + 10 * 60 * 1000;
+          }
+          errorMessage = err?.message || 'YouTube search pagination fallback active';
+          nextCursor = {
+            mode: 'api_popular',
+            qIdx: (qIdx + 1) % queryList.length,
+            rIdx: cursor.rIdx || 0,
+            chartIdx: cursor.chartIdx || 0,
+            stepsDone: step + 1,
+            pageToken: '',
+            offset: 0,
+          };
+        }
       }
     } else if (cursor.mode === 'api_popular') {
-      const rIdx = Math.max(0, Number(cursor.rIdx) || 0);
+      const rIdx = Math.max(0, Number(cursor.rIdx) || 0) % POPULAR_REGION_CODES.length;
       const regionCode = POPULAR_REGION_CODES[rIdx] || 'BD';
       try {
         const popParams: Record<string, string> = {
@@ -4690,43 +4949,46 @@ async function getUnifiedFeedYouTubePosts(
         if (popData.nextPageToken) {
           nextCursor = {
             mode: 'api_popular',
-            qIdx: 0,
+            qIdx: cursor.qIdx,
             rIdx,
+            chartIdx: cursor.chartIdx || 0,
+            stepsDone: step + 1,
             pageToken: popData.nextPageToken,
             offset: 0,
           };
         } else if (rIdx + 1 < POPULAR_REGION_CODES.length) {
           nextCursor = {
             mode: 'api_popular',
-            qIdx: 0,
+            qIdx: cursor.qIdx,
             rIdx: rIdx + 1,
+            chartIdx: cursor.chartIdx || 0,
+            stepsDone: step + 1,
             pageToken: '',
             offset: 0,
           };
         } else {
-          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
         }
       } catch (err: any) {
         if (err?.reason === 'quotaExceeded' || err?.reason === 'dailyLimitExceeded' || err?.status === 403) {
           quotaExceeded = true;
           errorMessage = err?.message || errorMessage;
-          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
         } else if (rIdx + 1 < POPULAR_REGION_CODES.length) {
-          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'api_popular', qIdx: cursor.qIdx, rIdx: rIdx + 1, stepsDone: step + 1, pageToken: '', offset: 0 };
         } else {
           errorMessage = err?.message || errorMessage;
-          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
         }
       }
     } else {
-      // Verified catalog videos slice (prioritize unseen items, deprioritize previously shown instead of returning empty)
       const baseCatalog = Array.from(new Set(REAL_YOUTUBE_CATALOG.default)).filter(
-        (vid) => !suppressedIds.has(vid) && !seenIds.has(vid)
+        (vid) => !suppressedIds.has(vid) && !seenIds.has(vid) && !notInterested.has(vid)
       );
-      const unexcludedCatalog = baseCatalog.filter((vid) => !excludeIds.has(vid));
-      const excludedCatalog = baseCatalog.filter((vid) => excludeIds.has(vid));
-      const rotatedFresh = seed ? seededShuffle(unexcludedCatalog, `${seed}_unified`) : unexcludedCatalog;
-      const rotatedFallback = seed ? seededShuffle(excludedCatalog, `${seed}_unified_fb`) : excludedCatalog;
+      const unexcludedCatalog = baseCatalog.filter((vid) => !combinedExclude.has(vid));
+      const excludedCatalog = baseCatalog.filter((vid) => combinedExclude.has(vid));
+      const rotatedFresh = seededShuffle(unexcludedCatalog, `${seed}_${refreshGen}_unified`);
+      const rotatedFallback = seededShuffle(excludedCatalog, `${seed}_${refreshGen}_unified_fb`);
       const rotatedPool = [...rotatedFresh, ...rotatedFallback];
       const start = Math.max(0, cursor.offset);
       const ids = rotatedPool.slice(start, start + pageSize);
@@ -4754,6 +5016,7 @@ async function getUnifiedFeedYouTubePosts(
           mode: 'catalog',
           qIdx: 0,
           rIdx: 0,
+          stepsDone: step + 1,
           pageToken: '',
           offset: start + ids.length,
         };
@@ -4764,11 +5027,12 @@ async function getUnifiedFeedYouTubePosts(
 
     if (!nextCursor) break;
     if (
-      collected.length === prevCount &&
-      deferredRawItems.length === 0 &&
+      collectedPosts.length === prevCount &&
+      deferredPosts.length === 0 &&
       nextCursor.mode === cursor.mode &&
       nextCursor.qIdx === cursor.qIdx &&
       (nextCursor.rIdx || 0) === (cursor.rIdx || 0) &&
+      (nextCursor.chartIdx || 0) === (cursor.chartIdx || 0) &&
       nextCursor.offset === cursor.offset &&
       nextCursor.pageToken === cursor.pageToken
     ) {
@@ -4777,19 +5041,34 @@ async function getUnifiedFeedYouTubePosts(
     cursor = nextCursor;
   }
 
-  // If fresh unseen items ran low (e.g. after repeated Home tab navigations), gracefully top up
-  // with non-suppressed deferred items rather than starving the homepage to empty.
-  if (collected.length < pageSize && deferredRawItems.length > 0 && (!rawYtCursor || page === 1 || collected.length === 0)) {
-    for (const rawItem of deferredRawItems) {
-      if (collected.length >= pageSize) break;
-      const vid = String(rawItem?.id || '');
+  // Fallback top-up with non-suppressed deferred items only when unseen items genuinely ran low
+  if (collectedPosts.length < pageSize && deferredPosts.length > 0 && (!rawYtCursor || page === 1 || collectedPosts.length === 0)) {
+    for (const dp of deferredPosts) {
+      if (collectedPosts.length >= pageSize) break;
+      const vid = String(dp.externalId || dp.id);
       if (!vid || seenIds.has(vid)) continue;
       seenIds.add(vid);
-      collected.push(mapYouTubeRawItemToUnifiedPost(rawItem));
+      collectedPosts.push(dp);
     }
   }
 
-  const enriched = await enrichPostsWithChannelMeta(collected);
+  // Distribute fetched batch cleanly across categories
+  const diversified = scoreAndDistributeFeedPosts(collectedPosts, {
+    mode: feedMode,
+    profile: options?.profile || null,
+    excludeIds: combinedExclude,
+    seed: `${seed}_${refreshGen}_yt`,
+    refreshGen,
+    limit: pageSize,
+    viewerId: userId,
+  });
+
+  const enriched = await enrichPostsWithChannelMeta(diversified);
+  recordServerRecentShown(
+    viewerKey,
+    enriched.map((p) => p.externalId || p.id)
+  );
+
   return {
     posts: enriched,
     nextYtCursor: nextCursor ? encodeFeedCursor(nextCursor) : null,
@@ -4798,7 +5077,7 @@ async function getUnifiedFeedYouTubePosts(
   };
 }
 
-// 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, Fresh Seed Rotation, Cursor Pagination & 7-Day Suppression)
+// 2. Posts & Unified Feed (Global Mixed 30-Category Discovery + 17-Signal AI Personalization + Cursor Pagination + 7-Day Suppression)
 app.get('/api/posts', ah(async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
   const source = req.query.source as string;
@@ -4806,11 +5085,16 @@ app.get('/api/posts', ah(async (req: Request, res: Response) => {
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(30, Math.max(1, parseInt((req.query.pageSize as string) || '10', 10)));
   const rawYtCursor = String(req.query.ytCursor || '').trim();
+  const refreshGen = Math.max(0, parseInt((req.query.refreshGen as string) || '0', 10) || 0);
+  const refreshMode = String(req.query.refreshMode || 'initial');
   const suppressedIds = await getSuppressedSetFromReq(req);
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
 
   const rawPosts = await db.getAllPosts();
+  const profile = currentUserId ? await db.getRecommendationProfile(currentUserId) : null;
+  const hiddenCreators = new Set<string>(profile?.hiddenCreators || []);
+  const notInterestedIds = new Set<string>(profile?.notInterestedIds || []);
 
   if (feedType === 'saved') {
     if (!currentUserId) {
@@ -4827,31 +5111,15 @@ app.get('/api/posts', ah(async (req: Request, res: Response) => {
     return res.json({ posts: savedPosts, total: savedPosts.length, page, hasMore: false, nextYtCursor: null });
   }
 
-  if (feedType === 'for_you') {
-    const scoredAll = (await db.getScoredForYouPosts(currentUserId))
-      .filter((p) => !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId)))));
-    const start = (page - 1) * pageSize;
-    const mlSlice = await db.hydratePostsForUserBatch(scoredAll.slice(start, start + pageSize), currentUserId);
-    const ytRes =
-      mlSlice.length < pageSize
-        ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds, seed, excludeIds, rawYtCursor, currentUserId)
-        : { posts: [], nextYtCursor: rawYtCursor || null, quotaExceeded: false, errorMessage: '' };
-    const combined = [...mlSlice, ...ytRes.posts];
-    return res.json({
-      posts: combined,
-      total: scoredAll.length + ytRes.posts.length,
-      page,
-      hasMore: start + mlSlice.length < scoredAll.length || Boolean(ytRes.nextYtCursor),
-      nextYtCursor: ytRes.nextYtCursor,
-      quotaExceeded: ytRes.quotaExceeded,
-      errorMessage: ytRes.posts.length === 0 && ytRes.errorMessage ? ytRes.errorMessage : undefined,
-    });
-  }
-
   if (feedType === 'motherland' || source === 'motherland') {
     const motherlandPosts: Post[] = [];
     for (const p of rawPosts) {
-      if (p.source === 'motherland' && (await db.canViewerSeePost(currentUserId, p))) {
+      if (
+        p.source === 'motherland' &&
+        !hiddenCreators.has(p.author.id) &&
+        !notInterestedIds.has(p.id) &&
+        (await db.canViewerSeePost(currentUserId, p))
+      ) {
         motherlandPosts.push(p);
       }
     }
@@ -4867,12 +5135,63 @@ app.get('/api/posts', ah(async (req: Request, res: Response) => {
     });
   }
 
-  // Unified Feed: Visible Motherland posts (fairly sorted/mixed) + Continuous Live YouTube Video Posts
+  const friendIds = currentUserId ? new Set(await db.getFriendIds(currentUserId)) : new Set<string>();
+  const followedIds = currentUserId ? new Set(await db.getUserFollowingIds(currentUserId)) : new Set<string>();
+
+  if (feedType === 'for_you') {
+    const scoredAll = (await db.getScoredForYouPosts(currentUserId)).filter(
+      (p) =>
+        !hiddenCreators.has(p.author.id) &&
+        !notInterestedIds.has(p.id) &&
+        !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId))))
+    );
+    const mlBatchLimit = Math.max(2, Math.floor(pageSize / 2));
+    const start = (page - 1) * mlBatchLimit;
+    const mlSlice = await db.hydratePostsForUserBatch(scoredAll.slice(start, start + mlBatchLimit), currentUserId);
+    const ytTarget = Math.max(4, pageSize - mlSlice.length);
+    const ytRes = await getUnifiedFeedYouTubePosts(
+      page,
+      ytTarget,
+      suppressedIds,
+      seed,
+      excludeIds,
+      rawYtCursor,
+      currentUserId,
+      { feedMode: 'for_you', refreshGen, refreshMode, profile }
+    );
+
+    const distributed = scoreAndDistributeFeedPosts([...mlSlice, ...ytRes.posts], {
+      mode: 'for_you',
+      profile,
+      friendIds,
+      followedIds,
+      excludeIds,
+      seed,
+      refreshGen,
+      limit: pageSize,
+      viewerId: currentUserId,
+    });
+
+    return res.json({
+      posts: distributed,
+      total: scoredAll.length + ytRes.posts.length,
+      page,
+      hasMore: start + mlSlice.length < scoredAll.length || Boolean(ytRes.nextYtCursor),
+      nextYtCursor: ytRes.nextYtCursor,
+      quotaExceeded: ytRes.quotaExceeded,
+      learningStage: profile?.learningStage || 'initial_discovery',
+      errorMessage: ytRes.posts.length === 0 && ytRes.errorMessage ? ytRes.errorMessage : undefined,
+    });
+  }
+
+  // Unified 'all' Feed: Visible Motherland posts + Global Mixed 30-Category YouTube Discovery
   try {
     const visibleMotherland: Post[] = [];
     for (const p of rawPosts) {
       if (
         p.source === 'motherland' &&
+        !hiddenCreators.has(p.author.id) &&
+        !notInterestedIds.has(p.id) &&
         !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId)))) &&
         (await db.canViewerSeePost(currentUserId, p))
       ) {
@@ -4881,43 +5200,36 @@ app.get('/api/posts', ah(async (req: Request, res: Response) => {
     }
     visibleMotherland.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    const mlStart = (page - 1) * Math.max(2, Math.floor(pageSize / 2));
     const mlBatchSize = Math.max(2, Math.floor(pageSize / 2));
+    const mlStart = (page - 1) * mlBatchSize;
     const hydratedMotherland = await db.hydratePostsForUserBatch(
       visibleMotherland.slice(mlStart, mlStart + mlBatchSize),
       currentUserId
     );
 
     const ytTargetCount = Math.max(4, pageSize - hydratedMotherland.length);
-    const ytRes = await getUnifiedFeedYouTubePosts(page, ytTargetCount, suppressedIds, seed, excludeIds, rawYtCursor, currentUserId);
+    const ytRes = await getUnifiedFeedYouTubePosts(
+      page,
+      ytTargetCount,
+      suppressedIds,
+      seed,
+      excludeIds,
+      rawYtCursor,
+      currentUserId,
+      { feedMode: 'all', refreshGen, refreshMode, profile }
+    );
 
-    const unifiedPosts: Post[] = [];
-    const seenUnifiedIds = new Set<string>();
-    let mIdx = 0;
-    let yIdx = 0;
-    while (mIdx < hydratedMotherland.length || yIdx < ytRes.posts.length) {
-      if (mIdx < hydratedMotherland.length) {
-        const mp = hydratedMotherland[mIdx++];
-        if (!seenUnifiedIds.has(mp.id)) {
-          seenUnifiedIds.add(mp.id);
-          unifiedPosts.push(mp);
-        }
-      }
-      if (yIdx < ytRes.posts.length) {
-        const yp = ytRes.posts[yIdx++];
-        if (!seenUnifiedIds.has(yp.id)) {
-          seenUnifiedIds.add(yp.id);
-          unifiedPosts.push(yp);
-        }
-      }
-      if (yIdx < ytRes.posts.length) {
-        const yp2 = ytRes.posts[yIdx++];
-        if (!seenUnifiedIds.has(yp2.id)) {
-          seenUnifiedIds.add(yp2.id);
-          unifiedPosts.push(yp2);
-        }
-      }
-    }
+    const unifiedPosts = scoreAndDistributeFeedPosts([...hydratedMotherland, ...ytRes.posts], {
+      mode: 'all',
+      profile,
+      friendIds,
+      followedIds,
+      excludeIds,
+      seed,
+      refreshGen,
+      limit: pageSize,
+      viewerId: currentUserId,
+    });
 
     const hasMoreMl = mlStart + hydratedMotherland.length < visibleMotherland.length;
     const hasMore = hasMoreMl || Boolean(ytRes.nextYtCursor);
@@ -4928,6 +5240,7 @@ app.get('/api/posts', ah(async (req: Request, res: Response) => {
       hasMore,
       nextYtCursor: ytRes.nextYtCursor,
       quotaExceeded: ytRes.quotaExceeded,
+      learningStage: profile?.learningStage || 'initial_discovery',
       errorMessage: ytRes.posts.length === 0 && ytRes.errorMessage ? ytRes.errorMessage : undefined,
     });
   } catch (err: any) {
@@ -5048,6 +5361,18 @@ app.post('/api/posts/:id/react', ah(async (req: Request, res: Response) => {
   }
 
   const result = await db.toggleReaction(postId, user.id, reaction || 'like');
+  if (result.isLiked && post) {
+    void db.recordRecommendationSignal(user.id, {
+      signalType: 'like',
+      postId,
+      creatorId: post.author.id,
+      creatorName: post.author.displayName,
+      categoryId: post.categoryId,
+      subcategory: post.subcategory,
+      title: post.content,
+      tags: post.hashtags,
+    }).catch(() => {});
+  }
 
   // If reaction was added and author is someone else, create a notification + push WS
   if (result.isLiked && post && post.author.id !== user.id) {
@@ -5126,6 +5451,16 @@ app.post('/api/posts/:id/comments', ah(async (req: Request, res: Response) => {
   };
 
   await db.addComment(postId, newComment);
+  void db.recordRecommendationSignal(user.id, {
+    signalType: 'comment',
+    postId,
+    creatorId: post.author.id,
+    creatorName: post.author.displayName,
+    categoryId: post.categoryId,
+    subcategory: post.subcategory,
+    title: post.content,
+    tags: post.hashtags,
+  }).catch(() => {});
 
   if (post.author.id !== user.id) {
     const notif = {
@@ -5185,6 +5520,21 @@ app.post('/api/posts/:id/save', ah(async (req: Request, res: Response) => {
   if (!user) return;
   const postId = req.params.id;
   const isSaved = await db.toggleSavePost(postId, user.id);
+  if (isSaved) {
+    const post = await db.findPostById(postId);
+    if (post) {
+      void db.recordRecommendationSignal(user.id, {
+        signalType: 'save',
+        postId,
+        creatorId: post.author.id,
+        creatorName: post.author.displayName,
+        categoryId: post.categoryId,
+        subcategory: post.subcategory,
+        title: post.content,
+        tags: post.hashtags,
+      }).catch(() => {});
+    }
+  }
   res.json({ isSaved });
 }));
 
@@ -5994,7 +6344,70 @@ app.post('/api/videos/watch-progress', ah(async (req: Request, res: Response) =>
     completed: Boolean(completed),
   });
 
+  void db.recordRecommendationSignal(user.id, {
+    signalType: completed ? 'complete' : 'watch_progress',
+    videoId: String(videoId),
+    creatorName: String(channelTitle || ''),
+    title: String(title || ''),
+    watchSeconds: Number(watchSeconds || 0),
+    durationSeconds: Number(durationSeconds || 0),
+  }).catch(() => {});
+
   res.json({ success: true, record, suppressionDays: WATCH_SUPPRESSION_DAYS });
+}));
+
+// Personalized Recommendation Engine & User Feed Controls API
+app.get('/api/recommendations/categories', (_req: Request, res: Response) => {
+  res.json({ categories: GLOBAL_VIDEO_CATEGORIES });
+});
+
+app.get('/api/recommendations/profile', ah(async (req: Request, res: Response) => {
+  const currentUserId = (req as any).userId as string | undefined;
+  if (!currentUserId) {
+    return res.json({ profile: createEmptyRecommendationProfile('guest'), authenticated: false });
+  }
+  const profile = await db.getRecommendationProfile(currentUserId);
+  res.json({ profile, authenticated: true });
+}));
+
+app.post('/api/recommendations/signal', ah(async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const body = req.body || {};
+  const allowedSignals = new Set([
+    'watch_progress',
+    'complete',
+    'replay',
+    'like',
+    'comment',
+    'share',
+    'save',
+    'follow',
+    'search',
+    'skip',
+    'not_interested',
+    'hide_creator',
+    'reduce_category',
+  ]);
+  if (!body.signalType || !allowedSignals.has(String(body.signalType))) {
+    return res.status(400).json({ error: 'Valid signalType is required' });
+  }
+  const profile = await db.recordRecommendationSignal(user.id, {
+    signalType: body.signalType,
+    videoId: body.videoId ? String(body.videoId) : undefined,
+    postId: body.postId ? String(body.postId) : undefined,
+    creatorId: body.creatorId ? String(body.creatorId) : undefined,
+    creatorName: body.creatorName ? String(body.creatorName) : undefined,
+    categoryId: body.categoryId ? String(body.categoryId) : undefined,
+    subcategory: body.subcategory ? String(body.subcategory) : undefined,
+    title: body.title ? String(body.title).slice(0, 300) : undefined,
+    tags: Array.isArray(body.tags) ? body.tags.map(String).slice(0, 12) : undefined,
+    language: body.language,
+    watchSeconds: body.watchSeconds !== undefined ? Number(body.watchSeconds) : undefined,
+    durationSeconds: body.durationSeconds !== undefined ? Number(body.durationSeconds) : undefined,
+    searchQuery: body.searchQuery ? String(body.searchQuery).slice(0, 160) : undefined,
+  });
+  res.json({ success: true, profile });
 }));
 
 app.get('/api/videos/history', ah(async (req: Request, res: Response) => {

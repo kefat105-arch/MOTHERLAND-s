@@ -25,7 +25,13 @@ import type {
   ServerRegistryEntry,
   ServerSwitchHistoryEntry,
   AdminConfigChatMessage,
+  UserRecommendationProfile,
+  RecommendationSignalPayload,
 } from '../types';
+import {
+  createEmptyRecommendationProfile,
+  applySignalToRecommendationProfile,
+} from './recommendationEngine.ts';
 import {
   UserAccount,
   Session,
@@ -4089,5 +4095,92 @@ export class MotherlandPostgresDb implements DatabaseBackend {
       [userId, JSON.stringify(current.favorites), JSON.stringify(nextRecent)]
     );
     return nextRecent;
+  }
+
+  public async getUserFollowingIds(userId: string): Promise<string[]> {
+    if (!userId) return [];
+    const res = await pgQuery<{ following_id: string }>(
+      'SELECT following_id FROM follows WHERE follower_id = $1',
+      [userId]
+    );
+    return res.rows.map((r) => r.following_id);
+  }
+
+  public async getRecommendationProfile(userId?: string): Promise<UserRecommendationProfile | null> {
+    if (!userId) return null;
+    const res = await pgQuery(
+      'SELECT * FROM recommendation_profiles WHERE user_id = $1 LIMIT 1',
+      [userId]
+    );
+    const r = res.rows[0];
+    if (!r) return createEmptyRecommendationProfile(userId);
+    return {
+      userId: r.user_id,
+      categoryScores: r.category_scores || {},
+      subcategoryScores: r.subcategory_scores || {},
+      creatorScores: r.creator_scores || {},
+      keywordScores: r.keyword_scores || {},
+      languageScores: r.language_scores || {},
+      searchInterests: Array.isArray(r.search_interests) ? r.search_interests : [],
+      hiddenCreators: Array.isArray(r.hidden_creators) ? r.hidden_creators : [],
+      reducedCategories: Array.isArray(r.reduced_categories) ? r.reduced_categories : [],
+      notInterestedIds: Array.isArray(r.not_interested_ids) ? r.not_interested_ids : [],
+      skippedIds: Array.isArray(r.skipped_ids) ? r.skipped_ids : [],
+      replayedIds: Array.isArray(r.replayed_ids) ? r.replayed_ids : [],
+      totalSignals: Number(r.total_signals || 0),
+      learningStage: r.learning_stage || 'initial_discovery',
+      updatedAt: toIso(r.updated_at),
+    };
+  }
+
+  public async recordRecommendationSignal(
+    userId: string,
+    payload: RecommendationSignalPayload
+  ): Promise<UserRecommendationProfile> {
+    const existing = (await this.getRecommendationProfile(userId)) || createEmptyRecommendationProfile(userId);
+    const updated = applySignalToRecommendationProfile(existing, payload);
+    await pgQuery(
+      `INSERT INTO recommendation_profiles (
+        user_id, category_scores, subcategory_scores, creator_scores, keyword_scores,
+        language_scores, search_interests, hidden_creators, reduced_categories,
+        not_interested_ids, skipped_ids, replayed_ids, total_signals, learning_stage, updated_at
+      ) VALUES (
+        $1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb,
+        $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb,
+        $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, NOW()
+      )
+      ON CONFLICT (user_id) DO UPDATE SET
+        category_scores = EXCLUDED.category_scores,
+        subcategory_scores = EXCLUDED.subcategory_scores,
+        creator_scores = EXCLUDED.creator_scores,
+        keyword_scores = EXCLUDED.keyword_scores,
+        language_scores = EXCLUDED.language_scores,
+        search_interests = EXCLUDED.search_interests,
+        hidden_creators = EXCLUDED.hidden_creators,
+        reduced_categories = EXCLUDED.reduced_categories,
+        not_interested_ids = EXCLUDED.not_interested_ids,
+        skipped_ids = EXCLUDED.skipped_ids,
+        replayed_ids = EXCLUDED.replayed_ids,
+        total_signals = EXCLUDED.total_signals,
+        learning_stage = EXCLUDED.learning_stage,
+        updated_at = NOW()`,
+      [
+        userId,
+        JSON.stringify(updated.categoryScores),
+        JSON.stringify(updated.subcategoryScores),
+        JSON.stringify(updated.creatorScores),
+        JSON.stringify(updated.keywordScores),
+        JSON.stringify(updated.languageScores),
+        JSON.stringify(updated.searchInterests),
+        JSON.stringify(updated.hiddenCreators),
+        JSON.stringify(updated.reducedCategories),
+        JSON.stringify(updated.notInterestedIds),
+        JSON.stringify(updated.skippedIds),
+        JSON.stringify(updated.replayedIds),
+        updated.totalSignals,
+        updated.learningStage,
+      ]
+    );
+    return updated;
   }
 }
