@@ -7819,8 +7819,8 @@ async function startServer() {
           const result = await vite.transformRequest('/@vite/client');
           if (!result || !result.code) return next();
           const patched = result.code.replace(
-            /transport\.connect\([^;]*\);/,
-            '/* HMR disabled (DISABLE_HMR=true): WebSocket connection skipped */'
+            /const transport = normalizeModuleRunnerTransport\(\(\(\) => \{[\s\S]*?\}\)\(\)\);/,
+            'const transport = normalizeModuleRunnerTransport({ async connect() {}, async disconnect() {}, send() {} });'
           );
           res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
           if (result.etag) res.setHeader('ETag', result.etag);

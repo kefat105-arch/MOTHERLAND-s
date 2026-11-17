@@ -827,6 +827,9 @@ export class MotherlandPostgresDb implements DatabaseBackend {
       if (res.rowCount === 0) {
         return { ok: false, error: 'Account not found.' };
       }
+      await client.query(
+        'DELETE FROM conversations c WHERE NOT EXISTS (SELECT 1 FROM conversation_participants cp WHERE cp.conversation_id = c.id)'
+      );
       return { ok: true };
     });
   }
@@ -3131,10 +3134,10 @@ export class MotherlandPostgresDb implements DatabaseBackend {
       await client.query(
         `UPDATE conversations
          SET last_message = $2::jsonb,
-             updated_at = $3,
-             last_read_at_by_user = jsonb_set(COALESCE(last_read_at_by_user, '{}'::jsonb), ARRAY[$4], to_jsonb($3::text), TRUE)
+             updated_at = $3::timestamptz,
+             last_read_at_by_user = jsonb_set(COALESCE(last_read_at_by_user, '{}'::jsonb), ARRAY[$4::text], to_jsonb($5::text), TRUE)
          WHERE id = $1`,
-        [conversationId, JSON.stringify(newMsg), now, senderId]
+        [conversationId, JSON.stringify(newMsg), now, senderId, now]
       );
     });
 
