@@ -4,6 +4,8 @@
 
 export type PlatformSource = 'motherland' | 'youtube' | 'instagram' | 'tiktok' | 'facebook';
 
+export type FieldPrivacyVisibility = 'public' | 'friends' | 'only_me';
+
 export interface UserPrivacySettings {
   profileVisibility: 'public' | 'friends' | 'private';
   showOnlineStatus: boolean;
@@ -12,6 +14,9 @@ export interface UserPrivacySettings {
   allowDirectMessages: 'everyone' | 'friends' | 'none';
   allowCalls?: 'everyone' | 'friends' | 'none';
   showContactInfo: boolean;
+  dobVisibility?: FieldPrivacyVisibility;
+  genderVisibility?: FieldPrivacyVisibility;
+  contactVisibility?: FieldPrivacyVisibility;
 }
 
 export interface NotificationPreferences {
@@ -36,6 +41,16 @@ export type RelationshipStatus =
   | 'blocked'
   | 'none';
 
+export interface LoginActivityItem {
+  id: string;
+  userId: string;
+  method: 'password' | 'google' | 'register' | 'recovery' | 'refresh' | 'reactivate' | 'switch';
+  deviceName: string;
+  ipAddress?: string;
+  status: 'success' | 'failed';
+  createdAt: string;
+}
+
 export interface UserProfile {
   id: string;
   username: string;
@@ -48,14 +63,24 @@ export interface UserProfile {
   work?: string;
   education?: string;
   joinedDate: string;
+  createdAt?: string;
   isVerified?: boolean;
   role?: 'owner' | 'admin' | 'user';
   email?: string;
   phoneNumber?: string;
+  isEmailVerified?: boolean;
+  isPhoneVerified?: boolean;
+  hasPassword?: boolean;
+  googleConnected?: boolean;
+  googleEmail?: string;
+  authProvider?: 'password' | 'google';
+  authProviders?: ('password' | 'google' | 'phone' | 'email')[];
   dateOfBirth?: string;
   gender?: string;
   address?: string;
   isPrivate?: boolean;
+  deactivated?: boolean;
+  deactivatedAt?: string;
   twoFactorEnabled?: boolean;
   friendsCount: number;
   followersCount: number;
@@ -484,10 +509,11 @@ export interface NotificationItem {
 export interface RegisterPayload {
   fullName: string;
   username: string;
-  email: string;
+  email?: string;
+  phoneNumber?: string;
   password: string;
   dateOfBirth: string;
-  phoneNumber?: string;
+  otpCode?: string;
   gender?: string;
   address?: string;
   bio?: string;
@@ -503,8 +529,12 @@ export interface LoginPayload {
 
 export interface AuthResult {
   token: string;
+  refreshToken?: string;
+  expiresAt?: string;
+  refreshExpiresAt?: string;
   user: UserProfile;
   sessionId?: string;
+  reactivated?: boolean;
   message?: string;
 }
 
@@ -513,10 +543,11 @@ export interface DeviceSessionInfo {
   deviceName: string;
   userAgent?: string;
   ipAddress?: string;
-  authMethod?: 'password' | 'google' | 'register' | 'switch' | 'legacy';
+  authMethod?: 'password' | 'google' | 'register' | 'switch' | 'legacy' | 'reactivate' | 'recovery';
   createdAt: string;
   lastUsedAt: string;
   expiresAt: string;
+  refreshExpiresAt?: string;
   isCurrent: boolean;
 }
 
@@ -526,10 +557,14 @@ export interface MediaAssetRecord {
   originalFilename: string;
   storedFilename: string;
   url: string;
+  storageKey?: string;
+  bucket?: string;
+  visibility?: 'public' | 'private';
+  conversationId?: string;
   mimeType: string;
   sizeBytes: number;
   sha256: string;
-  storageProvider: 'local_persistent' | 'external_object_storage';
+  storageProvider: 'local_persistent' | 'external_object_storage' | 'supabase_s3';
   createdAt: string;
   updatedAt: string;
 }
@@ -655,3 +690,118 @@ export interface BangladeshServiceItem {
   allowIframe?: boolean;
   keywords: string[];
 }
+
+export type GameCategoryFilter =
+  | 'all'
+  | 'multiplayer'
+  | 'social'
+  | 'casual'
+  | 'coming_soon';
+
+export interface GameCatalogEntry {
+  id: string;
+  name: string;
+  tagline: string;
+  description: string;
+  category: 'multiplayer' | 'social' | 'casual' | 'coming_soon';
+  badge: string;
+  status: 'playable' | 'coming_soon';
+  supportedCapacities?: number[];
+}
+
+export type LiveSpyCapacity = 6 | 8;
+
+export type LiveSpyPhase =
+  | 'waiting'
+  | 'countdown'
+  | 'role_reveal'
+  | 'clue'
+  | 'discussion'
+  | 'voting'
+  | 'elimination'
+  | 'winner';
+
+export interface LiveSpyPlayerSeat {
+  userId: string;
+  displayName: string;
+  username: string;
+  avatar: string;
+  seatIndex: number;
+  cameraOn: boolean;
+  micMuted: boolean;
+  alive: boolean;
+  clueSubmitted: boolean;
+  hasVoted: boolean;
+  readyToVote: boolean;
+  wantsPlayAgain: boolean;
+  revealedRole?: 'spy' | 'citizen';
+}
+
+export interface LiveSpyClueItem {
+  round: number;
+  userId: string;
+  displayName: string;
+  seatIndex: number;
+  clue: string;
+  createdAt: string;
+}
+
+export interface LiveSpyChatItem {
+  id: string;
+  userId: string;
+  displayName: string;
+  avatar: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface LiveSpyVoteTallyEntry {
+  targetUserId: string;
+  displayName: string;
+  votes: number;
+}
+
+export interface LiveSpyEliminationSummary {
+  round: number;
+  eliminatedUserId: string | null;
+  eliminatedName: string | null;
+  revealedRole: 'spy' | 'citizen' | null;
+  reason: 'majority' | 'tie' | 'no_votes';
+}
+
+export interface LiveSpyFinalReveal {
+  spyUserId: string;
+  spyDisplayName: string;
+  category: string;
+  secretWord: string;
+}
+
+export interface LiveSpyPublicState {
+  roomId: string;
+  matchId: string;
+  capacity: LiveSpyCapacity;
+  phase: LiveSpyPhase;
+  locked: boolean;
+  countdownSec: number;
+  round: number;
+  category: string;
+  phaseEndsAt: number | null;
+  serverTime: number;
+  players: LiveSpyPlayerSeat[];
+  clues: LiveSpyClueItem[];
+  messages: LiveSpyChatItem[];
+  voteTally: LiveSpyVoteTallyEntry[];
+  eliminatedThisRound: LiveSpyEliminationSummary | null;
+  winner: 'citizens' | 'spy' | null;
+  finalReveal: LiveSpyFinalReveal | null;
+}
+
+export interface LiveSpySecretAssignment {
+  roomId: string;
+  matchId: string;
+  role: 'spy' | 'citizen';
+  category: string;
+  secretWord: string | null;
+  instruction: string;
+}
+

@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -22,6 +22,11 @@ import type {
 } from './src/types';
 import {
   db,
+  initDatabase,
+  closeDatabase,
+  selectDatabaseDriver,
+} from './src/server/database.ts';
+import {
   hashPassword,
   verifyPassword,
   needsPasswordUpgrade,
@@ -33,15 +38,41 @@ import {
   atomicWriteBufferSync,
   computeSha256,
   ensureDirExists,
+  inferMimeFromFilename,
+  resolvePersistencePaths,
 } from './src/server/persistence.ts';
+import {
+  isS3Configured,
+  getS3Config,
+  buildMediaObjectKey,
+  uploadStreamToS3,
+  uploadBufferToS3,
+  headObjectInS3,
+  getObjectStreamFromS3,
+  deleteObjectFromS3,
+  createSignedReadUrl,
+  createSignedUploadUrl,
+  checkS3Health,
+  MAX_UPLOAD_SIZE_BYTES,
+} from './src/server/s3Storage.ts';
+import {
+  GAME_CATALOG,
+  LiveSpyEngine,
+} from './src/server/liveSpyEngine.ts';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const UPLOADS_DIR = db.getPaths().uploadsDir;
+const UPLOADS_DIR = resolvePersistencePaths().uploadsDir;
 ensureDirExists(UPLOADS_DIR);
+
+const ah =
+  (fn: (req: Request, res: Response, next: NextFunction) => any) =>
+  (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
 
 const app = express();
 app.set('trust proxy', 1);
@@ -153,7 +184,6 @@ const registerRateLimiter = createRateLimiter({ windowMs: 60 * 1000, maxAttempts
 const otpRateLimiter = createRateLimiter({ windowMs: 60 * 1000, maxAttempts: 10, keyPrefix: 'otp' });
 const sensitiveAuthRateLimiter = createRateLimiter({ windowMs: 60 * 1000, maxAttempts: 15, keyPrefix: 'sensitive_auth' });
 
-app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d' }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -162,16 +192,24 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // ==========================================
 const wsConnections = new Map<string, Set<WebSocket>>();
 
-function getOnlineUserIds(): Set<string> {
+async function getOnlineUserIds(): Promise<Set<string>> {
   const online = new Set<string>();
+  const candidates: string[] = [];
   for (const [uid, sockets] of wsConnections.entries()) {
-    if (sockets.size > 0) {
-      const u = db.findUserById(uid);
-      if (u && u.privacy?.showOnlineStatus !== false) {
-        online.add(uid);
-      }
-    }
+    if (sockets.size > 0) candidates.push(uid);
   }
+  await Promise.all(
+    candidates.map(async (uid) => {
+      try {
+        const u = await db.findUserById(uid);
+        if (u && u.privacy?.showOnlineStatus !== false) {
+          online.add(uid);
+        }
+      } catch {
+        // Ignore transient lookup failures for presence
+      }
+    })
+  );
   return online;
 }
 
@@ -190,12 +228,20 @@ function sendWsToUser(userId: string, event: string, payload: any) {
   }
 }
 
-function notifyUserFriendsPresence(userId: string, isOnline: boolean) {
-  const user = db.findUserById(userId);
-  if (!user || user.privacy?.showOnlineStatus === false) return;
-  const friendIds = db.getFriendIds(userId);
-  for (const fid of friendIds) {
-    sendWsToUser(fid, 'presence:update', { userId, isOnline });
+const liveSpyEngine = new LiveSpyEngine((uid, event, payload) => {
+  sendWsToUser(uid, event, payload);
+});
+
+async function notifyUserFriendsPresence(userId: string, isOnline: boolean): Promise<void> {
+  try {
+    const user = await db.findUserById(userId);
+    if (!user || user.privacy?.showOnlineStatus === false) return;
+    const friendIds = await db.getFriendIds(userId);
+    for (const fid of friendIds) {
+      sendWsToUser(fid, 'presence:update', { userId, isOnline });
+    }
+  } catch {
+    // Ignore presence broadcast errors
   }
 }
 
@@ -205,12 +251,12 @@ function normalizeSuppressToken(id: string): string {
   return id.trim().replace(/^yt_feed_/, '').replace(/^yt_/, '');
 }
 
-function getSuppressedSetFromReq(req: Request): Set<string> {
+async function getSuppressedSetFromReq(req: Request): Promise<Set<string>> {
   if (req.query.includeWatched === '1') {
     return new Set<string>();
   }
   const currentUserId = (req as any).userId as string | undefined;
-  const suppressed = db.getSuppressedVideoIds(currentUserId, WATCH_SUPPRESSION_DAYS);
+  const suppressed = await db.getSuppressedVideoIds(currentUserId, WATCH_SUPPRESSION_DAYS);
   const headerRaw = String(req.headers['x-suppressed-ids'] || '');
   if (headerRaw) {
     for (const part of headerRaw.split(',')) {
@@ -291,37 +337,41 @@ function prioritizeFreshItems<T extends { id?: string; youtubeId?: string; exter
 }
 
 // Auth Extraction Middleware (Multi-User Token + HttpOnly Cookie Isolation - ZERO Shared Fallback)
-app.use((req: Request, _res: Response, next) => {
-  const authHeader = req.headers.authorization || (req.headers['x-auth-token'] as string);
-  let token = '';
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    token = authHeader.substring(7).trim();
-  } else if (authHeader) {
-    token = authHeader.trim();
-  }
-
-  if (!token && req.headers.cookie) {
-    const cookies = parseCookies(req.headers.cookie);
-    if (cookies[AUTH_COOKIE_NAME]) {
-      token = cookies[AUTH_COOKIE_NAME].trim();
+app.use(async (req: Request, _res: Response, next) => {
+  try {
+    const authHeader = req.headers.authorization || (req.headers['x-auth-token'] as string);
+    let token = '';
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim();
+    } else if (authHeader) {
+      token = authHeader.trim();
     }
-  }
 
-  if (token) {
-    (req as any).hadAuthToken = true;
-    const session = db.findSessionByToken(token);
-    if (session) {
-      const user = db.findUserById(session.userId);
-      if (user) {
-        db.touchUserLastActive(user.id);
-        (req as any).user = user;
-        (req as any).userId = user.id;
-        (req as any).sessionToken = token;
-        (req as any).sessionId = session.id;
+    if (!token && req.headers.cookie) {
+      const cookies = parseCookies(req.headers.cookie);
+      if (cookies[AUTH_COOKIE_NAME]) {
+        token = cookies[AUTH_COOKIE_NAME].trim();
       }
     }
+
+    if (token) {
+      (req as any).hadAuthToken = true;
+      const session = await db.findSessionByToken(token);
+      if (session) {
+        const user = await db.findUserById(session.userId);
+        if (user) {
+          void db.touchUserLastActive(user.id).catch(() => {});
+          (req as any).user = user;
+          (req as any).userId = user.id;
+          (req as any).sessionToken = token;
+          (req as any).sessionId = session.id;
+        }
+      }
+    }
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 });
 
 const getReqUser = (req: Request): UserAccount | null => {
@@ -437,30 +487,58 @@ function parseIsoDurationToSeconds(isoDuration: string): number {
 // ==========================================
 
 // Health & System Information
-app.get('/api/health', (req: Request, res: Response) => {
-  res.json({
-    status: 'healthy',
+app.get('/api/health', ah(async (req: Request, res: Response) => {
+  const dbHealth = await db.healthCheck();
+  const s3Cfg = getS3Config();
+  const s3Probe = req.query.deep === '1' ? await checkS3Health() : null;
+  const healthy = dbHealth.ok && (s3Probe ? s3Probe.ok || !s3Probe.configured : true);
+
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'healthy' : 'degraded',
     app: 'MOTHERLAND Super App',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
     backend: 'MOTHERLAND Dedicated Node/Express Engine',
     uptimeSeconds: process.uptime(),
+    database: {
+      driver: dbHealth.driver,
+      ok: dbHealth.ok,
+      latencyMs: dbHealth.latencyMs,
+      details: dbHealth.details,
+    },
+    objectStorage: {
+      configured: Boolean(s3Cfg),
+      provider: s3Cfg ? 'supabase_s3' : 'local_persistent',
+      bucket: s3Cfg?.bucket || null,
+      region: s3Cfg?.region || null,
+      bucketPrivate: Boolean(s3Cfg),
+      ...(s3Probe ? { probeOk: s3Probe.ok, latencyMs: s3Probe.latencyMs, probeError: s3Probe.error } : {}),
+    },
     dreamWorldStatus: 'INDEPENDENT (Dream World Render server inspected and verified as separate unlinked service)',
   });
-});
+}));
 
-app.get('/api/status', (req: Request, res: Response) => {
+app.get('/api/status', ah(async (req: Request, res: Response) => {
   const apiKey = getActiveYouTubeKey();
   const user = getReqUser(req);
+  const [users, posts, stories, shorts, longVideos] = await Promise.all([
+    db.getAllUsers(),
+    db.getAllPosts(),
+    db.getActiveStories(),
+    db.getShortVideos(),
+    db.getLongVideos(),
+  ]);
   res.json({
     appName: 'MOTHERLAND',
     version: '1.0.0',
     currentUser: user ? user.username : null,
-    totalUsers: db.getAllUsers().length,
-    totalPosts: db.getAllPosts().length,
-    totalStories: db.getActiveStories().length,
-    totalShorts: db.getShortVideos().length,
-    totalLongVideos: db.getLongVideos().length,
+    databaseDriver: db.driverName,
+    storageProvider: isS3Configured() ? 'supabase_s3' : 'local_persistent',
+    totalUsers: users.length,
+    totalPosts: posts.length,
+    totalStories: stories.length,
+    totalShorts: shorts.length,
+    totalLongVideos: longVideos.length,
     youtubeIntegration: {
       configured: Boolean(apiKey),
       keyLength: apiKey ? apiKey.length : 0,
@@ -475,7 +553,7 @@ app.get('/api/status', (req: Request, res: Response) => {
       { platform: 'facebook', status: 'Coming Soon' },
     ],
   });
-});
+}));
 
 let ytStatusCache: { key: string; payload: any; expiresAt: number } | null = null;
 
@@ -828,13 +906,13 @@ const CATEGORY_DISCOVERY_QUERIES: Record<string, string[]> = {
   ],
 };
 
-function buildPersonalizedDiscoveryQueries(
+async function buildPersonalizedDiscoveryQueries(
   baseQueries: string[],
   userId?: string,
   seed = '',
   isShorts = false
-): string[] {
-  const interestKeywords = userId ? db.getUserInterestKeywords(userId) : [];
+): Promise<string[]> {
+  const interestKeywords = userId ? await db.getUserInterestKeywords(userId) : [];
   const personalQueries = interestKeywords.slice(0, 3).map((kw) =>
     isShorts ? `${kw} #shorts` : `${kw} video`
   );
@@ -1244,7 +1322,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
   const rawToken = (req.query.pageToken as string) || '';
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(parseInt((req.query.pageSize as string) || '12', 10), 25);
-  const suppressedIds = getSuppressedSetFromReq(req);
+  const suppressedIds = await getSuppressedSetFromReq(req);
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
   const fetchSize = suppressedIds.size > 0 || excludeIds.size > 0 ? Math.min(25, pageSize + 10) : pageSize;
@@ -1253,7 +1331,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     type === 'shorts'
       ? SHORTS_DISCOVERY_QUERIES
       : CATEGORY_DISCOVERY_QUERIES[category] || [`${category} 4K video`, `${category} documentary`, `${category} Bangladesh`];
-  const queryList = buildPersonalizedDiscoveryQueries(baseQueryList, currentUserId, `${seed}_${category}_${type}`, type === 'shorts');
+  const queryList = await buildPersonalizedDiscoveryQueries(baseQueryList, currentUserId, `${seed}_${category}_${type}`, type === 'shorts');
 
   try {
     let cursor: FeedCursor = decodeFeedCursor(rawToken) || {
@@ -2195,7 +2273,7 @@ async function ensureValidYouTubeAccessToken(
   userId: string,
   req?: Request
 ): Promise<{ record: YouTubeOAuthRecord | null; error?: string }> {
-  const existing = db.getYouTubeOAuth(userId);
+  const existing = await db.getYouTubeOAuth(userId);
   if (!existing) {
     return { record: null, error: 'YouTube account is not connected.' };
   }
@@ -2224,7 +2302,7 @@ async function ensureValidYouTubeAccessToken(
 
     const tokenData: any = await tokenRes.json();
     if (!tokenRes.ok || !tokenData.access_token) {
-      db.deleteYouTubeOAuth(userId);
+      await db.deleteYouTubeOAuth(userId);
       return { record: null, error: tokenData?.error_description || 'Refresh token revoked. Please reconnect.' };
     }
 
@@ -2234,7 +2312,7 @@ async function ensureValidYouTubeAccessToken(
       expiresAt: Date.now() + Number(tokenData.expires_in || 3600) * 1000,
       updatedAt: new Date().toISOString(),
     };
-    db.setYouTubeOAuth(userId, updated);
+    await db.setYouTubeOAuth(userId, updated);
     return { record: updated };
   } catch (err: any) {
     return { record: null, error: err.message || 'Failed to refresh YouTube OAuth token.' };
@@ -2296,7 +2374,7 @@ app.get('/api/youtube/oauth/status', async (req: Request, res: Response) => {
       message: 'Sign in with Google or your MOTHERLAND account to connect YouTube.',
     });
   }
-  const existing = db.getYouTubeOAuth(user.id);
+  const existing = await db.getYouTubeOAuth(user.id);
 
   if (!existing) {
     return res.json({
@@ -2533,7 +2611,7 @@ app.get(['/api/youtube/oauth/callback', '/api/youtube/oauth/callback/'], async (
       updatedAt: nowIso,
     };
 
-    db.setYouTubeOAuth(pending.userId, record);
+    await db.setYouTubeOAuth(pending.userId, record);
 
     const ytNotif = {
       id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -2551,7 +2629,7 @@ app.get(['/api/youtube/oauth/callback', '/api/youtube/oauth/callback/'], async (
       isRead: false,
       createdAt: nowIso,
     };
-    db.addNotification(ytNotif);
+    await db.addNotification(ytNotif);
     sendWsToUser(pending.userId, 'notification:new', ytNotif);
 
     res.send(
@@ -2571,10 +2649,10 @@ app.get(['/api/youtube/oauth/callback', '/api/youtube/oauth/callback/'], async (
   }
 });
 
-app.post('/api/youtube/oauth/disconnect', async (req: Request, res: Response) => {
+app.post('/api/youtube/oauth/disconnect', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const existing = db.getYouTubeOAuth(user.id);
+  const existing = await db.getYouTubeOAuth(user.id);
   if (existing?.accessToken) {
     try {
       await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(existing.accessToken)}`, {
@@ -2584,9 +2662,9 @@ app.post('/api/youtube/oauth/disconnect', async (req: Request, res: Response) =>
       // Best-effort token revocation
     }
   }
-  db.deleteYouTubeOAuth(user.id);
+  await db.deleteYouTubeOAuth(user.id);
   res.json({ success: true, connected: false });
-});
+}));
 
 app.post('/api/youtube/upload/prepare', async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
@@ -2747,7 +2825,7 @@ app.put(
       }
 
       const channelTitle = resolved.channel?.title || 'YouTube Channel';
-      db.addNotification({
+      await db.addNotification({
         id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         recipientId: user.id,
         category: 'youtube',
@@ -3012,125 +3090,535 @@ app.delete('/api/youtube/my-videos/:videoId', async (req: Request, res: Response
 });
 
 // ==========================================
-// MOTHERLAND MEDIA UPLOAD STORAGE (/uploads)
+// MOTHERLAND MEDIA STORAGE (PRIVATE SUPABASE S3 + AUTHORIZED PROXY/RANGE STREAMING)
 // ==========================================
-app.post(
-  '/api/media/upload',
-  express.raw({
-    type: [
-      'video/*',
-      'image/*',
-      'audio/*',
-      'application/pdf',
-      'text/*',
-      'application/zip',
-      'application/x-zip-compressed',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.*',
-      'application/octet-stream',
-    ],
-    limit: '250mb',
-  }),
-  (req: Request, res: Response) => {
-    const user = requireAuth(req, res);
-    if (!user) return;
-    try {
-      let fileBuffer: Buffer;
-      let originalName = decodeURIComponent(String(req.headers['x-file-name'] || 'upload.bin'));
-      let mimeType = String(req.headers['x-mime-type'] || req.headers['content-type'] || 'application/octet-stream');
+const ALLOWED_MEDIA_EXTENSIONS = new Set([
+  '.mp4', '.webm', '.mov', '.m4v', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg',
+  '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.opus',
+  '.pdf', '.txt', '.csv', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.json',
+]);
 
-      if (Buffer.isBuffer(req.body) && req.body.length > 0) {
-        fileBuffer = req.body;
-      } else if (req.body && typeof req.body === 'object' && req.body.dataBase64) {
-        originalName = String(req.body.filename || 'upload.bin');
-        mimeType = String(req.body.mimeType || 'application/octet-stream');
-        const cleaned = String(req.body.dataBase64).replace(/^data:[^;]+;base64,/, '');
-        fileBuffer = Buffer.from(cleaned, 'base64');
-      } else {
-        return res.status(400).json({ error: 'No media payload provided.' });
+function isAllowedUploadContentType(rawType: string): boolean {
+  const base = rawType.split(';')[0].trim().toLowerCase();
+  if (!base) return true;
+  if (
+    base.startsWith('video/') ||
+    base.startsWith('image/') ||
+    base.startsWith('audio/') ||
+    base.startsWith('text/') ||
+    base === 'application/pdf' ||
+    base === 'application/zip' ||
+    base === 'application/x-zip-compressed' ||
+    base === 'application/msword' ||
+    base.startsWith('application/vnd.openxmlformats-officedocument.') ||
+    base === 'application/octet-stream' ||
+    base === 'application/json'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function resolveMediaExtension(originalName: string, mimeType: string): string {
+  const extFromName = path.extname(originalName).toLowerCase().replace(/[^a-z0-9.]/g, '');
+  if (ALLOWED_MEDIA_EXTENSIONS.has(extFromName)) return extFromName;
+  const lower = mimeType.toLowerCase();
+  if (lower.includes('audio/wav') || lower.includes('audio/x-wav')) return '.wav';
+  if (lower.includes('audio/mpeg') || lower.includes('mp3')) return '.mp3';
+  if (lower.includes('audio/ogg') || lower.includes('opus')) return '.ogg';
+  if (lower.includes('audio/mp4') || lower.includes('m4a')) return '.m4a';
+  if (lower.includes('audio/webm')) return '.webm';
+  if (lower.startsWith('audio/')) return '.webm';
+  if (lower.includes('pdf')) return '.pdf';
+  if (lower.includes('text/plain')) return '.txt';
+  if (lower.includes('csv')) return '.csv';
+  if (lower.includes('zip')) return '.zip';
+  if (lower.includes('mp4')) return '.mp4';
+  if (lower.includes('webm')) return '.webm';
+  if (lower.includes('quicktime') || lower.includes('mov')) return '.mov';
+  if (lower.includes('png')) return '.png';
+  if (lower.includes('webp')) return '.webp';
+  if (lower.includes('gif')) return '.gif';
+  if (lower.startsWith('image/')) return '.jpg';
+  if (lower.startsWith('video/')) return '.mp4';
+  return '.bin';
+}
+
+function parseUploadVisibility(req: Request): 'public' | 'private' {
+  const raw = String(req.headers['x-visibility'] || req.body?.visibility || '').trim().toLowerCase();
+  if (raw === 'private') return 'private';
+  if (String(req.headers['x-conversation-id'] || req.body?.conversationId || '').trim()) return 'private';
+  return 'public';
+}
+
+function parseUploadConversationId(req: Request): string | undefined {
+  const raw = String(req.headers['x-conversation-id'] || req.body?.conversationId || '').trim();
+  return raw ? raw.slice(0, 128) : undefined;
+}
+
+async function readRequestStreamToBuffer(req: Request, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        const err: any = new Error(`Upload exceeded max size of ${Math.round(maxBytes / (1024 * 1024))}MB.`);
+        err.statusCode = 413;
+        req.destroy();
+        reject(err);
+        return;
       }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', (err) => reject(err));
+  });
+}
 
-      const extFromName = path.extname(originalName).toLowerCase().replace(/[^a-z0-9.]/g, '');
-      const allowedExt = new Set([
-        '.mp4', '.webm', '.mov', '.m4v', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg',
-        '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.opus',
-        '.pdf', '.txt', '.csv', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.json',
-      ]);
-      let ext = allowedExt.has(extFromName) ? extFromName : '';
-      if (!ext) {
-        if (mimeType.includes('audio/wav') || mimeType.includes('audio/x-wav')) ext = '.wav';
-        else if (mimeType.includes('audio/mpeg') || mimeType.includes('mp3')) ext = '.mp3';
-        else if (mimeType.includes('audio/ogg') || mimeType.includes('opus')) ext = '.ogg';
-        else if (mimeType.includes('audio/mp4') || mimeType.includes('m4a')) ext = '.m4a';
-        else if (mimeType.includes('audio/webm')) ext = '.webm';
-        else if (mimeType.startsWith('audio/')) ext = '.webm';
-        else if (mimeType.includes('pdf')) ext = '.pdf';
-        else if (mimeType.includes('text/plain')) ext = '.txt';
-        else if (mimeType.includes('csv')) ext = '.csv';
-        else if (mimeType.includes('zip')) ext = '.zip';
-        else if (mimeType.includes('mp4')) ext = '.mp4';
-        else if (mimeType.includes('webm')) ext = '.webm';
-        else if (mimeType.includes('quicktime') || mimeType.includes('mov')) ext = '.mov';
-        else if (mimeType.includes('png')) ext = '.png';
-        else if (mimeType.includes('webp')) ext = '.webp';
-        else if (mimeType.includes('gif')) ext = '.gif';
-        else if (mimeType.startsWith('image/')) ext = '.jpg';
-        else if (mimeType.startsWith('video/')) ext = '.mp4';
-        else ext = '.bin';
+function serveLocalFileWithRange(req: Request, res: Response, diskPath: string, mimeType: string, isHeadOnly: boolean): void {
+  const stat = fs.statSync(diskPath);
+  const totalSize = stat.size;
+  const resolvedMime = mimeType || inferMimeFromFilename(diskPath);
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', resolvedMime);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  const rangeHeader = req.headers.range;
+  if (rangeHeader && /^bytes=\d*-\d*$/i.test(rangeHeader.trim())) {
+    const [rawStart, rawEnd] = rangeHeader.replace(/^bytes=/i, '').split('-');
+    let start = rawStart ? parseInt(rawStart, 10) : 0;
+    let end = rawEnd ? parseInt(rawEnd, 10) : totalSize - 1;
+    if (!rawStart && rawEnd) {
+      const suffixLen = parseInt(rawEnd, 10);
+      start = Math.max(0, totalSize - suffixLen);
+      end = totalSize - 1;
+    }
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= totalSize) {
+      res.status(416).setHeader('Content-Range', `bytes */${totalSize}`).end();
+      return;
+    }
+    end = Math.min(end, totalSize - 1);
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+    res.setHeader('Content-Length', String(end - start + 1));
+    if (isHeadOnly) {
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(diskPath, { start, end });
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
+    return;
+  }
+
+  res.status(200);
+  res.setHeader('Content-Length', String(totalSize));
+  if (isHeadOnly) {
+    res.end();
+    return;
+  }
+  const stream = fs.createReadStream(diskPath);
+  res.on('close', () => stream.destroy());
+  stream.pipe(res);
+}
+
+async function handleAuthorizedMediaServe(req: Request, res: Response, isHeadOnly: boolean): Promise<void> {
+  const rawParam = decodeURIComponent(String(req.params.filename || req.params.idOrFilename || '').trim());
+  const safeBasename = path.basename(rawParam);
+  if (!safeBasename || safeBasename === '.' || safeBasename === '..') {
+    res.status(400).json({ error: 'Invalid media identifier.' });
+    return;
+  }
+
+  const viewer = getReqUser(req);
+  const asset = await db.getMediaAsset(rawParam) || (rawParam !== safeBasename ? await db.getMediaAsset(safeBasename) : undefined);
+
+  if (asset) {
+    const access = await db.canUserAccessMediaAsset(asset, viewer?.id, viewer?.role);
+    if (!access.allowed) {
+      res.status(access.statusCode).json({ error: access.reason || 'Forbidden' });
+      return;
+    }
+
+    const isPrivate = asset.visibility === 'private' || Boolean(asset.conversationId);
+    res.setHeader('Cache-Control', isPrivate ? 'private, no-store' : 'public, max-age=604800');
+    if (isPrivate) {
+      res.setHeader('Vary', 'Cookie, Authorization');
+    }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    if ((asset.storageProvider === 'supabase_s3' || asset.storageKey) && isS3Configured() && asset.storageKey) {
+      try {
+        if (isHeadOnly) {
+          const meta = await headObjectInS3(asset.storageKey, asset.bucket);
+          if (!meta.exists) {
+            res.status(404).json({ error: 'Media object not found in bucket.' });
+            return;
+          }
+          res.setHeader('Accept-Ranges', 'bytes');
+          res.setHeader('Content-Type', asset.mimeType || meta.contentType || inferMimeFromFilename(safeBasename));
+          if (meta.contentLength !== undefined) res.setHeader('Content-Length', String(meta.contentLength));
+          if (meta.etag) res.setHeader('ETag', meta.etag);
+          res.status(200).end();
+          return;
+        }
+
+        const s3Obj = await getObjectStreamFromS3({
+          key: asset.storageKey,
+          bucketOverride: asset.bucket,
+          range: req.headers.range,
+        });
+        res.status(s3Obj.statusCode);
+        res.setHeader('Accept-Ranges', s3Obj.acceptRanges || 'bytes');
+        res.setHeader('Content-Type', asset.mimeType || s3Obj.contentType || inferMimeFromFilename(safeBasename));
+        if (s3Obj.contentLength !== undefined) res.setHeader('Content-Length', String(s3Obj.contentLength));
+        if (s3Obj.contentRange) res.setHeader('Content-Range', s3Obj.contentRange);
+        if (s3Obj.etag) res.setHeader('ETag', s3Obj.etag);
+
+        res.on('close', () => {
+          if (!res.writableEnded) s3Obj.stream.destroy();
+        });
+        s3Obj.stream.on('error', () => {
+          if (!res.headersSent) res.status(502).json({ error: 'Media stream interrupted.' });
+          else res.end();
+        });
+        s3Obj.stream.pipe(res);
+        return;
+      } catch (err: any) {
+        const status = err?.$metadata?.httpStatusCode || err?.statusCode;
+        if (status === 416) {
+          res.status(416).end();
+          return;
+        }
+        if (status === 404 || err?.name === 'NoSuchKey') {
+          res.status(404).json({ error: 'Media file not found in object storage.' });
+          return;
+        }
+        res.status(502).json({ error: 'Unable to retrieve media from object storage.' });
+        return;
       }
+    }
 
-      const safeFilename = `ml_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${ext}`;
-      const filePath = path.join(UPLOADS_DIR, safeFilename);
-      atomicWriteBufferSync(filePath, fileBuffer);
+    const diskPath = path.join(UPLOADS_DIR, path.basename(asset.storedFilename));
+    if (fs.existsSync(diskPath)) {
+      serveLocalFileWithRange(req, res, diskPath, asset.mimeType, isHeadOnly);
+      return;
+    }
 
-      const sha256 = computeSha256(fileBuffer);
-      const storageProvider =
-        process.env.OBJECT_STORAGE_PROVIDER && process.env.OBJECT_STORAGE_PROVIDER.trim()
-          ? 'external_object_storage'
-          : 'local_persistent';
-      const nowIso = new Date().toISOString();
-      const assetRecord = db.registerMediaAsset({
-        id: `media_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
-        ownerId: user.id,
-        originalFilename: originalName || safeFilename,
-        storedFilename: safeFilename,
-        url: `/uploads/${safeFilename}`,
-        mimeType,
-        sizeBytes: fileBuffer.length,
-        sha256,
-        storageProvider,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      });
+    res.status(404).json({ error: 'Media file not found on storage.' });
+    return;
+  }
 
-      res.status(201).json({
-        id: assetRecord.id,
-        url: assetRecord.url,
-        filename: originalName || safeFilename,
-        storedFilename: safeFilename,
-        size: fileBuffer.length,
-        mimeType,
-        sha256,
-        storageProvider,
-      });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Failed to store uploaded file.' });
+  // Fallback ONLY for legacy unindexed local files inside UPLOADS_DIR
+  const legacyDiskPath = path.join(UPLOADS_DIR, safeBasename);
+  if (fs.existsSync(legacyDiskPath) && fs.statSync(legacyDiskPath).isFile()) {
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    serveLocalFileWithRange(req, res, legacyDiskPath, inferMimeFromFilename(safeBasename), isHeadOnly);
+    return;
+  }
+
+  res.status(404).json({ error: 'Media file not found.' });
+}
+
+app.head('/uploads/:filename', ah(async (req: Request, res: Response) => {
+  await handleAuthorizedMediaServe(req, res, true);
+}));
+
+app.get('/uploads/:filename', ah(async (req: Request, res: Response) => {
+  await handleAuthorizedMediaServe(req, res, false);
+}));
+
+app.get('/api/media/file/:idOrFilename', ah(async (req: Request, res: Response) => {
+  await handleAuthorizedMediaServe(req, res, false);
+}));
+
+app.post('/api/media/upload', ah(async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+
+  const isJsonUpload = String(req.headers['content-type'] || '').toLowerCase().includes('application/json');
+  let originalName = decodeURIComponent(String(req.headers['x-file-name'] || 'upload.bin'));
+  let mimeType = String(req.headers['x-mime-type'] || req.headers['content-type'] || 'application/octet-stream');
+
+  if (!isJsonUpload && !isAllowedUploadContentType(mimeType)) {
+    return res.status(415).json({ error: 'Unsupported media Content-Type.' });
+  }
+
+  const visibility = parseUploadVisibility(req);
+  const conversationId = parseUploadConversationId(req);
+
+  if (conversationId) {
+    const conv = await db.getConversationById(conversationId);
+    if (!conv || !db.isConversationParticipant(conv, user.id)) {
+      return res.status(403).json({ error: 'Forbidden: you are not a participant of this conversation.' });
     }
   }
-);
 
-app.get('/api/media/mine', (req: Request, res: Response) => {
+  if (isJsonUpload && req.body && typeof req.body === 'object' && req.body.dataBase64) {
+    originalName = String(req.body.filename || originalName || 'upload.bin');
+    mimeType = String(req.body.mimeType || mimeType || 'application/octet-stream');
+    if (!isAllowedUploadContentType(mimeType)) {
+      return res.status(415).json({ error: 'Unsupported media Content-Type.' });
+    }
+  }
+
+  const ext = resolveMediaExtension(originalName, mimeType);
+  const safeFilename = `ml_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${ext}`;
+  const nowIso = new Date().toISOString();
+
+  if (isS3Configured()) {
+    const storageKey = buildMediaObjectKey({
+      visibility,
+      ownerId: user.id,
+      safeFilename,
+    });
+
+    let uploadMeta: { bucket: string; key: string; sizeBytes: number; sha256: string };
+    if (isJsonUpload && req.body?.dataBase64) {
+      const cleaned = String(req.body.dataBase64).replace(/^data:[^;]+;base64,/, '');
+      const fileBuffer = Buffer.from(cleaned, 'base64');
+      if (fileBuffer.length === 0) {
+        return res.status(400).json({ error: 'No media payload provided.' });
+      }
+      if (fileBuffer.length > MAX_UPLOAD_SIZE_BYTES) {
+        return res.status(413).json({ error: 'File exceeds maximum upload limit (250MB).' });
+      }
+      uploadMeta = await uploadBufferToS3({ key: storageKey, buffer: fileBuffer, contentType: mimeType });
+    } else if (isJsonUpload) {
+      return res.status(400).json({ error: 'No media payload provided.' });
+    } else {
+      const contentLengthHeader = Number(req.headers['content-length']) || undefined;
+      uploadMeta = await uploadStreamToS3({
+        key: storageKey,
+        stream: req,
+        contentType: mimeType,
+        contentLengthHeader,
+        maxBytes: MAX_UPLOAD_SIZE_BYTES,
+      });
+    }
+
+    const assetRecord = await db.registerMediaAsset({
+      id: `media_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      ownerId: user.id,
+      originalFilename: originalName || safeFilename,
+      storedFilename: safeFilename,
+      url: `/uploads/${safeFilename}`,
+      storageKey: uploadMeta.key,
+      bucket: uploadMeta.bucket,
+      visibility,
+      conversationId,
+      mimeType,
+      sizeBytes: uploadMeta.sizeBytes,
+      sha256: uploadMeta.sha256,
+      storageProvider: 'supabase_s3',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    return res.status(201).json({
+      id: assetRecord.id,
+      url: assetRecord.url,
+      filename: originalName || safeFilename,
+      storedFilename: safeFilename,
+      size: assetRecord.sizeBytes,
+      mimeType,
+      sha256: assetRecord.sha256,
+      visibility: assetRecord.visibility,
+      storageProvider: 'supabase_s3',
+    });
+  }
+
+  // Local disk fallback ONLY when Supabase S3 credentials are not configured
+  let fileBuffer: Buffer;
+  if (isJsonUpload && req.body?.dataBase64) {
+    const cleaned = String(req.body.dataBase64).replace(/^data:[^;]+;base64,/, '');
+    fileBuffer = Buffer.from(cleaned, 'base64');
+  } else if (isJsonUpload) {
+    return res.status(400).json({ error: 'No media payload provided.' });
+  } else {
+    fileBuffer = await readRequestStreamToBuffer(req, MAX_UPLOAD_SIZE_BYTES);
+  }
+
+  if (!fileBuffer || fileBuffer.length === 0) {
+    return res.status(400).json({ error: 'No media payload provided.' });
+  }
+
+  const filePath = path.join(UPLOADS_DIR, safeFilename);
+  atomicWriteBufferSync(filePath, fileBuffer);
+  const sha256 = computeSha256(fileBuffer);
+  const assetRecord = await db.registerMediaAsset({
+    id: `media_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+    ownerId: user.id,
+    originalFilename: originalName || safeFilename,
+    storedFilename: safeFilename,
+    url: `/uploads/${safeFilename}`,
+    visibility,
+    conversationId,
+    mimeType,
+    sizeBytes: fileBuffer.length,
+    sha256,
+    storageProvider: 'local_persistent',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  });
+
+  res.status(201).json({
+    id: assetRecord.id,
+    url: assetRecord.url,
+    filename: originalName || safeFilename,
+    storedFilename: safeFilename,
+    size: fileBuffer.length,
+    mimeType,
+    sha256,
+    visibility: assetRecord.visibility,
+    storageProvider: 'local_persistent',
+  });
+}));
+
+app.post('/api/media/presign', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  res.json({ assets: db.getUserMediaAssets(user.id) });
-});
+  if (!isS3Configured()) {
+    return res.status(503).json({
+      error: 'S3_NOT_CONFIGURED',
+      message: 'Supabase S3 credentials are not configured; use /api/media/upload instead.',
+    });
+  }
 
-app.delete('/api/media/:idOrFilename', (req: Request, res: Response) => {
+  const originalName = String(req.body?.filename || 'upload.bin').trim();
+  const mimeType = String(req.body?.mimeType || 'application/octet-stream').trim();
+  const sizeBytes = Number(req.body?.sizeBytes || 0);
+  if (!isAllowedUploadContentType(mimeType)) {
+    return res.status(415).json({ error: 'Unsupported media Content-Type.' });
+  }
+  if (sizeBytes > MAX_UPLOAD_SIZE_BYTES) {
+    return res.status(413).json({ error: 'File exceeds maximum upload limit (250MB).' });
+  }
+
+  const visibility: 'public' | 'private' =
+    req.body?.visibility === 'private' || req.body?.conversationId ? 'private' : 'public';
+  const conversationId = req.body?.conversationId ? String(req.body.conversationId).trim() : undefined;
+  if (conversationId) {
+    const conv = await db.getConversationById(conversationId);
+    if (!conv || !db.isConversationParticipant(conv, user.id)) {
+      return res.status(403).json({ error: 'Forbidden: you are not a participant of this conversation.' });
+    }
+  }
+
+  const ext = resolveMediaExtension(originalName, mimeType);
+  const safeFilename = `ml_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${ext}`;
+  const key = buildMediaObjectKey({ visibility, ownerId: user.id, safeFilename });
+  const signed = await createSignedUploadUrl({ key, contentType: mimeType, expiresInSeconds: 300 });
+
+  res.json({
+    uploadUrl: signed.url,
+    method: 'PUT',
+    headers: { 'Content-Type': mimeType },
+    key: signed.key,
+    bucket: signed.bucket,
+    storedFilename: safeFilename,
+    url: `/uploads/${safeFilename}`,
+    visibility,
+    conversationId,
+    expiresInSeconds: signed.expiresInSeconds,
+  });
+}));
+
+app.post('/api/media/complete', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.deleteOwnedMediaAsset(req.params.idOrFilename, user.id, user.role);
+  if (!isS3Configured()) {
+    return res.status(503).json({ error: 'S3_NOT_CONFIGURED' });
+  }
+
+  const { key, storedFilename, originalFilename, mimeType, visibility, conversationId } = req.body || {};
+  const cleanKey = String(key || '').trim();
+  const cleanStored = path.basename(String(storedFilename || '').trim());
+  const vis: 'public' | 'private' = visibility === 'private' || conversationId ? 'private' : 'public';
+  const expectedPrefix = `media/${vis}/${user.id.replace(/[^a-zA-Z0-9_-]/g, '_')}/`;
+
+  if (!cleanKey || !cleanStored || !cleanKey.startsWith(expectedPrefix)) {
+    return res.status(400).json({ error: 'Invalid storage key or filename ownership.' });
+  }
+
+  const head = await headObjectInS3(cleanKey);
+  if (!head.exists) {
+    return res.status(404).json({ error: 'Uploaded object not found in private S3 bucket.' });
+  }
+
+  const cfg = getS3Config()!;
+  const nowIso = new Date().toISOString();
+  const asset = await db.registerMediaAsset({
+    id: `media_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+    ownerId: user.id,
+    originalFilename: String(originalFilename || cleanStored),
+    storedFilename: cleanStored,
+    url: `/uploads/${cleanStored}`,
+    storageKey: cleanKey,
+    bucket: cfg.bucket,
+    visibility: vis,
+    conversationId: conversationId ? String(conversationId) : undefined,
+    mimeType: String(mimeType || head.contentType || 'application/octet-stream'),
+    sizeBytes: Number(head.contentLength || 0),
+    sha256: head.etag || '',
+    storageProvider: 'supabase_s3',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  });
+
+  res.status(201).json({
+    id: asset.id,
+    url: asset.url,
+    filename: asset.originalFilename,
+    storedFilename: asset.storedFilename,
+    size: asset.sizeBytes,
+    mimeType: asset.mimeType,
+    visibility: asset.visibility,
+    storageProvider: 'supabase_s3',
+  });
+}));
+
+app.get('/api/media/:idOrFilename/signed-url', ah(async (req: Request, res: Response) => {
+  const raw = decodeURIComponent(String(req.params.idOrFilename || '').trim());
+  const asset = await db.getMediaAsset(raw);
+  if (!asset) {
+    return res.status(404).json({ error: 'Media asset not found.' });
+  }
+  const viewer = getReqUser(req);
+  const access = await db.canUserAccessMediaAsset(asset, viewer?.id, viewer?.role);
+  if (!access.allowed) {
+    return res.status(access.statusCode).json({ error: access.reason || 'Forbidden' });
+  }
+
+  const expiresIn = Math.max(60, Math.min(3600, parseInt(String(req.query.expiresIn || '900'), 10) || 900));
+  if ((asset.storageProvider === 'supabase_s3' || asset.storageKey) && isS3Configured() && asset.storageKey) {
+    const signedUrl = await createSignedReadUrl(asset.storageKey, expiresIn, asset.bucket);
+    return res.json({ signedUrl, expiresInSeconds: expiresIn, visibility: asset.visibility || 'public' });
+  }
+
+  res.json({ signedUrl: asset.url, expiresInSeconds: 0, visibility: asset.visibility || 'public' });
+}));
+
+app.get('/api/media/mine', ah(async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  res.json({ assets: await db.getUserMediaAssets(user.id) });
+}));
+
+app.delete('/api/media/:idOrFilename', ah(async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const result = await db.deleteOwnedMediaAsset(req.params.idOrFilename, user.id, user.role);
   if (!result.ok || !result.asset) {
     return res.status(result.statusCode).json({ error: result.error });
+  }
+  if (result.asset.storageKey && isS3Configured()) {
+    try {
+      await deleteObjectFromS3(result.asset.storageKey, result.asset.bucket);
+    } catch {
+      // Ignore S3 cleanup error if object already deleted
+    }
   }
   const diskPath = path.join(UPLOADS_DIR, path.basename(result.asset.storedFilename));
   if (fs.existsSync(diskPath)) {
@@ -3141,14 +3629,14 @@ app.delete('/api/media/:idOrFilename', (req: Request, res: Response) => {
     }
   }
   res.json({ success: true, deletedId: result.asset.id, storedFilename: result.asset.storedFilename });
-});
+}));
 
 // ==========================================
 // MOTHERLAND CORE SOCIAL API
 // ==========================================
 
 // Current User & Auth Endpoints
-app.post('/api/auth/register', registerRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/register', registerRateLimiter, ah(async (req: Request, res: Response) => {
   const fullName = (req.body.fullName || req.body.displayName || '').trim();
   const phoneNumber = (req.body.phoneNumber || req.body.phone || '').trim();
   const {
@@ -3184,17 +3672,17 @@ app.post('/api/auth/register', registerRateLimiter, (req: Request, res: Response
     return res.status(400).json({ error: 'Date of Birth is required' });
   }
 
-  const existingUser = db.findUserByEmailOrUsername(email) || db.findUserByEmailOrUsername(cleanUsername);
+  const existingUser = (await db.findUserByEmailOrUsername(email)) || (await db.findUserByEmailOrUsername(cleanUsername));
   if (existingUser) {
     return res.status(400).json({ error: 'An account with this email or username already exists' });
   }
-  if (phoneNumber && String(phoneNumber).trim() && db.findUserByPhone(String(phoneNumber))) {
+  if (phoneNumber && String(phoneNumber).trim() && (await db.findUserByPhone(String(phoneNumber)))) {
     return res.status(400).json({ error: 'An account with this phone number already exists' });
   }
 
   const { hash, salt, iterations } = hashPassword(password);
   const newId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const isFirstUser = db.getAllUsers().length === 0;
+  const isFirstUser = (await db.getAllUsers()).length === 0;
 
   const newUserAccount: UserAccount = {
     id: newId,
@@ -3232,13 +3720,13 @@ app.post('/api/auth/register', registerRateLimiter, (req: Request, res: Response
     updatedAt: new Date().toISOString(),
   };
 
-  db.createUser(newUserAccount);
-  const session = db.createSession(newId, req.headers['user-agent'], {
+  await db.createUser(newUserAccount);
+  const session = await db.createSession(newId, req.headers['user-agent'], {
     ipAddress: req.ip,
     authMethod: 'register',
   });
   setAuthCookie(res, req, session.token);
-  const publicProfile = db.toPublicProfile(newUserAccount, newId, getOnlineUserIds());
+  const publicProfile = await db.toPublicProfile(newUserAccount, newId, await getOnlineUserIds());
 
   res.status(201).json({
     token: session.token,
@@ -3246,15 +3734,15 @@ app.post('/api/auth/register', registerRateLimiter, (req: Request, res: Response
     user: publicProfile,
     message: 'Account created successfully',
   });
-});
+}));
 
-app.post('/api/auth/login', loginRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/login', loginRateLimiter, ah(async (req: Request, res: Response) => {
   const { identifier, password } = req.body;
   if (!identifier || !password) {
     return res.status(400).json({ error: 'Username/Email/Phone and password are required' });
   }
 
-  const user = db.findUserByEmailOrUsername(identifier);
+  const user = await db.findUserByEmailOrUsername(identifier);
   if (!user) {
     return res.status(401).json({ error: 'Invalid credentials. User not found.' });
   }
@@ -3267,19 +3755,19 @@ app.post('/api/auth/login', loginRateLimiter, (req: Request, res: Response) => {
   // Transparently upgrade legacy 1000-iteration PBKDF2 hash to 120,000 iterations without changing user password
   if (needsPasswordUpgrade(user)) {
     const upgraded = hashPassword(password);
-    db.updateUser(user.id, {
+    await db.updateUser(user.id, {
       passwordHash: upgraded.hash,
       passwordSalt: upgraded.salt,
       passwordIterations: upgraded.iterations,
     });
   }
 
-  const session = db.createSession(user.id, req.headers['user-agent'], {
+  const session = await db.createSession(user.id, req.headers['user-agent'], {
     ipAddress: req.ip,
     authMethod: 'password',
   });
   setAuthCookie(res, req, session.token);
-  const publicProfile = db.toPublicProfile(user, user.id, getOnlineUserIds());
+  const publicProfile = await db.toPublicProfile(user, user.id, await getOnlineUserIds());
 
   res.json({
     token: session.token,
@@ -3287,29 +3775,29 @@ app.post('/api/auth/login', loginRateLimiter, (req: Request, res: Response) => {
     user: publicProfile,
     message: 'Login successful',
   });
-});
+}));
 
-app.post('/api/auth/logout', (req: Request, res: Response) => {
+app.post('/api/auth/logout', ah(async (req: Request, res: Response) => {
   const token = (req as any).sessionToken;
   if (token) {
-    db.deleteSession(token);
+    await db.deleteSession(token);
   }
   clearAuthCookie(res, req);
   res.json({ success: true, message: 'Logged out successfully' });
-});
+}));
 
-app.get('/api/auth/sessions', (req: Request, res: Response) => {
+app.get('/api/auth/sessions', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const currentToken = (req as any).sessionToken as string | undefined;
-  res.json({ sessions: db.getUserSessions(user.id, currentToken) });
-});
+  res.json({ sessions: await db.getUserSessions(user.id, currentToken) });
+}));
 
-app.delete('/api/auth/sessions/:sessionId', (req: Request, res: Response) => {
+app.delete('/api/auth/sessions/:sessionId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const currentSessionId = (req as any).sessionId as string | undefined;
-  const result = db.revokeSessionById(user.id, req.params.sessionId);
+  const result = await db.revokeSessionById(user.id, req.params.sessionId);
   if (!result.ok) {
     return res.status(result.statusCode).json({ error: result.error });
   }
@@ -3317,27 +3805,27 @@ app.delete('/api/auth/sessions/:sessionId', (req: Request, res: Response) => {
     clearAuthCookie(res, req);
   }
   res.json({ success: true, revokedSessionId: req.params.sessionId });
-});
+}));
 
-app.post('/api/auth/logout-all', (req: Request, res: Response) => {
+app.post('/api/auth/logout-all', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const keepCurrent = Boolean(req.body?.keepCurrent);
   const currentToken = (req as any).sessionToken as string | undefined;
   if (keepCurrent && currentToken) {
-    const removedCount = db.deleteUserSessionsExcept(user.id, currentToken);
+    const removedCount = await db.deleteUserSessionsExcept(user.id, currentToken);
     return res.json({ success: true, removedCount, keptCurrent: true, message: 'Logged out of all other devices.' });
   }
-  db.deleteUserSessions(user.id);
+  await db.deleteUserSessions(user.id);
   clearAuthCookie(res, req);
   res.json({ success: true, keptCurrent: false, message: 'Logged out from all devices.' });
-});
+}));
 
-app.get('/api/auth/me', (req: Request, res: Response) => {
+app.get('/api/auth/me', ah(async (req: Request, res: Response) => {
   const user = getReqUser(req);
   if (user) {
     return res.json({
-      user: db.toPublicProfile(user, user.id, getOnlineUserIds()),
+      user: await db.toPublicProfile(user, user.id, await getOnlineUserIds()),
       sessionId: (req as any).sessionId,
       isGuest: false,
       sessionExpired: false,
@@ -3348,10 +3836,10 @@ app.get('/api/auth/me', (req: Request, res: Response) => {
     isGuest: true,
     sessionExpired: Boolean((req as any).hadAuthToken),
   });
-});
+}));
 
 // Verify Google Access Token directly against Google UserInfo + optional YouTube Channel link
-app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res: Response) => {
+app.post('/api/auth/google', sensitiveAuthRateLimiter, ah(async (req: Request, res: Response) => {
   const accessToken = String(req.body?.accessToken || extractHeaderGoogleToken(req) || '').trim();
   if (!accessToken || accessToken.length < 16) {
     return res.status(400).json({ error: 'Valid Google accessToken is required' });
@@ -3370,7 +3858,7 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
       return res.status(400).json({ error: 'Google account did not provide a verified email address' });
     }
 
-    let user = db.findUserByEmailOrUsername(verifiedEmail);
+    let user = await db.findUserByEmailOrUsername(verifiedEmail);
     const nowIso = new Date().toISOString();
     if (!user) {
       const baseHandle = verifiedEmail
@@ -3380,12 +3868,12 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
         .slice(0, 18) || 'creator';
       let uniqueUsername = baseHandle;
       let suffix = 1;
-      while (db.findUserByEmailOrUsername(uniqueUsername)) {
+      while (await db.findUserByEmailOrUsername(uniqueUsername)) {
         uniqueUsername = `${baseHandle.slice(0, 14)}_${suffix++}`;
       }
       const { hash, salt, iterations } = hashPassword(crypto.randomBytes(24).toString('hex'));
       const newId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      const isFirstUser = db.getAllUsers().length === 0;
+      const isFirstUser = (await db.getAllUsers()).length === 0;
       user = {
         id: newId,
         username: uniqueUsername,
@@ -3414,7 +3902,7 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
         createdAt: nowIso,
         updatedAt: nowIso,
       };
-      db.createUser(user);
+      await db.createUser(user);
     }
 
     // Best-effort check for authenticated user's YouTube Channel
@@ -3446,7 +3934,7 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
             connectedAt: nowIso,
             updatedAt: nowIso,
           };
-          db.setYouTubeOAuth(user.id, record);
+          await db.setYouTubeOAuth(user.id, record);
           linkedChannel = {
             id: record.channelId,
             title: record.channelTitle,
@@ -3460,12 +3948,12 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
       // Account might not have a YouTube channel yet — still sign in cleanly
     }
 
-    const session = db.createSession(user.id, req.headers['user-agent'], {
+    const session = await db.createSession(user.id, req.headers['user-agent'], {
       ipAddress: req.ip,
       authMethod: 'google',
     });
     setAuthCookie(res, req, session.token);
-    const publicProfile = db.toPublicProfile(user, user.id, getOnlineUserIds());
+    const publicProfile = await db.toPublicProfile(user, user.id, await getOnlineUserIds());
 
     res.json({
       token: session.token,
@@ -3480,12 +3968,13 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, async (req: Request, res:
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to verify Google authentication.' });
   }
-});
+}));
 
-app.post('/api/auth/disconnect-youtube', async (req: Request, res: Response) => {
+app.post('/api/auth/disconnect-youtube', ah(async (req: Request, res: Response) => {
   const user = getReqUser(req);
   const accessToken = String(req.body?.accessToken || extractHeaderGoogleToken(req) || '').trim();
-  const targetToken = accessToken || (user ? db.getYouTubeOAuth(user.id)?.accessToken : '') || '';
+  const oauthRec = user ? await db.getYouTubeOAuth(user.id) : undefined;
+  const targetToken = accessToken || oauthRec?.accessToken || '';
   if (targetToken) {
     try {
       await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(targetToken)}`, {
@@ -3496,18 +3985,18 @@ app.post('/api/auth/disconnect-youtube', async (req: Request, res: Response) => 
     }
   }
   if (user) {
-    db.deleteYouTubeOAuth(user.id);
+    await db.deleteYouTubeOAuth(user.id);
   }
   res.json({ success: true, connected: false, message: 'YouTube permissions disconnected. MOTHERLAND profile preserved.' });
-});
+}));
 
-app.post('/api/auth/send-otp', otpRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/send-otp', otpRateLimiter, ah(async (req: Request, res: Response) => {
   const { identifier, type } = req.body;
   if (!identifier) {
     return res.status(400).json({ error: 'Identifier (phone or email) is required' });
   }
   const code = String(crypto.randomInt(100000, 1000000));
-  db.setOtp(identifier, code, type || 'register');
+  await db.setOtp(identifier, code, type || 'register');
 
   const payload: any = {
     success: true,
@@ -3517,31 +4006,31 @@ app.post('/api/auth/send-otp', otpRateLimiter, (req: Request, res: Response) => 
     payload.debugOtp = code;
   }
   res.json(payload);
-});
+}));
 
-app.post('/api/auth/verify-otp', otpRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/verify-otp', otpRateLimiter, ah(async (req: Request, res: Response) => {
   const { identifier, code, type } = req.body;
   if (!identifier || !code) {
     return res.status(400).json({ error: 'Identifier and OTP code are required' });
   }
-  const isValid = db.verifyOtp(identifier, code, type || 'register');
+  const isValid = await db.verifyOtp(identifier, code, type || 'register');
   if (!isValid) {
     return res.status(400).json({ error: 'Invalid or expired OTP code' });
   }
   res.json({ success: true, message: 'OTP verified successfully' });
-});
+}));
 
-app.post('/api/auth/forgot-password', otpRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/forgot-password', otpRateLimiter, ah(async (req: Request, res: Response) => {
   const { identifier } = req.body;
   if (!identifier) {
     return res.status(400).json({ error: 'Identifier is required' });
   }
-  const user = db.findUserByEmailOrUsername(identifier);
+  const user = await db.findUserByEmailOrUsername(identifier);
   if (!user) {
     return res.status(404).json({ error: 'No account found matching this identifier' });
   }
   const code = String(crypto.randomInt(100000, 1000000));
-  db.setOtp(identifier, code, 'forgot_password');
+  await db.setOtp(identifier, code, 'forgot_password');
 
   const payload: any = {
     success: true,
@@ -3551,9 +4040,9 @@ app.post('/api/auth/forgot-password', otpRateLimiter, (req: Request, res: Respon
     payload.debugOtp = code;
   }
   res.json(payload);
-});
+}));
 
-app.post('/api/auth/reset-password', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/reset-password', sensitiveAuthRateLimiter, ah(async (req: Request, res: Response) => {
   const { identifier, code, newPassword } = req.body;
   if (!identifier || !code || !newPassword) {
     return res.status(400).json({ error: 'Identifier, code, and new password are required' });
@@ -3561,22 +4050,22 @@ app.post('/api/auth/reset-password', sensitiveAuthRateLimiter, (req: Request, re
   if (String(newPassword).length < 6) {
     return res.status(400).json({ error: 'New password must be at least 6 characters' });
   }
-  const isValid = db.verifyOtp(identifier, code, 'forgot_password');
+  const isValid = await db.verifyOtp(identifier, code, 'forgot_password');
   if (!isValid) {
     return res.status(400).json({ error: 'Invalid or expired reset code' });
   }
-  const user = db.findUserByEmailOrUsername(identifier);
+  const user = await db.findUserByEmailOrUsername(identifier);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
   const { hash, salt, iterations } = hashPassword(newPassword);
-  db.updateUser(user.id, { passwordHash: hash, passwordSalt: salt, passwordIterations: iterations });
-  db.deleteUserSessions(user.id);
+  await db.updateUser(user.id, { passwordHash: hash, passwordSalt: salt, passwordIterations: iterations });
+  await db.deleteUserSessions(user.id);
 
   res.json({ success: true, message: 'Password reset successfully. Please log in with your new password.' });
-});
+}));
 
-app.post('/api/auth/claim-owner', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/claim-owner', sensitiveAuthRateLimiter, ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
 
@@ -3590,9 +4079,9 @@ app.post('/api/auth/claim-owner', sensitiveAuthRateLimiter, (req: Request, res: 
     return res.status(403).json({ error: 'Invalid Owner Authorization Secret' });
   }
 
-  db.updateUser(user.id, { role: 'owner', isVerified: true });
-  const updatedUser = db.findUserById(user.id)!;
-  const session = db.createSession(updatedUser.id, req.headers['user-agent'], {
+  await db.updateUser(user.id, { role: 'owner', isVerified: true });
+  const updatedUser = (await db.findUserById(user.id))!;
+  const session = await db.createSession(updatedUser.id, req.headers['user-agent'], {
     ipAddress: req.ip,
     authMethod: 'password',
   });
@@ -3602,17 +4091,17 @@ app.post('/api/auth/claim-owner', sensitiveAuthRateLimiter, (req: Request, res: 
     success: true,
     token: session.token,
     sessionId: session.id,
-    user: db.toPublicProfile(updatedUser, user.id),
+    user: await db.toPublicProfile(updatedUser, user.id, await getOnlineUserIds()),
     message: 'Official FOUNDER & OWNER privileges activated successfully!',
   });
-});
+}));
 
-app.post('/api/auth/switch-account', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
+app.post('/api/auth/switch-account', sensitiveAuthRateLimiter, ah(async (req: Request, res: Response) => {
   const { userId, password } = req.body;
   if (!userId || !password) {
     return res.status(400).json({ error: 'Target userId and password are required to switch accounts' });
   }
-  const targetUser = db.findUserById(userId);
+  const targetUser = await db.findUserById(userId);
   if (!targetUser) {
     return res.status(404).json({ error: 'Target user account not found' });
   }
@@ -3621,13 +4110,13 @@ app.post('/api/auth/switch-account', sensitiveAuthRateLimiter, (req: Request, re
   }
   if (needsPasswordUpgrade(targetUser)) {
     const upgraded = hashPassword(String(password));
-    db.updateUser(targetUser.id, {
+    await db.updateUser(targetUser.id, {
       passwordHash: upgraded.hash,
       passwordSalt: upgraded.salt,
       passwordIterations: upgraded.iterations,
     });
   }
-  const session = db.createSession(targetUser.id, req.headers['user-agent'], {
+  const session = await db.createSession(targetUser.id, req.headers['user-agent'], {
     ipAddress: req.ip,
     authMethod: 'switch',
   });
@@ -3635,13 +4124,13 @@ app.post('/api/auth/switch-account', sensitiveAuthRateLimiter, (req: Request, re
   res.json({
     token: session.token,
     sessionId: session.id,
-    user: db.toPublicProfile(targetUser, targetUser.id),
+    user: await db.toPublicProfile(targetUser, targetUser.id, await getOnlineUserIds()),
     message: `Switched account to ${targetUser.displayName}`,
   });
-});
+}));
 
 // Explicit Account-Owner-Initiated Deletion (ONLY authorized self-deletion path)
-app.delete('/api/users/me', sensitiveAuthRateLimiter, (req: Request, res: Response) => {
+app.delete('/api/users/me', sensitiveAuthRateLimiter, ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { password, confirmUsername } = req.body || {};
@@ -3654,15 +4143,15 @@ app.delete('/api/users/me', sensitiveAuthRateLimiter, (req: Request, res: Respon
     return res.status(403).json({ error: 'Username confirmation is required to delete your Google-linked account.' });
   }
 
-  const deleted = db.deleteUserAccount(user.id);
+  const deleted = await db.deleteUserAccount(user.id);
   if (!deleted.ok) {
     return res.status(404).json({ error: deleted.error || 'Account not found.' });
   }
   clearAuthCookie(res, req);
   res.json({ success: true, message: 'Your MOTHERLAND account has been permanently deleted.' });
-});
+}));
 
-app.put('/api/users/profile', (req: Request, res: Response) => {
+app.put('/api/users/profile', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const {
@@ -3715,11 +4204,11 @@ app.put('/api/users/profile', (req: Request, res: Response) => {
   if (isPrivate !== undefined) updates.isPrivate = isPrivate;
   if (twoFactorEnabled !== undefined) updates.twoFactorEnabled = twoFactorEnabled;
 
-  const updated = db.updateUser(user.id, updates);
-  res.json({ success: true, user: db.toPublicProfile(updated || user, user.id, getOnlineUserIds()) });
-});
+  const updated = await db.updateUser(user.id, updates);
+  res.json({ success: true, user: await db.toPublicProfile(updated || user, user.id, await getOnlineUserIds()) });
+}));
 
-app.put('/api/users/preferences', (req: Request, res: Response) => {
+app.put('/api/users/preferences', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { privacy, notificationPrefs, translationPrefs, dataSaver } = req.body || {};
@@ -3748,9 +4237,9 @@ app.put('/api/users/preferences', (req: Request, res: Response) => {
   if (typeof dataSaver === 'boolean') {
     updates.dataSaver = dataSaver;
   }
-  const updated = db.updateUser(user.id, updates);
-  res.json({ success: true, user: db.toPublicProfile(updated || user, user.id, getOnlineUserIds()) });
-});
+  const updated = await db.updateUser(user.id, updates);
+  res.json({ success: true, user: await db.toPublicProfile(updated || user, user.id, await getOnlineUserIds()) });
+}));
 
 // ==========================================
 // AUTOMATIC TRANSLATOR ENGINE (DEFAULT: BENGALI 'bn')
@@ -3916,73 +4405,83 @@ app.post('/api/translate/batch', async (req: Request, res: Response) => {
   res.json({ results, targetLang: tl });
 });
 
-app.get('/api/users', (req: Request, res: Response) => {
+app.get('/api/users', ah(async (req: Request, res: Response) => {
   const query = ((req.query.q as string) || '').trim().toLowerCase();
-  const allUsers = db.getAllUsers();
+  const allUsers = await db.getAllUsers();
   const currentUserId = (req as any).userId as string | undefined;
-  const onlineIds = getOnlineUserIds();
+  const onlineIds = await getOnlineUserIds();
 
-  const filtered = allUsers
-    .filter((u) => {
-      if (currentUserId && db.isBlocked(currentUserId, u.id)) return false;
-      if (!query) return true;
-      return (
+  const matchingUsers: UserAccount[] = [];
+  for (const u of allUsers) {
+    if (query) {
+      const hit =
         u.displayName.toLowerCase().includes(query) ||
         u.username.toLowerCase().includes(query) ||
-        (u.bio || '').toLowerCase().includes(query)
-      );
-    })
-    .map((u) => db.toPublicProfile(u, currentUserId, onlineIds));
+        (u.bio || '').toLowerCase().includes(query);
+      if (!hit) continue;
+    }
+    if (currentUserId && (await db.isBlocked(currentUserId, u.id))) continue;
+    matchingUsers.push(u);
+  }
+
+  const filtered = await Promise.all(
+    matchingUsers.map((u) => db.toPublicProfile(u, currentUserId, onlineIds))
+  );
 
   res.json({ users: filtered });
-});
+}));
 
-app.get('/api/users/:id/posts', (req: Request, res: Response) => {
-  const targetUser = db.findUserById(req.params.id);
+app.get('/api/users/:id/posts', ah(async (req: Request, res: Response) => {
+  const targetUser = await db.findUserById(req.params.id);
   if (!targetUser) {
     return res.status(404).json({ error: 'User not found' });
   }
   const currentUserId = (req as any).userId as string | undefined;
-  if (currentUserId && db.isBlocked(currentUserId, targetUser.id)) {
+  if (currentUserId && (await db.isBlocked(currentUserId, targetUser.id))) {
     return res.status(403).json({ error: 'Profile unavailable.' });
   }
 
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(30, Math.max(1, parseInt((req.query.pageSize as string) || '12', 10)));
 
-  const visiblePosts = db
-    .getAllPosts()
-    .filter((p) => p.author.id === targetUser.id && db.canViewerSeePost(currentUserId, p))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const authorPosts = (await db.getAllPosts()).filter((p) => p.author.id === targetUser.id);
+  const visiblePosts: Post[] = [];
+  for (const p of authorPosts) {
+    if (await db.canViewerSeePost(currentUserId, p)) {
+      visiblePosts.push(p);
+    }
+  }
+  visiblePosts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const start = (page - 1) * pageSize;
   const slice = visiblePosts.slice(start, start + pageSize);
 
   res.json({
-    posts: slice.map((p) => db.hydratePostForUser(p, currentUserId)),
+    posts: await db.hydratePostsForUserBatch(slice, currentUserId),
     total: visiblePosts.length,
     page,
     hasMore: start + slice.length < visiblePosts.length,
   });
-});
+}));
 
-app.get('/api/users/:id', (req: Request, res: Response) => {
-  const targetUser = db.findUserById(req.params.id);
+app.get('/api/users/:id', ah(async (req: Request, res: Response) => {
+  const targetUser = await db.findUserById(req.params.id);
   if (!targetUser) {
     return res.status(404).json({ error: 'User not found' });
   }
 
   const currentUserId = (req as any).userId as string | undefined;
-  if (currentUserId && db.isBlocked(currentUserId, targetUser.id)) {
+  if (currentUserId && (await db.isBlocked(currentUserId, targetUser.id))) {
     return res.status(404).json({ error: 'User not found' });
   }
 
   const isSelf = currentUserId === targetUser.id;
-  const isFriend = currentUserId ? db.isFriend(currentUserId, targetUser.id) : false;
-  const isFollowing = currentUserId ? db.isFollowing(currentUserId, targetUser.id) : false;
+  const isFriend = currentUserId ? await db.isFriend(currentUserId, targetUser.id) : false;
+  const isFollowing = currentUserId ? await db.isFollowing(currentUserId, targetUser.id) : false;
+  const onlineIds = await getOnlineUserIds();
 
   if (!isSelf && targetUser.privacy?.profileVisibility === 'private') {
-    const baseProfile = db.toPublicProfile(targetUser, currentUserId, getOnlineUserIds());
+    const baseProfile = await db.toPublicProfile(targetUser, currentUserId, onlineIds);
     return res.json({
       user: {
         id: baseProfile.id,
@@ -4015,21 +4514,25 @@ app.get('/api/users/:id', (req: Request, res: Response) => {
     });
   }
 
-  const userPosts = db
-    .getAllPosts()
-    .filter((p) => p.author.id === targetUser.id && db.canViewerSeePost(currentUserId, p))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const authorPosts = (await db.getAllPosts()).filter((p) => p.author.id === targetUser.id);
+  const userPosts: Post[] = [];
+  for (const p of authorPosts) {
+    if (await db.canViewerSeePost(currentUserId, p)) {
+      userPosts.push(p);
+    }
+  }
+  userPosts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   res.json({
-    user: db.toPublicProfile(targetUser, currentUserId, getOnlineUserIds()),
-    posts: userPosts.slice(0, 12).map((p) => db.hydratePostForUser(p, currentUserId)),
+    user: await db.toPublicProfile(targetUser, currentUserId, onlineIds),
+    posts: await db.hydratePostsForUserBatch(userPosts.slice(0, 12), currentUserId),
     hasMorePosts: userPosts.length > 12,
     totalPosts: userPosts.length,
     isFriend,
     isFollowing,
     isCurrentUser: isSelf,
   });
-});
+}));
 
 
 function mapYouTubeRawItemToUnifiedPost(item: any): Post {
@@ -4078,7 +4581,7 @@ async function getUnifiedFeedYouTubePosts(
   rawYtCursor = '',
   userId?: string
 ): Promise<{ posts: Post[]; nextYtCursor: string | null; quotaExceeded: boolean; errorMessage?: string }> {
-  const queryList = buildPersonalizedDiscoveryQueries(CATEGORY_DISCOVERY_QUERIES.all, userId, `${seed || 'home'}_unified`, false);
+  const queryList = await buildPersonalizedDiscoveryQueries(CATEGORY_DISCOVERY_QUERIES.all, userId, `${seed || 'home'}_unified`, false);
 
   let cursor: FeedCursor = decodeFeedCursor(rawYtCursor) || {
     mode: 'api_search',
@@ -4296,36 +4799,39 @@ async function getUnifiedFeedYouTubePosts(
 }
 
 // 2. Posts & Unified Feed (Isolated Per-User Reactions, Privacy Filtering, Fresh Seed Rotation, Cursor Pagination & 7-Day Suppression)
-app.get('/api/posts', async (req: Request, res: Response) => {
+app.get('/api/posts', ah(async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
   const source = req.query.source as string;
   const feedType = (req.query.feedType as string) || 'all'; // 'all', 'for_you', 'motherland', 'saved'
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(30, Math.max(1, parseInt((req.query.pageSize as string) || '10', 10)));
   const rawYtCursor = String(req.query.ytCursor || '').trim();
-  const suppressedIds = getSuppressedSetFromReq(req);
+  const suppressedIds = await getSuppressedSetFromReq(req);
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
 
-  const rawPosts = db.getAllPosts();
+  const rawPosts = await db.getAllPosts();
 
   if (feedType === 'saved') {
     if (!currentUserId) {
       return res.json({ posts: [], total: 0, page, hasMore: false, nextYtCursor: null });
     }
-    const savedIds = new Set(db.getUserSavedPostIds(currentUserId));
-    const savedPosts = rawPosts
-      .filter((p) => savedIds.has(p.id) && db.canViewerSeePost(currentUserId, p))
-      .map((p) => db.hydratePostForUser(p, currentUserId));
+    const savedIds = new Set(await db.getUserSavedPostIds(currentUserId));
+    const visibleSaved: Post[] = [];
+    for (const p of rawPosts) {
+      if (savedIds.has(p.id) && (await db.canViewerSeePost(currentUserId, p))) {
+        visibleSaved.push(p);
+      }
+    }
+    const savedPosts = await db.hydratePostsForUserBatch(visibleSaved, currentUserId);
     return res.json({ posts: savedPosts, total: savedPosts.length, page, hasMore: false, nextYtCursor: null });
   }
 
   if (feedType === 'for_you') {
-    const scoredAll = db
-      .getScoredForYouPosts(currentUserId)
+    const scoredAll = (await db.getScoredForYouPosts(currentUserId))
       .filter((p) => !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId)))));
     const start = (page - 1) * pageSize;
-    const mlSlice = scoredAll.slice(start, start + pageSize).map((p) => db.hydratePostForUser(p, currentUserId));
+    const mlSlice = await db.hydratePostsForUserBatch(scoredAll.slice(start, start + pageSize), currentUserId);
     const ytRes =
       mlSlice.length < pageSize
         ? await getUnifiedFeedYouTubePosts(page, pageSize - mlSlice.length, suppressedIds, seed, excludeIds, rawYtCursor, currentUserId)
@@ -4343,11 +4849,15 @@ app.get('/api/posts', async (req: Request, res: Response) => {
   }
 
   if (feedType === 'motherland' || source === 'motherland') {
-    const motherlandPosts = rawPosts
-      .filter((p) => p.source === 'motherland' && db.canViewerSeePost(currentUserId, p))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const motherlandPosts: Post[] = [];
+    for (const p of rawPosts) {
+      if (p.source === 'motherland' && (await db.canViewerSeePost(currentUserId, p))) {
+        motherlandPosts.push(p);
+      }
+    }
+    motherlandPosts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     const start = (page - 1) * pageSize;
-    const slice = motherlandPosts.slice(start, start + pageSize).map((p) => db.hydratePostForUser(p, currentUserId));
+    const slice = await db.hydratePostsForUserBatch(motherlandPosts.slice(start, start + pageSize), currentUserId);
     return res.json({
       posts: slice,
       total: motherlandPosts.length,
@@ -4359,20 +4869,24 @@ app.get('/api/posts', async (req: Request, res: Response) => {
 
   // Unified Feed: Visible Motherland posts (fairly sorted/mixed) + Continuous Live YouTube Video Posts
   try {
-    const visibleMotherland = rawPosts
-      .filter(
-        (p) =>
-          p.source === 'motherland' &&
-          db.canViewerSeePost(currentUserId, p) &&
-          !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId))))
-      )
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const visibleMotherland: Post[] = [];
+    for (const p of rawPosts) {
+      if (
+        p.source === 'motherland' &&
+        !(p.mediaType === 'video' && (suppressedIds.has(p.id) || (p.externalId && suppressedIds.has(p.externalId)))) &&
+        (await db.canViewerSeePost(currentUserId, p))
+      ) {
+        visibleMotherland.push(p);
+      }
+    }
+    visibleMotherland.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const mlStart = (page - 1) * Math.max(2, Math.floor(pageSize / 2));
     const mlBatchSize = Math.max(2, Math.floor(pageSize / 2));
-    const hydratedMotherland = visibleMotherland
-      .slice(mlStart, mlStart + mlBatchSize)
-      .map((p) => db.hydratePostForUser(p, currentUserId));
+    const hydratedMotherland = await db.hydratePostsForUserBatch(
+      visibleMotherland.slice(mlStart, mlStart + mlBatchSize),
+      currentUserId
+    );
 
     const ytTargetCount = Math.max(4, pageSize - hydratedMotherland.length);
     const ytRes = await getUnifiedFeedYouTubePosts(page, ytTargetCount, suppressedIds, seed, excludeIds, rawYtCursor, currentUserId);
@@ -4418,9 +4932,13 @@ app.get('/api/posts', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Unified feed error:', err);
-    const fallback = rawPosts
-      .filter((p) => db.canViewerSeePost(currentUserId, p))
-      .map((p) => db.hydratePostForUser(p, currentUserId));
+    const visibleFallback: Post[] = [];
+    for (const p of rawPosts) {
+      if (await db.canViewerSeePost(currentUserId, p)) {
+        visibleFallback.push(p);
+      }
+    }
+    const fallback = await db.hydratePostsForUserBatch(visibleFallback, currentUserId);
     fallback.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     res.json({
       posts: fallback,
@@ -4431,10 +4949,10 @@ app.get('/api/posts', async (req: Request, res: Response) => {
       errorMessage: err?.message || 'Unable to load external YouTube posts right now.',
     });
   }
-});
+}));
 
 // Create Post (Assigned Strictly to Authenticated User)
-app.post('/api/posts', (req: Request, res: Response) => {
+app.post('/api/posts', ah(async (req: Request, res: Response) => {
   const author = requireAuth(req, res);
   if (!author) return;
   const { content, mediaType, mediaUrl, images, thumbnailUrl, mediaAspectRatio, hashtags, audience, platforms } = req.body;
@@ -4453,6 +4971,9 @@ app.post('/api/posts', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Post must contain text content or media' });
   }
 
+  const finalAudience: 'public' | 'friends' | 'only_me' =
+    audience === 'friends' || audience === 'only_me' ? audience : 'public';
+
   const newPost: Post = {
     id: `post_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     source: 'motherland',
@@ -4470,7 +4991,7 @@ app.post('/api/posts', (req: Request, res: Response) => {
     thumbnailUrl: safeThumbUrl,
     mediaAspectRatio: mediaAspectRatio || '16:9',
     hashtags: Array.isArray(hashtags) ? hashtags.map((h) => String(h).slice(0, 48)) : [],
-    audience: audience || 'public',
+    audience: finalAudience,
     createdAt: new Date().toISOString(),
     stats: {
       likes: 0,
@@ -4480,7 +5001,14 @@ app.post('/api/posts', (req: Request, res: Response) => {
     },
   };
 
-  db.addPost(newPost);
+  await db.addPost(newPost);
+
+  const mediaUrlsToSync = [primaryMediaUrl, safeThumbUrl, ...(cleanImages || [])].filter(
+    (u): u is string => Boolean(u)
+  );
+  if (mediaUrlsToSync.length > 0 && (finalAudience === 'friends' || finalAudience === 'only_me')) {
+    await db.syncMediaVisibilityForUrls(mediaUrlsToSync, author.id, 'private');
+  }
 
   const publishResults: any[] = [{ platform: 'motherland', status: 'Published' }];
   if (Array.isArray(platforms)) {
@@ -4503,23 +5031,23 @@ app.post('/api/posts', (req: Request, res: Response) => {
   }
 
   res.status(201).json({
-    post: db.hydratePostForUser(newPost, author.id),
+    post: await db.hydratePostForUser(newPost, author.id),
     publishResults,
   });
-});
+}));
 
 // Post Reactions (FIXED SHARED IDENTITY BUG: 1 Reaction per User per Post strictly recorded in db.reactions)
-app.post('/api/posts/:id/react', (req: Request, res: Response) => {
+app.post('/api/posts/:id/react', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { reaction } = req.body; // 'like' | 'love' | 'fire' | 'haha' | 'wow' | 'sad'
   const postId = req.params.id;
-  const post = db.getAllPosts().find((p) => p.id === postId);
-  if (post && !db.canViewerSeePost(user.id, post)) {
+  const post = await db.findPostById(postId);
+  if (post && !(await db.canViewerSeePost(user.id, post))) {
     return res.status(403).json({ error: 'Not authorized to react to this post' });
   }
 
-  const result = db.toggleReaction(postId, user.id, reaction || 'like');
+  const result = await db.toggleReaction(postId, user.id, reaction || 'like');
 
   // If reaction was added and author is someone else, create a notification + push WS
   if (result.isLiked && post && post.author.id !== user.id) {
@@ -4541,7 +5069,7 @@ app.post('/api/posts/:id/react', (req: Request, res: Response) => {
       isRead: false,
       createdAt: new Date().toISOString(),
     };
-    db.addNotification(notif);
+    await db.addNotification(notif);
     sendWsToUser(post.author.id, 'notification:new', notif);
   }
 
@@ -4552,20 +5080,20 @@ app.post('/api/posts/:id/react', (req: Request, res: Response) => {
       reaction: result.reaction,
     },
   });
-});
+}));
 
 // Post Comments
-app.get('/api/posts/:id/comments', (req: Request, res: Response) => {
+app.get('/api/posts/:id/comments', ah(async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
-  const post = db.getAllPosts().find((p) => p.id === req.params.id);
-  if (post && !db.canViewerSeePost(currentUserId, post)) {
+  const post = await db.findPostById(req.params.id);
+  if (post && !(await db.canViewerSeePost(currentUserId, post))) {
     return res.status(403).json({ error: 'Not authorized to view comments on this post' });
   }
-  const list = db.getComments(req.params.id, currentUserId);
+  const list = await db.getComments(req.params.id, currentUserId);
   res.json({ comments: list });
-});
+}));
 
-app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
+app.post('/api/posts/:id/comments', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { text, parentId } = req.body;
@@ -4574,11 +5102,11 @@ app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
   }
 
   const postId = req.params.id;
-  const post = db.getAllPosts().find((p) => p.id === postId);
+  const post = await db.findPostById(postId);
   if (!post) {
     return res.status(404).json({ error: 'Post not found' });
   }
-  if (!db.canViewerSeePost(user.id, post)) {
+  if (!(await db.canViewerSeePost(user.id, post))) {
     return res.status(403).json({ error: 'Not authorized to comment on this post' });
   }
 
@@ -4597,7 +5125,7 @@ app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
     isLiked: false,
   };
 
-  db.addComment(postId, newComment);
+  await db.addComment(postId, newComment);
 
   if (post.author.id !== user.id) {
     const notif = {
@@ -4618,64 +5146,64 @@ app.post('/api/posts/:id/comments', (req: Request, res: Response) => {
       isRead: false,
       createdAt: new Date().toISOString(),
     };
-    db.addNotification(notif);
+    await db.addNotification(notif);
     sendWsToUser(post.author.id, 'notification:new', notif);
   }
 
-  res.status(201).json({ comment: newComment, totalComments: db.getComments(postId, user.id).length });
-});
+  res.status(201).json({ comment: newComment, totalComments: (await db.getComments(postId, user.id)).length });
+}));
 
-app.patch('/api/posts/:postId/comments/:commentId', (req: Request, res: Response) => {
+app.patch('/api/posts/:postId/comments/:commentId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Comment text cannot be empty' });
-  const result = db.editComment(req.params.postId, req.params.commentId, user.id, user.role, text);
+  const result = await db.editComment(req.params.postId, req.params.commentId, user.id, user.role, text);
   if (!result.ok) return res.status(result.statusCode).json({ error: result.error });
   res.json({ comment: result.comment });
-});
+}));
 
-app.delete('/api/posts/:postId/comments/:commentId', (req: Request, res: Response) => {
+app.delete('/api/posts/:postId/comments/:commentId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.deleteComment(req.params.postId, req.params.commentId, user.id, user.role);
+  const result = await db.deleteComment(req.params.postId, req.params.commentId, user.id, user.role);
   if (!result.ok) return res.status(result.statusCode).json({ error: result.error });
   res.json({ success: true, totalComments: result.totalComments });
-});
+}));
 
-app.post('/api/posts/:postId/comments/:commentId/like', (req: Request, res: Response) => {
+app.post('/api/posts/:postId/comments/:commentId/like', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.toggleCommentLike(req.params.postId, req.params.commentId, user.id);
+  const result = await db.toggleCommentLike(req.params.postId, req.params.commentId, user.id);
   if (!result.ok) return res.status(404).json({ error: 'Comment not found' });
   res.json({ isLiked: result.isLiked, likesCount: result.likesCount, comment: result.comment });
-});
+}));
 
 // Save Post (Per-User Saved State)
-app.post('/api/posts/:id/save', (req: Request, res: Response) => {
+app.post('/api/posts/:id/save', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const postId = req.params.id;
-  const isSaved = db.toggleSavePost(postId, user.id);
+  const isSaved = await db.toggleSavePost(postId, user.id);
   res.json({ isSaved });
-});
+}));
 
 // Share Post to Feed
-app.post('/api/posts/:id/share', (req: Request, res: Response) => {
+app.post('/api/posts/:id/share', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const postId = req.params.id;
   const { caption } = req.body || {};
 
-  const original = db.getAllPosts().find((p) => p.id === postId);
+  const original = await db.findPostById(postId);
   if (!original) {
     return res.json({ success: true, shares: 1 });
   }
-  if (!db.canViewerSeePost(user.id, original)) {
+  if (!(await db.canViewerSeePost(user.id, original))) {
     return res.status(403).json({ error: 'Not authorized to share this post' });
   }
 
-  const sharesCount = db.incrementPostShare(postId);
+  const sharesCount = await db.incrementPostShare(postId);
   const sharedPost: Post = {
     id: `post_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     source: 'motherland',
@@ -4711,7 +5239,7 @@ app.post('/api/posts/:id/share', (req: Request, res: Response) => {
     },
   };
 
-  db.addPost(sharedPost);
+  await db.addPost(sharedPost);
 
   if (original.author.id !== user.id) {
     const notif = {
@@ -4732,30 +5260,40 @@ app.post('/api/posts/:id/share', (req: Request, res: Response) => {
       isRead: false,
       createdAt: new Date().toISOString(),
     };
-    db.addNotification(notif);
+    await db.addNotification(notif);
     sendWsToUser(original.author.id, 'notification:new', notif);
   }
 
   res.status(201).json({
     success: true,
     shares: sharesCount,
-    post: db.hydratePostForUser(sharedPost, user.id),
+    post: await db.hydratePostForUser(sharedPost, user.id),
   });
-});
+}));
 
 // Edit Post (Only Creator or Owner)
-app.patch('/api/posts/:id', (req: Request, res: Response) => {
+app.patch('/api/posts/:id', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.updatePost(req.params.id, user.id, user.role, req.body || {});
+  const result = await db.updatePost(req.params.id, user.id, user.role, req.body || {});
   if (!result.ok) {
     return res.status(result.statusCode).json({ error: result.error });
   }
+  if (result.post && req.body?.audience) {
+    const urls = [result.post.mediaUrl, result.post.thumbnailUrl, ...(result.post.images || [])].filter(
+      (u): u is string => Boolean(u)
+    );
+    if (urls.length > 0) {
+      const vis =
+        result.post.audience === 'friends' || result.post.audience === 'only_me' ? 'private' : 'public';
+      await db.syncMediaVisibilityForUrls(urls, result.post.author.id, vis);
+    }
+  }
   res.json({ post: result.post });
-});
+}));
 
 // Report Post
-app.post('/api/posts/:id/report', (req: Request, res: Response) => {
+app.post('/api/posts/:id/report', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const postId = req.params.id;
@@ -4763,8 +5301,8 @@ app.post('/api/posts/:id/report', (req: Request, res: Response) => {
   if (!reason || !String(reason).trim()) {
     return res.status(400).json({ error: 'Report reason is required' });
   }
-  const post = db.getAllPosts().find((p) => p.id === postId);
-  const report = db.addUserReport({
+  const post = await db.findPostById(postId);
+  const report = await db.addUserReport({
     id: `rep_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     reporterId: user.id,
     targetUserId: post?.author.id,
@@ -4773,14 +5311,14 @@ app.post('/api/posts/:id/report', (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
   });
   res.status(201).json({ success: true, report });
-});
+}));
 
 // Delete Post (Only Creator or Owner)
-app.delete('/api/posts/:id', (req: Request, res: Response) => {
+app.delete('/api/posts/:id', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const postId = req.params.id;
-  const post = db.getAllPosts().find((p) => p.id === postId);
+  const post = await db.findPostById(postId);
 
   if (!post) {
     return res.status(404).json({ error: 'Post not found' });
@@ -4790,33 +5328,33 @@ app.delete('/api/posts/:id', (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Unauthorized to delete this post' });
   }
 
-  db.deletePost(postId);
+  await db.deletePost(postId);
   res.json({ success: true, message: 'Post deleted successfully' });
-});
+}));
 
 // Stories System (Strict 24-Hour UTC Expiration — privacy-aware & server-UTC enforced)
-app.get('/api/stories', (req: Request, res: Response) => {
+app.get('/api/stories', ah(async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
-  const activeStories = db
-    .getActiveStories()
-    .filter((s) => {
-      if (currentUserId && db.isBlocked(currentUserId, s.userId)) return false;
-      if (currentUserId === s.userId) return true;
-      const authorAcc = db.findUserById(s.userId);
-      if (authorAcc?.privacy?.profileVisibility === 'private') return false;
+  const rawStories = await db.getActiveStories();
+  const activeStories: Story[] = [];
+  for (const s of rawStories) {
+    if (currentUserId && (await db.isBlocked(currentUserId, s.userId))) continue;
+    if (currentUserId !== s.userId) {
+      const authorAcc = await db.findUserById(s.userId);
+      if (authorAcc?.privacy?.profileVisibility === 'private') continue;
       if (authorAcc?.privacy?.profileVisibility === 'friends') {
-        return Boolean(currentUserId && db.isFriend(currentUserId, s.userId));
+        if (!currentUserId || !(await db.isFriend(currentUserId, s.userId))) continue;
       }
-      return true;
-    })
-    .map((s) => ({
+    }
+    activeStories.push({
       ...s,
       isOwn: currentUserId === s.userId,
-    }));
+    });
+  }
   res.json({ stories: activeStories });
-});
+}));
 
-app.post('/api/stories', (req: Request, res: Response) => {
+app.post('/api/stories', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { mediaUrl, mediaType, caption } = req.body;
@@ -4849,57 +5387,54 @@ app.post('/api/stories', (req: Request, res: Response) => {
     isOwn: true,
   };
 
-  const savedStory = db.addStory(newStory);
+  const savedStory = await db.addStory(newStory);
   res.status(201).json({ story: savedStory });
-});
+}));
 
-app.post('/api/stories/:id/view', (req: Request, res: Response) => {
+app.post('/api/stories/:id/view', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const storiesList = db.getActiveStories();
+  const storiesList = await db.getActiveStories();
   const story = storiesList.find((s) => s.id === req.params.id);
   if (!story) {
     return res.status(404).json({ error: 'Story not found or expired' });
   }
-  if (db.isBlocked(user.id, story.userId)) {
+  if (await db.isBlocked(user.id, story.userId)) {
     return res.status(403).json({ error: 'Not authorized' });
   }
-  story.isViewed = true;
-  story.viewersCount += 1;
-  db.save();
+  await db.recordStoryView(req.params.id);
   res.json({ success: true });
-});
+}));
 
-app.delete('/api/stories/:id', (req: Request, res: Response) => {
+app.delete('/api/stories/:id', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const story = db.getActiveStories().find((s) => s.id === req.params.id);
+  const story = (await db.getActiveStories()).find((s) => s.id === req.params.id);
   if (!story) {
     return res.status(404).json({ error: 'Story not found or not authorized' });
   }
   if (story.userId !== user.id && user.role !== 'owner') {
     return res.status(403).json({ error: 'Unauthorized to delete this story' });
   }
-  db.deleteStory(req.params.id);
+  await db.deleteStory(req.params.id);
   res.json({ success: true, message: 'Story deleted' });
-});
+}));
 
 // 4. Videos (Shorts <= 180s strictly, 16:9 Long Videos, 7-Day Watch Tracking, Saved Videos & Drafts)
-app.get('/api/videos/shorts', async (req: Request, res: Response) => {
+app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10));
   const pageSize = Math.min(20, Math.max(4, parseInt((req.query.pageSize as string) || '12', 10)));
   const rawToken = (req.query.pageToken as string) || '';
   const includeWatched = req.query.includeWatched === '1';
 
-  const allLocal = db
-    .getShortVideos()
+  const allLocal = (await db.getShortVideos())
     .filter(
       (s) =>
         s.id !== 'short_01' &&
         s.id !== 'short_02' &&
         (s.durationSeconds === undefined || (s.durationSeconds > 0 && s.durationSeconds <= 180))
     );
-  const suppressed = includeWatched ? new Set<string>() : getSuppressedSetFromReq(req);
+  const suppressed = includeWatched ? new Set<string>() : await getSuppressedSetFromReq(req);
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
 
@@ -4912,7 +5447,7 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
   const localStart = (page - 1) * pageSize;
   const localSlice = filteredLocal.slice(localStart, localStart + pageSize);
 
-  const shortsQueryPool = buildPersonalizedDiscoveryQueries(
+  const shortsQueryPool = await buildPersonalizedDiscoveryQueries(
     SHORTS_DISCOVERY_QUERIES,
     currentUserId,
     `${seed}_shorts`,
@@ -5180,9 +5715,9 @@ app.get('/api/videos/shorts', async (req: Request, res: Response) => {
     quotaExceeded,
     exhaustedReason,
   });
-});
+}));
 
-app.post('/api/videos/shorts', (req: Request, res: Response) => {
+app.post('/api/videos/shorts', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { videoUrl, thumbnailUrl, title, caption, hashtags, durationSeconds, aspectRatio } = req.body;
@@ -5223,13 +5758,13 @@ app.post('/api/videos/shorts', (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
   };
 
-  db.addShortVideo(newShort);
+  await db.addShortVideo(newShort);
   res.status(201).json({ short: newShort });
-});
+}));
 
-app.get('/api/videos/long', (req: Request, res: Response) => {
-  const all = db.getLongVideos();
-  const suppressed = getSuppressedSetFromReq(req);
+app.get('/api/videos/long', ah(async (req: Request, res: Response) => {
+  const all = await db.getLongVideos();
+  const suppressed = await getSuppressedSetFromReq(req);
   const seed = getSeedFromReq(req);
   const excludeIds = getExcludeSetFromReq(req);
   const visible =
@@ -5239,10 +5774,10 @@ app.get('/api/videos/long', (req: Request, res: Response) => {
   res.json({
     videos: prioritizeFreshItems(visible, excludeIds, `${seed}_long`),
   });
-});
+}));
 
 // MOTHERLAND-Native Video, Short & Post Deep-Link Resolver
-app.get('/api/videos/resolve/:videoId', async (req: Request, res: Response) => {
+app.get('/api/videos/resolve/:videoId', ah(async (req: Request, res: Response) => {
   const rawId = decodeURIComponent(String(req.params.videoId || '')).trim();
   const preferredType = String(req.query.type || '').trim(); // 'short' | 'video' | 'long' | 'post'
   if (!rawId) {
@@ -5253,16 +5788,15 @@ app.get('/api/videos/resolve/:videoId', async (req: Request, res: Response) => {
   const currentUserId = (req as any).userId as string | undefined;
 
   // 1. Check MOTHERLAND posts if requested or matching post_ ID
-  const matchedPost = db
-    .getAllPosts()
+  const matchedPost = (await db.getAllPosts())
     .find(
       (p) =>
         p.id === rawId ||
         p.externalId === rawId ||
         p.externalId === candidateYtId
     );
-  if (matchedPost && db.canViewerSeePost(currentUserId, matchedPost)) {
-    const hydrated = db.hydratePostForUser(matchedPost, currentUserId);
+  if (matchedPost && (await db.canViewerSeePost(currentUserId, matchedPost))) {
+    const hydrated = await db.hydratePostForUser(matchedPost, currentUserId);
     if (preferredType === 'post') {
       return res.json({ found: true, kind: 'post', post: hydrated });
     }
@@ -5298,8 +5832,7 @@ app.get('/api/videos/resolve/:videoId', async (req: Request, res: Response) => {
   }
 
   // 2. Check local MOTHERLAND ShortVideos first when short is preferred or ID matches
-  const matchedShort = db
-    .getShortVideos()
+  const matchedShort = (await db.getShortVideos())
     .find(
       (s) =>
         s.id === rawId ||
@@ -5311,8 +5844,7 @@ app.get('/api/videos/resolve/:videoId', async (req: Request, res: Response) => {
   }
 
   // 3. Check local MOTHERLAND LongVideos
-  const matchedLong = db
-    .getLongVideos()
+  const matchedLong = (await db.getLongVideos())
     .find(
       (v) =>
         v.id === rawId ||
@@ -5425,9 +5957,9 @@ app.get('/api/videos/resolve/:videoId', async (req: Request, res: Response) => {
   }
 
   return res.status(404).json({ found: false, error: 'Video not found' });
-});
+}));
 
-app.post('/api/videos/watch-progress', (req: Request, res: Response) => {
+app.post('/api/videos/watch-progress', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const {
@@ -5448,7 +5980,7 @@ app.post('/api/videos/watch-progress', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'videoId is required' });
   }
 
-  const record = db.upsertWatchProgress(user.id, {
+  const record = await db.upsertWatchProgress(user.id, {
     videoId: String(videoId),
     youtubeId: youtubeId ? String(youtubeId) : undefined,
     videoType: videoType === 'short' ? 'short' : 'long',
@@ -5463,25 +5995,25 @@ app.post('/api/videos/watch-progress', (req: Request, res: Response) => {
   });
 
   res.json({ success: true, record, suppressionDays: WATCH_SUPPRESSION_DAYS });
-});
+}));
 
-app.get('/api/videos/history', (req: Request, res: Response) => {
+app.get('/api/videos/history', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   res.json({
-    history: db.getUserWatchHistory(user.id),
+    history: await db.getUserWatchHistory(user.id),
     suppressionDays: WATCH_SUPPRESSION_DAYS,
   });
-});
+}));
 
-app.delete('/api/videos/history/:videoId', (req: Request, res: Response) => {
+app.delete('/api/videos/history/:videoId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const removed = db.removeWatchHistoryItem(user.id, req.params.videoId);
+  const removed = await db.removeWatchHistoryItem(user.id, req.params.videoId);
   res.json({ success: true, removed });
-});
+}));
 
-app.post('/api/videos/save', (req: Request, res: Response) => {
+app.post('/api/videos/save', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { videoId, videoType, source, youtubeId, title, thumbnailUrl, channelTitle, channelAvatar, duration, videoUrl } =
@@ -5489,7 +6021,7 @@ app.post('/api/videos/save', (req: Request, res: Response) => {
   if (!videoId || !title) {
     return res.status(400).json({ error: 'videoId and title are required' });
   }
-  const result = db.toggleSaveVideo(user.id, {
+  const result = await db.toggleSaveVideo(user.id, {
     videoId: String(videoId),
     videoType: videoType === 'short' ? 'short' : 'long',
     source: source || 'youtube',
@@ -5502,32 +6034,36 @@ app.post('/api/videos/save', (req: Request, res: Response) => {
     videoUrl: videoUrl ? String(videoUrl) : undefined,
   });
   res.json(result);
-});
+}));
 
-app.get('/api/saved', (req: Request, res: Response) => {
+app.get('/api/saved', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const savedPostIds = new Set(db.getUserSavedPostIds(user.id));
-  const posts = db
-    .getAllPosts()
-    .filter((p) => savedPostIds.has(p.id) && db.canViewerSeePost(user.id, p))
-    .map((p) => db.hydratePostForUser(p, user.id));
-  const videos = db.getUserSavedVideos(user.id);
+  const savedPostIds = new Set(await db.getUserSavedPostIds(user.id));
+  const allPosts = await db.getAllPosts();
+  const visibleSaved: Post[] = [];
+  for (const p of allPosts) {
+    if (savedPostIds.has(p.id) && (await db.canViewerSeePost(user.id, p))) {
+      visibleSaved.push(p);
+    }
+  }
+  const posts = await db.hydratePostsForUserBatch(visibleSaved, user.id);
+  const videos = await db.getUserSavedVideos(user.id);
   res.json({ posts, videos });
-});
+}));
 
-app.get('/api/drafts', (req: Request, res: Response) => {
+app.get('/api/drafts', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  res.json({ drafts: db.getUserDrafts(user.id) });
-});
+  res.json({ drafts: await db.getUserDrafts(user.id) });
+}));
 
-app.post('/api/drafts', (req: Request, res: Response) => {
+app.post('/api/drafts', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { id, mode, content, shortTitle, mediaType, mediaUrl, images, hashtags, audience } = req.body || {};
   const now = new Date().toISOString();
-  const saved = db.saveDraft({
+  const saved = await db.saveDraft({
     id: id || `draft_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     userId: user.id,
     mode: mode === 'story' || mode === 'short' ? mode : 'post',
@@ -5542,16 +6078,16 @@ app.post('/api/drafts', (req: Request, res: Response) => {
     updatedAt: now,
   });
   res.status(201).json({ draft: saved });
-});
+}));
 
-app.delete('/api/drafts/:id', (req: Request, res: Response) => {
+app.delete('/api/drafts/:id', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const deleted = db.deleteDraft(req.params.id, user.id);
+  const deleted = await db.deleteDraft(req.params.id, user.id);
   res.json({ success: true, deleted });
-});
+}));
 
-app.post('/api/videos/long', (req: Request, res: Response) => {
+app.post('/api/videos/long', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { videoUrl, thumbnailUrl, title, description, duration, tags } = req.body;
@@ -5583,44 +6119,55 @@ app.post('/api/videos/long', (req: Request, res: Response) => {
     tags: Array.isArray(tags) ? tags : [],
   };
 
-  db.addLongVideo(newLong);
+  await db.addLongVideo(newLong);
   res.status(201).json({ video: newLong });
-});
+}));
 
 
 // 5. Friends & Social Graph (Real Requests, Accept/Decline/Cancel, Privacy & Online Presence)
-app.get('/api/friends', (req: Request, res: Response) => {
+app.get('/api/friends', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const onlineIds = getOnlineUserIds();
-  const friendIds = db.getFriendIds(user.id);
-  const allUsers = db.getAllUsers();
+  const onlineIds = await getOnlineUserIds();
+  const friendIds = await db.getFriendIds(user.id);
+  const friendIdSet = new Set(friendIds);
+  const allUsers = await db.getAllUsers();
 
-  const friendsList = allUsers
-    .filter((u) => friendIds.includes(u.id) && !db.isBlocked(user.id, u.id))
-    .map((u) => db.toPublicProfile(u, user.id, onlineIds));
+  const friendsList: UserProfile[] = [];
+  let followingCount = 0;
+  let followersCount = 0;
 
-  const suggestedUsers = db.getSuggestedFriends(user.id);
-  const pendingRequests = db.getFriendRequests(user.id);
-  const sentRequests = db.getSentFriendRequests(user.id);
+  for (const u of allUsers) {
+    if (friendIdSet.has(u.id) && !(await db.isBlocked(user.id, u.id))) {
+      friendsList.push(await db.toPublicProfile(u, user.id, onlineIds));
+    }
+    if (await db.isFollowing(user.id, u.id)) followingCount++;
+    if (await db.isFollowing(u.id, user.id)) followersCount++;
+  }
+
+  const [suggestedUsers, pendingRequests, sentRequests] = await Promise.all([
+    db.getSuggestedFriends(user.id),
+    db.getFriendRequests(user.id),
+    db.getSentFriendRequests(user.id),
+  ]);
 
   res.json({
     friends: friendsList,
     suggested: suggestedUsers,
     pendingRequests,
     sentRequests,
-    followingCount: allUsers.filter((u) => db.isFollowing(user.id, u.id)).length,
-    followersCount: allUsers.filter((u) => db.isFollowing(u.id, user.id)).length,
+    followingCount,
+    followersCount,
   });
-});
+}));
 
-app.get('/api/friends/suggestions', (req: Request, res: Response) => {
+app.get('/api/friends/suggestions', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  res.json({ suggestions: db.getSuggestedFriends(user.id) });
-});
+  res.json({ suggestions: await db.getSuggestedFriends(user.id) });
+}));
 
-app.post('/api/friends/request', (req: Request, res: Response) => {
+app.post('/api/friends/request', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { targetUserId } = req.body;
@@ -5629,7 +6176,7 @@ app.post('/api/friends/request', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid target user' });
   }
 
-  const outcome = db.createFriendRequestSafe(user.id, targetUserId);
+  const outcome = await db.createFriendRequestSafe(user.id, targetUserId);
   if (outcome.error) {
     return res.status(400).json({ error: outcome.error });
   }
@@ -5656,7 +6203,7 @@ app.post('/api/friends/request', (req: Request, res: Response) => {
       isRead: false,
       createdAt: new Date().toISOString(),
     };
-    db.addNotification(acceptNotif);
+    await db.addNotification(acceptNotif);
     sendWsToUser(targetUserId, 'notification:new', acceptNotif);
     sendWsToUser(targetUserId, 'friend:update', { type: 'accepted', byUserId: user.id });
     sendWsToUser(user.id, 'friend:update', { type: 'accepted', targetUserId });
@@ -5681,19 +6228,19 @@ app.post('/api/friends/request', (req: Request, res: Response) => {
     isRead: false,
     createdAt: new Date().toISOString(),
   };
-  db.addNotification(reqNotif);
+  await db.addNotification(reqNotif);
   sendWsToUser(targetUserId, 'notification:new', reqNotif);
   sendWsToUser(targetUserId, 'friend:update', { type: 'request_received', senderId: user.id });
 
   res.json({ success: true, request: outcome.request });
-});
+}));
 
-app.post('/api/friends/respond', (req: Request, res: Response) => {
+app.post('/api/friends/respond', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { requestId, action } = req.body; // 'accept' | 'reject' | 'cancel'
 
-  const outcome = db.respondFriendRequest(requestId, action, user.id);
+  const outcome = await db.respondFriendRequest(requestId, action, user.id);
   if (!outcome.ok || !outcome.request) {
     return res.status(400).json({ error: outcome.error || 'Request not found or unauthorized' });
   }
@@ -5718,7 +6265,7 @@ app.post('/api/friends/respond', (req: Request, res: Response) => {
       isRead: false,
       createdAt: new Date().toISOString(),
     };
-    db.addNotification(notif);
+    await db.addNotification(notif);
     sendWsToUser(reqItem.sender.id, 'notification:new', notif);
     sendWsToUser(reqItem.sender.id, 'friend:update', { type: 'accepted', byUserId: user.id });
     sendWsToUser(user.id, 'friend:update', { type: 'accepted', senderId: reqItem.sender.id });
@@ -5728,34 +6275,34 @@ app.post('/api/friends/respond', (req: Request, res: Response) => {
   }
 
   res.json({ success: true, action });
-});
+}));
 
-app.post('/api/friends/remove', (req: Request, res: Response) => {
+app.post('/api/friends/remove', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'Target userId required' });
-  db.removeFriendship(user.id, userId);
+  await db.removeFriendship(user.id, userId);
   sendWsToUser(userId, 'friend:update', { type: 'removed', byUserId: user.id });
   res.json({ success: true });
-});
+}));
 
-app.post('/api/users/:id/follow', (req: Request, res: Response) => {
+app.post('/api/users/:id/follow', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const targetId = req.params.id;
   if (targetId === user.id) return res.status(400).json({ error: 'Cannot support yourself' });
-  const targetUser = db.findUserById(targetId);
+  const targetUser = await db.findUserById(targetId);
   if (!targetUser) return res.status(404).json({ error: 'User not found' });
-  if (db.isBlocked(user.id, targetId)) {
+  if (await db.isBlocked(user.id, targetId)) {
     return res.status(403).json({ error: 'Action unavailable due to block settings' });
   }
 
-  const wasFollowing = db.isFollowing(user.id, targetId);
+  const wasFollowing = await db.isFollowing(user.id, targetId);
   if (wasFollowing) {
-    db.unfollow(user.id, targetId);
+    await db.unfollow(user.id, targetId);
   } else {
-    db.follow(user.id, targetId);
+    await db.follow(user.id, targetId);
     const notif = {
       id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       recipientId: targetId,
@@ -5774,13 +6321,13 @@ app.post('/api/users/:id/follow', (req: Request, res: Response) => {
       isRead: false,
       createdAt: new Date().toISOString(),
     };
-    db.addNotification(notif);
+    await db.addNotification(notif);
     sendWsToUser(targetId, 'notification:new', notif);
   }
 
-  const onlineIds = getOnlineUserIds();
-  const updatedMe = db.toPublicProfile(user, user.id, onlineIds);
-  const updatedTarget = db.toPublicProfile(targetUser, user.id, onlineIds);
+  const onlineIds = await getOnlineUserIds();
+  const updatedMe = await db.toPublicProfile(user, user.id, onlineIds);
+  const updatedTarget = await db.toPublicProfile(targetUser, user.id, onlineIds);
 
   res.json({
     isFollowing: !wasFollowing,
@@ -5789,31 +6336,31 @@ app.post('/api/users/:id/follow', (req: Request, res: Response) => {
     targetFollowersCount: updatedTarget.followersCount,
     targetFollowingCount: updatedTarget.followingCount,
   });
-});
+}));
 
-app.get('/api/users/:id/network', (req: Request, res: Response) => {
-  const targetUser = db.findUserById(req.params.id);
+app.get('/api/users/:id/network', ah(async (req: Request, res: Response) => {
+  const targetUser = await db.findUserById(req.params.id);
   if (!targetUser) {
     return res.status(404).json({ error: 'User not found' });
   }
   const currentUserId = (req as any).userId as string | undefined;
-  if (currentUserId && db.isBlocked(currentUserId, targetUser.id)) {
+  if (currentUserId && (await db.isBlocked(currentUserId, targetUser.id))) {
     return res.status(404).json({ error: 'User not found' });
   }
   const isSelf = currentUserId === targetUser.id;
   if (!isSelf && targetUser.privacy?.profileVisibility === 'private') {
     return res.json({ friends: [], supporters: [], supporting: [] });
   }
-  const isFriend = currentUserId ? db.isFriend(currentUserId, targetUser.id) : false;
+  const isFriend = currentUserId ? await db.isFriend(currentUserId, targetUser.id) : false;
   if (!isSelf && (targetUser.privacy?.profileVisibility === 'friends' || targetUser.isPrivate) && !isFriend) {
     return res.json({ friends: [], supporters: [], supporting: [] });
   }
 
-  const lists = db.getUserNetworkLists(targetUser.id, currentUserId, getOnlineUserIds());
+  const lists = await db.getUserNetworkLists(targetUser.id, currentUserId, await getOnlineUserIds());
   res.json(lists);
-});
+}));
 
-app.post('/api/users/:id/report', (req: Request, res: Response) => {
+app.post('/api/users/:id/report', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const targetId = req.params.id;
@@ -5822,7 +6369,7 @@ app.post('/api/users/:id/report', (req: Request, res: Response) => {
   if (!reason || !String(reason).trim()) {
     return res.status(400).json({ error: 'Report reason is required' });
   }
-  const report = db.addUserReport({
+  const report = await db.addUserReport({
     id: `rep_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     reporterId: user.id,
     targetUserId: targetId,
@@ -5833,16 +6380,16 @@ app.post('/api/users/:id/report', (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
   });
   res.status(201).json({ success: true, report });
-});
+}));
 
-app.post('/api/users/:id/block', (req: Request, res: Response) => {
+app.post('/api/users/:id/block', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const targetId = req.params.id;
   if (targetId === user.id) return res.status(400).json({ error: 'Cannot block yourself' });
-  const isBlocked = db.toggleBlock(user.id, targetId);
+  const isBlocked = await db.toggleBlock(user.id, targetId);
   res.json({ isBlocked });
-});
+}));
 
 // ==========================================
 // 5B. MULTI-SERVER REGISTRY & OWNER CONFIG CHAT
@@ -5876,8 +6423,8 @@ function isSafeServerBaseUrl(rawUrl: string, allowLocal = false): { ok: boolean;
   }
 }
 
-app.get('/api/servers', (_req: Request, res: Response) => {
-  const servers = db.getServers();
+app.get('/api/servers', ah(async (_req: Request, res: Response) => {
+  const servers = await db.getServers();
   const primary = servers.find((s) => s.isPrimary && !s.isolated && s.enabled) || servers.find((s) => s.id === 'srv_motherland_local');
   const dreamWorld = servers.find((s) => s.id === 'srv_dream_world');
   res.json({
@@ -5885,18 +6432,18 @@ app.get('/api/servers', (_req: Request, res: Response) => {
     primaryServerId: primary?.id || 'srv_motherland_local',
     dreamWorldServer: dreamWorld,
   });
-});
+}));
 
-app.get('/api/servers/history', (req: Request, res: Response) => {
+app.get('/api/servers/history', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner' && user.role !== 'admin') {
     return res.status(403).json({ error: 'Admin or Owner permission required' });
   }
-  res.json({ history: db.getServerHistory() });
-});
+  res.json({ history: await db.getServerHistory() });
+}));
 
-app.post('/api/servers', (req: Request, res: Response) => {
+app.post('/api/servers', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner' && user.role !== 'admin') {
@@ -5913,7 +6460,7 @@ app.post('/api/servers', (req: Request, res: Response) => {
   if (urlCheck.normalized.includes('dream-world-open.onrender.com')) {
     return res.status(400).json({ error: 'Dream World server is already configured separately and must remain isolated.' });
   }
-  const entry = db.upsertServer(
+  const entry = await db.upsertServer(
     {
       name: String(name).trim().slice(0, 80),
       baseUrl: urlCheck.normalized,
@@ -5927,15 +6474,15 @@ app.post('/api/servers', (req: Request, res: Response) => {
     user
   );
   res.status(201).json({ server: entry });
-});
+}));
 
-app.patch('/api/servers/:id', (req: Request, res: Response) => {
+app.patch('/api/servers/:id', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner' && user.role !== 'admin') {
     return res.status(403).json({ error: 'Owner or admin access required' });
   }
-  const existing = db.getServerById(req.params.id);
+  const existing = await db.getServerById(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Server not found' });
 
   let nextUrl = existing.baseUrl;
@@ -5945,7 +6492,7 @@ app.patch('/api/servers/:id', (req: Request, res: Response) => {
     nextUrl = check.normalized;
   }
   try {
-    const updated = db.upsertServer(
+    const updated = await db.upsertServer(
       {
         id: existing.id,
         name: req.body?.name ? String(req.body.name).trim().slice(0, 80) : existing.name,
@@ -5962,26 +6509,26 @@ app.patch('/api/servers/:id', (req: Request, res: Response) => {
   } catch (err: any) {
     res.status(400).json({ error: err?.message || 'Unable to update server' });
   }
-});
+}));
 
-app.delete('/api/servers/:id', (req: Request, res: Response) => {
+app.delete('/api/servers/:id', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner' && user.role !== 'admin') {
     return res.status(403).json({ error: 'Owner or admin access required' });
   }
-  const result = db.deleteServer(req.params.id, user);
+  const result = await db.deleteServer(req.params.id, user);
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ success: true });
-});
+}));
 
-app.post('/api/servers/:id/test', async (req: Request, res: Response) => {
+app.post('/api/servers/:id/test', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner' && user.role !== 'admin') {
     return res.status(403).json({ error: 'Owner or admin access required' });
   }
-  const srv = db.getServerById(req.params.id);
+  const srv = await db.getServerById(req.params.id);
   if (!srv) return res.status(404).json({ error: 'Server not found' });
 
   const isLocalCore = srv.id === 'srv_motherland_local';
@@ -6002,7 +6549,7 @@ app.post('/api/servers/:id/test', async (req: Request, res: Response) => {
     clearTimeout(timer);
     const latencyMs = Date.now() - startedAt;
     const status: 'healthy' | 'degraded' = probeRes.ok ? 'healthy' : 'degraded';
-    const updated = db.updateServerHealth(srv.id, status, latencyMs);
+    const updated = await db.updateServerHealth(srv.id, status, latencyMs);
     res.json({
       server: updated,
       probeUrl,
@@ -6012,7 +6559,7 @@ app.post('/api/servers/:id/test', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     const latencyMs = Date.now() - startedAt;
-    const updated = db.updateServerHealth(srv.id, 'offline', null);
+    const updated = await db.updateServerHealth(srv.id, 'offline', null);
     res.json({
       server: updated,
       probeUrl,
@@ -6022,40 +6569,40 @@ app.post('/api/servers/:id/test', async (req: Request, res: Response) => {
       error: err?.name === 'AbortError' ? 'Health probe timed out after 6.5s' : err?.message || 'Connection failed',
     });
   }
-});
+}));
 
-app.post('/api/servers/:id/set-primary', (req: Request, res: Response) => {
+app.post('/api/servers/:id/set-primary', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner') {
     return res.status(403).json({ error: 'Only the MOTHERLAND platform owner can switch the primary server.' });
   }
-  const result = db.setPrimaryServer(req.params.id, user);
+  const result = await db.setPrimaryServer(req.params.id, user);
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ server: result.server, previousPrimaryId: result.previousPrimaryId });
-});
+}));
 
-app.post('/api/servers/rollback', (req: Request, res: Response) => {
+app.post('/api/servers/rollback', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner') {
     return res.status(403).json({ error: 'Owner permission required for rollback.' });
   }
-  const result = db.rollbackPrimaryServer(user);
+  const result = await db.rollbackPrimaryServer(user);
   if (!result.ok) return res.status(400).json({ error: result.error });
   res.json({ server: result.server });
-});
+}));
 
-app.get('/api/admin/servers/chat', (req: Request, res: Response) => {
+app.get('/api/admin/servers/chat', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner') {
     return res.status(403).json({ error: 'Owner-only Admin Configuration Chat.' });
   }
-  res.json({ messages: db.getAdminConfigMessages() });
-});
+  res.json({ messages: await db.getAdminConfigMessages() });
+}));
 
-app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
+app.post('/api/admin/servers/chat', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner') {
@@ -6065,7 +6612,7 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
   const confirmAction = Boolean(req.body?.confirm);
   if (!rawText) return res.status(400).json({ error: 'Command text is required' });
 
-  const ownerMsg = db.addAdminConfigMessage({
+  const ownerMsg = await db.addAdminConfigMessage({
     id: `acmsg_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     role: 'owner',
     senderId: user.id,
@@ -6075,7 +6622,7 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
   });
 
   const lower = rawText.toLowerCase();
-  const servers = db.getServers();
+  const servers = await db.getServers();
   let replyText = '';
   let parsedIntent: any = { action: 'help' };
 
@@ -6091,7 +6638,7 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
       parsedIntent = { action: 'rollback', requiresConfirmation: true };
       replyText = 'Rollback requested: this will restore the previous Primary Core Server without touching Dream World. Click "Confirm Switch" below to execute.';
     } else {
-      const rb = db.rollbackPrimaryServer(user);
+      const rb = await db.rollbackPrimaryServer(user);
       parsedIntent = { action: 'rollback', confirmed: rb.ok, targetServerId: rb.server?.id };
       replyText = rb.ok ? `Rollback complete. Primary server is now ${rb.server?.name} (${rb.server?.baseUrl}).` : (rb.error || 'Rollback failed.');
     }
@@ -6101,7 +6648,7 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
       replyText = `Rejected URL: ${urlCheck.error}`;
     } else {
       const namePart = rawText.replace(httpsMatch[0], '').replace(/^(add|register)\s+server\s*/i, '').trim() || `Node (${new URL(urlCheck.normalized).hostname})`;
-      const created = db.upsertServer({ name: namePart.slice(0, 60), baseUrl: urlCheck.normalized, assignedServices: ['main_app'] }, user);
+      const created = await db.upsertServer({ name: namePart.slice(0, 60), baseUrl: urlCheck.normalized, assignedServices: ['main_app'] }, user);
       parsedIntent = { action: 'create', targetServerId: created.id, url: created.baseUrl };
       replyText = `Registered server "${created.name}" (${created.baseUrl}) with ID ${created.id}. Run health test before making it primary.`;
     }
@@ -6117,7 +6664,7 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
       parsedIntent = { action: 'set_primary', targetServerId: matched.id, requiresConfirmation: true };
       replyText = `Confirmation required: promote "${matched.name}" (${matched.baseUrl}) to Primary MOTHERLAND Server? Dream World remains isolated.`;
     } else {
-      const resSwitch = db.setPrimaryServer(matched.id, user);
+      const resSwitch = await db.setPrimaryServer(matched.id, user);
       parsedIntent = { action: 'set_primary', targetServerId: matched.id, confirmed: resSwitch.ok };
       replyText = resSwitch.ok
         ? `Primary server switched to "${resSwitch.server?.name}" (${resSwitch.server?.baseUrl}).`
@@ -6132,10 +6679,10 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
     try {
       const r = await fetch(probeUrl);
       const ms = Date.now() - t0;
-      db.updateServerHealth(target.id, r.ok ? 'healthy' : 'degraded', ms);
+      await db.updateServerHealth(target.id, r.ok ? 'healthy' : 'degraded', ms);
       replyText = `Health probe for ${target.name}: HTTP ${r.status} in ${ms}ms (${r.ok ? 'HEALTHY' : 'DEGRADED'}).`;
     } catch (e: any) {
-      db.updateServerHealth(target.id, 'offline', null);
+      await db.updateServerHealth(target.id, 'offline', null);
       replyText = `Health probe for ${target.name} FAILED: ${e?.message || 'Unreachable'}.`;
     }
     parsedIntent = { action: 'health_check', targetServerId: target.id };
@@ -6150,7 +6697,7 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
     ].join('\n');
   }
 
-  db.recordServerHistory({
+  await db.recordServerHistory({
     action: 'chat_command',
     serverId: parsedIntent.targetServerId || 'registry',
     serverName: 'Owner Config Chat',
@@ -6159,7 +6706,7 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
     summary: `Owner command: "${rawText.slice(0, 120)}"`,
   });
 
-  const systemMsg = db.addAdminConfigMessage({
+  const systemMsg = await db.addAdminConfigMessage({
     id: `acmsg_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     role: 'system',
     senderName: 'MOTHERLAND Server Controller',
@@ -6168,38 +6715,38 @@ app.post('/api/admin/servers/chat', async (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
   });
 
-  res.json({ ownerMessage: ownerMsg, systemMessage: systemMsg, servers: db.getServers() });
-});
+  res.json({ ownerMessage: ownerMsg, systemMessage: systemMsg, servers: await db.getServers() });
+}));
 
 // ==========================================
 // 5C. BANGLADESH SERVICES PREFS & AGE GUARD
 // ==========================================
-app.get('/api/bd-services/prefs', (req: Request, res: Response) => {
+app.get('/api/bd-services/prefs', ah(async (req: Request, res: Response) => {
   const userId = (req as any).userId as string | undefined;
   if (!userId) return res.json({ favorites: [], recent: [] });
-  res.json(db.getBdServicePrefs(userId));
-});
+  res.json(await db.getBdServicePrefs(userId));
+}));
 
-app.post('/api/bd-services/favorite', (req: Request, res: Response) => {
+app.post('/api/bd-services/favorite', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const serviceId = String(req.body?.serviceId || '').trim();
   if (!serviceId) return res.status(400).json({ error: 'serviceId is required' });
-  res.json(db.toggleBdServiceFavorite(user.id, serviceId));
-});
+  res.json(await db.toggleBdServiceFavorite(user.id, serviceId));
+}));
 
-app.post('/api/bd-services/recent', (req: Request, res: Response) => {
+app.post('/api/bd-services/recent', ah(async (req: Request, res: Response) => {
   const userId = (req as any).userId as string | undefined;
   if (!userId) return res.json({ recent: [] });
   const serviceId = String(req.body?.serviceId || '').trim();
   if (!serviceId) return res.status(400).json({ error: 'serviceId is required' });
-  const recent = db.recordBdServiceRecent(userId, serviceId);
+  const recent = await db.recordBdServiceRecent(userId, serviceId);
   res.json({ recent });
-});
+}));
 
-app.get('/api/bd-services/eligibility', (req: Request, res: Response) => {
+app.get('/api/bd-services/eligibility', ah(async (req: Request, res: Response) => {
   const userId = (req as any).userId as string | undefined;
-  const user = userId ? db.findUserById(userId) : undefined;
+  const user = userId ? await db.findUserById(userId) : undefined;
   let ageYears: number | null = null;
   if (user?.dateOfBirth) {
     const dob = new Date(user.dateOfBirth);
@@ -6219,39 +6766,39 @@ app.get('/api/bd-services/eligibility', (req: Request, res: Response) => {
     loanEligible: ageYears === null ? null : ageYears >= 18,
     isMinor,
   });
-});
+}));
 
 // 6. Notifications (Categorized: Motherland, YouTube, Google, Facebook, Instagram, Wave)
-app.get('/api/notifications', (req: Request, res: Response) => {
+app.get('/api/notifications', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const category = req.query.category as string;
-  const items = db.getNotifications(user.id, category);
+  const items = await db.getNotifications(user.id, category);
   res.json({
     notifications: items,
     unreadCount: items.filter((n) => !n.isRead).length,
   });
-});
+}));
 
-app.post('/api/notifications/mark-read', (req: Request, res: Response) => {
+app.post('/api/notifications/mark-read', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { id } = req.body || {};
-  db.markNotificationsRead(user.id, id);
+  await db.markNotificationsRead(user.id, id);
   res.json({ success: true });
-});
+}));
 
-app.delete('/api/notifications/:id', (req: Request, res: Response) => {
+app.delete('/api/notifications/:id', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  db.deleteNotification(user.id, req.params.id);
+  await db.deleteNotification(user.id, req.params.id);
   res.json({ success: true });
-});
+}));
 
 // ==========================================
 // 7. MOTHERLAND WAVE (Messaging, Voice, Media, Groups, Disappearing & WebRTC Config)
 // ==========================================
-app.get('/api/webrtc/config', (req: Request, res: Response) => {
+app.get('/api/webrtc/config', (_req: Request, res: Response) => {
   const iceServers: { urls: string | string[]; username?: string; credential?: string }[] = [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
   ];
@@ -6266,20 +6813,20 @@ app.get('/api/webrtc/config', (req: Request, res: Response) => {
   res.json({ iceServers, hasTurn });
 });
 
-app.get('/api/calls', (req: Request, res: Response) => {
+app.get('/api/calls', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  res.json({ calls: db.getUserCalls(user.id) });
-});
+  res.json({ calls: await db.getUserCalls(user.id) });
+}));
 
-app.post('/api/calls/log', (req: Request, res: Response) => {
+app.post('/api/calls/log', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { callId, conversationId, callType, status, durationSeconds, calleeIds } = req.body || {};
   if (callId) {
-    const existing = db.getCallRecordById(callId);
+    const existing = await db.getCallRecordById(callId);
     if (existing) {
-      const updated = db.updateCallRecord(callId, {
+      const updated = await db.updateCallRecord(callId, {
         status: status || existing.status,
         durationSeconds: typeof durationSeconds === 'number' ? durationSeconds : existing.durationSeconds,
         endedAt: new Date().toISOString(),
@@ -6287,15 +6834,15 @@ app.post('/api/calls/log', (req: Request, res: Response) => {
       return res.json({ call: updated });
     }
   }
-  const conv = conversationId ? db.getConversationById(conversationId) : undefined;
+  const conv = conversationId ? await db.getConversationById(conversationId) : undefined;
   if (!conv || !db.isConversationParticipant(conv, user.id)) {
     return res.status(400).json({ error: 'Valid conversationId is required' });
   }
   const targetIds = Array.isArray(calleeIds) && calleeIds.length > 0
     ? calleeIds
     : (conv.participantIds || []).filter((id) => id !== user.id);
-  const firstPeer = targetIds[0] ? db.findUserById(targetIds[0]) : undefined;
-  const record = db.addCallRecord({
+  const firstPeer = targetIds[0] ? await db.findUserById(targetIds[0]) : undefined;
+  const record = await db.addCallRecord({
     id: callId || `call_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
     conversationId,
     callerId: user.id,
@@ -6312,30 +6859,30 @@ app.post('/api/calls/log', (req: Request, res: Response) => {
     endedAt: new Date().toISOString(),
   });
   res.status(201).json({ call: record });
-});
+}));
 
-app.get('/api/messages/conversations', (req: Request, res: Response) => {
+app.get('/api/messages/conversations', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const onlineIds = getOnlineUserIds();
-  const list = db.getUserConversations(user.id, onlineIds);
-  const totalUnread = db.getTotalUnreadMessages(user.id);
+  const onlineIds = await getOnlineUserIds();
+  const list = await db.getUserConversations(user.id, onlineIds);
+  const totalUnread = await db.getTotalUnreadMessages(user.id);
   res.json({ conversations: list, totalUnread });
-});
+}));
 
-app.post('/api/messages/direct', (req: Request, res: Response) => {
+app.post('/api/messages/direct', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { targetUserId } = req.body;
   if (!targetUserId) {
     return res.status(400).json({ error: 'targetUserId is required' });
   }
-  const outcome = db.getOrCreateDirectConversation(user.id, targetUserId, getOnlineUserIds());
+  const outcome = await db.getOrCreateDirectConversation(user.id, targetUserId, await getOnlineUserIds());
   if (outcome.error || !outcome.conversation) {
     return res.status(outcome.statusCode || 400).json({ error: outcome.error || 'Unable to open chat' });
   }
   if (outcome.conversation.isRequest && outcome.conversation.requestedBy === user.id) {
-    const targetAcc = db.findUserById(targetUserId);
+    const targetAcc = await db.findUserById(targetUserId);
     if (targetAcc && targetAcc.notificationPrefs?.messages !== false) {
       const notif = {
         id: `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
@@ -6355,26 +6902,32 @@ app.post('/api/messages/direct', (req: Request, res: Response) => {
         isRead: false,
         createdAt: new Date().toISOString(),
       };
-      db.addNotification(notif);
+      await db.addNotification(notif);
       sendWsToUser(targetUserId, 'notification:new', notif);
     }
     sendWsToUser(targetUserId, 'conv:update', { conversationId: outcome.conversation.id });
   }
   res.json({ conversation: outcome.conversation });
-});
+}));
 
-app.post('/api/messages/group', (req: Request, res: Response) => {
+app.post('/api/messages/group', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { name, memberIds, photo } = req.body || {};
-  const outcome = db.createGroupConversation(user.id, String(name || ''), Array.isArray(memberIds) ? memberIds : [], photo, getOnlineUserIds());
+  const outcome = await db.createGroupConversation(
+    user.id,
+    String(name || ''),
+    Array.isArray(memberIds) ? memberIds : [],
+    photo,
+    await getOnlineUserIds()
+  );
   if (outcome.error || !outcome.conversation) {
     return res.status(outcome.statusCode || 400).json({ error: outcome.error || 'Unable to create group' });
   }
   for (const pid of outcome.conversation.participantIds || []) {
     if (pid !== user.id) {
       sendWsToUser(pid, 'conv:update', { conversationId: outcome.conversation.id, action: 'group_created' });
-      const peer = db.findUserById(pid);
+      const peer = await db.findUserById(pid);
       if (peer && peer.notificationPrefs?.groups !== false) {
         const notif = {
           id: `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
@@ -6389,31 +6942,41 @@ app.post('/api/messages/group', (req: Request, res: Response) => {
           isRead: false,
           createdAt: new Date().toISOString(),
         };
-        db.addNotification(notif);
+        await db.addNotification(notif);
         sendWsToUser(pid, 'notification:new', notif);
       }
     }
   }
   res.status(201).json({ conversation: outcome.conversation });
-});
+}));
 
-app.post('/api/messages/:conversationId/respond-request', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId/respond-request', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const action = req.body?.action === 'decline' ? 'decline' : 'accept';
-  const result = db.respondConversationRequest(req.params.conversationId, user.id, action, getOnlineUserIds());
+  const result = await db.respondConversationRequest(
+    req.params.conversationId,
+    user.id,
+    action,
+    await getOnlineUserIds()
+  );
   if (result.error) return res.status(result.statusCode || 400).json({ error: result.error });
   for (const rid of result.recipientIds || []) {
     sendWsToUser(rid, 'conv:update', { conversationId: req.params.conversationId, action });
   }
   res.json({ conversation: result.conversation });
-});
+}));
 
-app.post('/api/messages/:conversationId/members', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId/members', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { memberIds } = req.body || {};
-  const result = db.addGroupMembers(req.params.conversationId, user.id, Array.isArray(memberIds) ? memberIds : [], getOnlineUserIds());
+  const result = await db.addGroupMembers(
+    req.params.conversationId,
+    user.id,
+    Array.isArray(memberIds) ? memberIds : [],
+    await getOnlineUserIds()
+  );
   if (result.error) return res.status(result.statusCode || 400).json({ error: result.error });
   for (const pid of result.conversation?.participantIds || []) {
     sendWsToUser(pid, 'conv:update', { conversationId: req.params.conversationId });
@@ -6422,12 +6985,17 @@ app.post('/api/messages/:conversationId/members', (req: Request, res: Response) 
     }
   }
   res.json({ conversation: result.conversation, systemMessage: result.systemMessage });
-});
+}));
 
-app.delete('/api/messages/:conversationId/members/:userId', (req: Request, res: Response) => {
+app.delete('/api/messages/:conversationId/members/:userId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.removeGroupMember(req.params.conversationId, user.id, req.params.userId, getOnlineUserIds());
+  const result = await db.removeGroupMember(
+    req.params.conversationId,
+    user.id,
+    req.params.userId,
+    await getOnlineUserIds()
+  );
   if (result.error) return res.status(result.statusCode || 400).json({ error: result.error });
   sendWsToUser(req.params.userId, 'conv:update', { conversationId: req.params.conversationId, removed: true });
   for (const pid of result.conversation?.participantIds || []) {
@@ -6437,24 +7005,30 @@ app.delete('/api/messages/:conversationId/members/:userId', (req: Request, res: 
     }
   }
   res.json({ conversation: result.conversation, systemMessage: result.systemMessage });
-});
+}));
 
-app.post('/api/messages/:conversationId/admin', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId/admin', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const { targetUserId, makeAdmin } = req.body || {};
-  const result = db.setGroupAdmin(req.params.conversationId, user.id, String(targetUserId || ''), Boolean(makeAdmin), getOnlineUserIds());
+  const result = await db.setGroupAdmin(
+    req.params.conversationId,
+    user.id,
+    String(targetUserId || ''),
+    Boolean(makeAdmin),
+    await getOnlineUserIds()
+  );
   if (result.error) return res.status(result.statusCode || 400).json({ error: result.error });
   for (const pid of result.conversation?.participantIds || []) {
     sendWsToUser(pid, 'conv:update', { conversationId: req.params.conversationId });
   }
   res.json({ conversation: result.conversation });
-});
+}));
 
-app.post('/api/messages/:conversationId/leave', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId/leave', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.leaveGroupConversation(req.params.conversationId, user.id);
+  const result = await db.leaveGroupConversation(req.params.conversationId, user.id);
   if (!result.ok) return res.status(result.statusCode || 400).json({ error: result.error });
   for (const pid of result.remainingIds || []) {
     sendWsToUser(pid, 'conv:update', { conversationId: req.params.conversationId });
@@ -6463,12 +7037,17 @@ app.post('/api/messages/:conversationId/leave', (req: Request, res: Response) =>
     }
   }
   res.json({ success: true });
-});
+}));
 
-app.put('/api/messages/:conversationId/settings', (req: Request, res: Response) => {
+app.put('/api/messages/:conversationId/settings', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.updateConversationSettings(req.params.conversationId, user.id, req.body || {}, getOnlineUserIds());
+  const result = await db.updateConversationSettings(
+    req.params.conversationId,
+    user.id,
+    req.body || {},
+    await getOnlineUserIds()
+  );
   if (result.error) return res.status(result.statusCode || 400).json({ error: result.error });
   if (result.broadcastMeta) {
     for (const pid of result.conversation?.participantIds || []) {
@@ -6476,26 +7055,26 @@ app.put('/api/messages/:conversationId/settings', (req: Request, res: Response) 
     }
   }
   res.json({ conversation: result.conversation });
-});
+}));
 
-app.get('/api/messages/:conversationId/search', (req: Request, res: Response) => {
+app.get('/api/messages/:conversationId/search', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const q = String(req.query.q || '');
-  const result = db.searchConversationMessages(req.params.conversationId, user.id, q);
+  const result = await db.searchConversationMessages(req.params.conversationId, user.id, q);
   if (result.error) return res.status(result.statusCode || 403).json({ error: result.error });
   res.json({ messages: result.messages || [] });
-});
+}));
 
-app.get('/api/messages/:conversationId/media', (req: Request, res: Response) => {
+app.get('/api/messages/:conversationId/media', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.getConversationSharedMedia(req.params.conversationId, user.id);
+  const result = await db.getConversationSharedMedia(req.params.conversationId, user.id);
   if (result.error) return res.status(result.statusCode || 403).json({ error: result.error });
   res.json({ items: result.items || [], links: result.links || [] });
-});
+}));
 
-app.get('/api/messages/:conversationId', (req: Request, res: Response) => {
+app.get('/api/messages/:conversationId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const convId = req.params.conversationId;
@@ -6503,13 +7082,13 @@ app.get('/api/messages/:conversationId', (req: Request, res: Response) => {
   const limit = Math.min(80, Math.max(1, parseInt((req.query.limit as string) || '35', 10)));
   const shouldMarkRead = req.query.markRead !== 'false' && req.query.markRead !== '0';
 
-  const result = db.getConversationMessages(convId, user.id, before, limit);
+  const result = await db.getConversationMessages(convId, user.id, before, limit);
   if (result.error) {
     return res.status(result.statusCode || 403).json({ error: result.error });
   }
 
   if (shouldMarkRead) {
-    const readRes = db.markConversationRead(convId, user.id);
+    const readRes = await db.markConversationRead(convId, user.id);
     if (readRes.ok && readRes.sendReceipt && readRes.participantIds) {
       for (const pid of readRes.participantIds) {
         if (pid !== user.id) {
@@ -6523,13 +7102,13 @@ app.get('/api/messages/:conversationId', (req: Request, res: Response) => {
     messages: result.messages || [],
     hasMore: Boolean(result.hasMore),
   });
-});
+}));
 
-app.post('/api/messages/:conversationId/read', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId/read', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const convId = req.params.conversationId;
-  const readRes = db.markConversationRead(convId, user.id);
+  const readRes = await db.markConversationRead(convId, user.id);
   if (!readRes.ok) {
     return res.status(readRes.statusCode || 403).json({ error: readRes.error });
   }
@@ -6541,9 +7120,9 @@ app.post('/api/messages/:conversationId/read', (req: Request, res: Response) => 
     }
   }
   res.json({ success: true });
-});
+}));
 
-app.post('/api/messages/:conversationId', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const convId = req.params.conversationId;
@@ -6567,8 +7146,8 @@ app.post('/api/messages/:conversationId', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Message cannot be empty' });
   }
 
-  const onlineIds = getOnlineUserIds();
-  const added = db.addChatMessage(convId, user.id, String(text || ''), mediaUrl, mediaType, {
+  const onlineIds = await getOnlineUserIds();
+  const added = await db.addChatMessage(convId, user.id, String(text || ''), mediaUrl, mediaType, {
     fileName,
     fileSize,
     mimeType,
@@ -6584,14 +7163,23 @@ app.post('/api/messages/:conversationId', (req: Request, res: Response) => {
     return res.status(added.statusCode || 400).json({ error: added.error || 'Failed to send message' });
   }
 
-  const convRaw = db.getConversationById(convId);
+  // Ensure any chat media attachments are strictly private & scoped to this conversation
+  const chatMediaUrls = [
+    mediaUrl,
+    ...(Array.isArray(attachments) ? attachments.map((a: any) => a?.url) : []),
+  ].filter((u): u is string => typeof u === 'string' && u.length > 0);
+  if (chatMediaUrls.length > 0) {
+    await db.syncMediaVisibilityForUrls(chatMediaUrls, user.id, 'private', convId);
+  }
+
+  const convRaw = await db.getConversationById(convId);
   for (const rid of added.recipientIds || []) {
     sendWsToUser(rid, 'chat:message', {
       conversationId: convId,
       message: added.message,
       senderId: user.id,
     });
-    const recipient = db.findUserById(rid);
+    const recipient = await db.findUserById(rid);
     const isMuted = Boolean(convRaw?.mutedBy?.includes(rid));
     if (recipient && !isMuted && recipient.notificationPrefs?.messages !== false) {
       sendWsToUser(rid, 'notification:new', {
@@ -6621,24 +7209,29 @@ app.post('/api/messages/:conversationId', (req: Request, res: Response) => {
   });
 
   res.status(201).json({ message: added.message, conversation: added.conversation });
-});
+}));
 
-app.patch('/api/messages/:conversationId/:msgId', (req: Request, res: Response) => {
+app.patch('/api/messages/:conversationId/:msgId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.editChatMessage(req.params.conversationId, req.params.msgId, user.id, String(req.body?.text || ''));
+  const result = await db.editChatMessage(
+    req.params.conversationId,
+    req.params.msgId,
+    user.id,
+    String(req.body?.text || '')
+  );
   if (result.error || !result.message) return res.status(result.statusCode || 400).json({ error: result.error });
   for (const uid of [...(result.recipientIds || []), user.id]) {
     sendWsToUser(uid, 'chat:message_update', { conversationId: req.params.conversationId, message: result.message });
   }
   res.json({ message: result.message });
-});
+}));
 
-app.delete('/api/messages/:conversationId/:msgId', (req: Request, res: Response) => {
+app.delete('/api/messages/:conversationId/:msgId', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const mode = req.query.mode === 'me' || req.body?.mode === 'me' ? 'me' : 'everyone';
-  const result = db.deleteChatMessage(req.params.conversationId, req.params.msgId, user.id, mode);
+  const result = await db.deleteChatMessage(req.params.conversationId, req.params.msgId, user.id, mode);
   if (result.error || !result.message) return res.status(result.statusCode || 400).json({ error: result.error });
   if (mode === 'everyone') {
     for (const uid of [...(result.recipientIds || []), user.id]) {
@@ -6646,37 +7239,37 @@ app.delete('/api/messages/:conversationId/:msgId', (req: Request, res: Response)
     }
   }
   res.json({ success: true, message: result.message });
-});
+}));
 
-app.post('/api/messages/:conversationId/:msgId/react', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId/:msgId/react', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const emoji = String(req.body?.emoji || '❤️').slice(0, 8);
-  const result = db.toggleChatReaction(req.params.conversationId, req.params.msgId, user.id, emoji);
+  const result = await db.toggleChatReaction(req.params.conversationId, req.params.msgId, user.id, emoji);
   if (result.error || !result.message) return res.status(result.statusCode || 400).json({ error: result.error });
   for (const uid of [...(result.recipientIds || []), user.id]) {
     sendWsToUser(uid, 'chat:message_update', { conversationId: req.params.conversationId, message: result.message });
   }
   res.json({ message: result.message });
-});
+}));
 
-app.post('/api/messages/:conversationId/:msgId/pin', (req: Request, res: Response) => {
+app.post('/api/messages/:conversationId/:msgId/pin', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const result = db.togglePinChatMessage(req.params.conversationId, req.params.msgId, user.id);
+  const result = await db.togglePinChatMessage(req.params.conversationId, req.params.msgId, user.id);
   if (result.error || !result.message) return res.status(result.statusCode || 400).json({ error: result.error });
   for (const uid of [...(result.recipientIds || []), user.id]) {
     sendWsToUser(uid, 'chat:message_update', { conversationId: req.params.conversationId, message: result.message });
     sendWsToUser(uid, 'conv:update', { conversationId: req.params.conversationId });
   }
   res.json({ message: result.message, pinnedMessageIds: result.pinnedMessageIds });
-});
+}));
 
 // Platform Adapters & Multi-Platform Publishing (Part 8 & Part 11)
-app.get('/api/platforms/status', (req: Request, res: Response) => {
+app.get('/api/platforms/status', ah(async (req: Request, res: Response) => {
   const user = getReqUser(req);
   const ytKey = getActiveYouTubeKey();
-  const ytOAuth = user ? db.getYouTubeOAuth(user.id) : undefined;
+  const ytOAuth = user ? await db.getYouTubeOAuth(user.id) : undefined;
   const ytConnected = Boolean(ytKey || ytOAuth);
   const adapters: PlatformAdapterInfo[] = [
     {
@@ -6741,7 +7334,7 @@ app.get('/api/platforms/status', (req: Request, res: Response) => {
   ];
 
   res.json({ adapters });
-});
+}));
 
 app.post('/api/platforms/publish', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
@@ -6780,14 +7373,19 @@ app.post('/api/platforms/publish', (req: Request, res: Response) => {
 // ==========================================
 // SYSTEM PERSISTENCE, BACKUPS & MONITORING (OWNER/ADMIN ONLY)
 // ==========================================
-app.get('/api/system/persistence-status', (req: Request, res: Response) => {
+app.get('/api/system/persistence-status', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner' && user.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden: owner or admin authorization required.' });
   }
-  const health = db.getPersistenceHealth();
-  const backups = db.listBackups().slice(0, 15).map((b) => ({
+  const [health, dbCheck, backupsList, s3Health] = await Promise.all([
+    db.getPersistenceHealth(),
+    db.healthCheck(),
+    db.listBackups(),
+    checkS3Health(),
+  ]);
+  const backups = backupsList.slice(0, 15).map((b) => ({
     filename: b.filename,
     reason: b.reason,
     createdAt: b.createdAt,
@@ -6797,17 +7395,26 @@ app.get('/api/system/persistence-status', (req: Request, res: Response) => {
     counts: b.counts,
     verified: b.verified,
   }));
-  res.json({ health, backups });
-});
+  res.json({
+    health,
+    database: dbCheck,
+    objectStorage: {
+      provider: isS3Configured() ? 'supabase_s3' : 'local_persistent',
+      bucket: getS3Config()?.bucket || null,
+      ...s3Health,
+    },
+    backups,
+  });
+}));
 
-app.post('/api/system/backup', (req: Request, res: Response) => {
+app.post('/api/system/backup', ah(async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   if (user.role !== 'owner' && user.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden: owner or admin authorization required.' });
   }
   const reason = String(req.body?.reason || 'manual_api').slice(0, 24);
-  const backup = db.createBackup(reason);
+  const backup = await db.createBackup(reason);
   res.status(201).json({
     success: true,
     backup: {
@@ -6820,6 +7427,64 @@ app.post('/api/system/backup', (req: Request, res: Response) => {
       verified: backup.verified,
     },
   });
+}));
+
+// ==========================================
+// MOTHERLAND GAMES HUB & LIVE SPY MATCHMAKING
+// ==========================================
+app.get('/api/games/catalog', (_req: Request, res: Response) => {
+  res.json({ games: GAME_CATALOG });
+});
+
+app.get('/api/games/live-spy/state', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const state = liveSpyEngine.getPublicRoomForUser(user.id);
+  res.json({ state });
+});
+
+app.get('/api/games/live-spy/secret', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const secret = liveSpyEngine.getSecretForUser(user.id);
+  res.json({ secret });
+});
+
+app.post('/api/games/live-spy/play-now', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const rawCap = Number(req.body?.capacity);
+  const capacity = rawCap === 8 ? 8 : 6;
+  const state = liveSpyEngine.joinMatchmaking(
+    {
+      id: user.id,
+      displayName: user.displayName,
+      username: user.username,
+      avatar: user.avatar,
+    },
+    capacity
+  );
+  res.json({ state });
+});
+
+app.post('/api/games/live-spy/leave', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  liveSpyEngine.leaveRoom(user.id);
+  res.json({ ok: true });
+});
+
+// Express JSON error guard for async API & media routes (registered before SPA fallback)
+app.use(['/api', '/uploads'], (err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('[MOTHERLAND] Request error:', err);
+  if (res.headersSent) return;
+  const status =
+    typeof err?.statusCode === 'number'
+      ? err.statusCode
+      : typeof err?.status === 'number'
+      ? err.status
+      : 500;
+  res.status(status).json({ error: err?.message || 'Internal server error' });
 });
 
 // ==========================================
@@ -6827,6 +7492,9 @@ app.post('/api/system/backup', (req: Request, res: Response) => {
 // ==========================================
 
 async function startServer() {
+  // Initialize active database backend (PostgreSQL + migrations OR persistent JSON adapter)
+  await initDatabase();
+
   const isDev = process.env.NODE_ENV !== 'production';
   const httpServer = http.createServer(app);
 
@@ -6840,19 +7508,20 @@ async function startServer() {
     const userSockets = wsConnections.get(userId)!;
     const wasOffline = userSockets.size === 0;
     userSockets.add(ws);
-    db.touchUserLastActive(userId);
+    void db.touchUserLastActive(userId).catch(() => {});
 
     if (wasOffline) {
-      notifyUserFriendsPresence(userId, true);
+      void notifyUserFriendsPresence(userId, true).catch(() => {});
     }
 
     try {
       ws.send(JSON.stringify({ event: 'ws:ready', payload: { userId } }));
+      liveSpyEngine.handleSocketConnected(userId);
     } catch {
       // Ignore send error on immediate close
     }
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       try {
         const parsed = JSON.parse(String(raw));
         const ev = parsed?.event;
@@ -6863,11 +7532,71 @@ async function startServer() {
           return;
         }
 
+        if (typeof ev === 'string' && ev.startsWith('spy:')) {
+          const spyUser = await db.findUserById(userId);
+          if (!spyUser) return;
+          if (ev === 'spy:join_queue') {
+            liveSpyEngine.joinMatchmaking(
+              {
+                id: spyUser.id,
+                displayName: spyUser.displayName,
+                username: spyUser.username,
+                avatar: spyUser.avatar,
+              },
+              Number(payload.capacity) === 8 ? 8 : 6
+            );
+          } else if (ev === 'spy:leave_queue') {
+            liveSpyEngine.leaveRoom(userId);
+          } else if (ev === 'spy:sync') {
+            liveSpyEngine.handleSocketConnected(userId);
+          } else if (ev === 'spy:media_state') {
+            liveSpyEngine.updateMediaState(
+              userId,
+              typeof payload.cameraOn === 'boolean' ? payload.cameraOn : undefined,
+              typeof payload.micMuted === 'boolean' ? payload.micMuted : undefined
+            );
+          } else if (ev === 'spy:webrtc_signal') {
+            liveSpyEngine.relayWebRtcSignal(
+              userId,
+              String(payload.targetUserId || ''),
+              payload
+            );
+          } else if (ev === 'spy:submit_clue') {
+            const res = liveSpyEngine.submitClue(userId, String(payload.clue || ''));
+            if (!res.ok && res.error) {
+              sendWsToUser(userId, 'spy:error', { message: res.error });
+            }
+          } else if (ev === 'spy:chat') {
+            const res = liveSpyEngine.sendChatMessage(userId, String(payload.text || ''));
+            if (!res.ok && res.error) {
+              sendWsToUser(userId, 'spy:error', { message: res.error });
+            }
+          } else if (ev === 'spy:ready_to_vote') {
+            liveSpyEngine.markReadyToVote(userId);
+          } else if (ev === 'spy:vote') {
+            const res = liveSpyEngine.submitVote(userId, String(payload.targetUserId || ''));
+            if (!res.ok && res.error) {
+              sendWsToUser(userId, 'spy:error', { message: res.error });
+            }
+          } else if (ev === 'spy:play_again') {
+            liveSpyEngine.requestPlayAgain(
+              {
+                id: spyUser.id,
+                displayName: spyUser.displayName,
+                username: spyUser.username,
+                avatar: spyUser.avatar,
+              },
+              payload.capacity === 8 ? 8 : payload.capacity === 6 ? 6 : undefined
+            );
+          }
+          return;
+        }
+
         if (ev === 'chat:typing' && payload.conversationId) {
-          const conv = db.getConversationById(payload.conversationId);
+          const conv = await db.getConversationById(payload.conversationId);
           if (conv && db.isConversationParticipant(conv, userId)) {
             const pIds = conv.participantIds || conv.participants.map((p) => p.id);
-            const sender = db.findUserById(userId);
+            const sender = await db.findUserById(userId);
             for (const pid of pIds) {
               if (pid !== userId) {
                 sendWsToUser(pid, 'chat:typing', {
@@ -6887,7 +7616,7 @@ async function startServer() {
           const signalType = String(payload.signalType || '');
           const callId = String(payload.callId || `call_${Date.now()}`);
           const callType: 'audio' | 'video' = payload.callType === 'video' ? 'video' : 'audio';
-          const conv = convId ? db.getConversationById(convId) : undefined;
+          const conv = convId ? await db.getConversationById(convId) : undefined;
           if (!conv || !db.isConversationParticipant(conv, userId)) return;
 
           const pIds = conv.participantIds || conv.participants.map((p) => p.id);
@@ -6895,18 +7624,18 @@ async function startServer() {
             ? [String(payload.targetUserId)].filter((id) => id !== userId && pIds.includes(id))
             : pIds.filter((id) => id !== userId);
 
-          const caller = db.findUserById(userId);
+          const caller = await db.findUserById(userId);
           if (!caller) return;
 
           if (signalType === 'offer') {
             // Privacy & block checks on call initiation
             const allowedTargets: string[] = [];
             for (const tid of targets) {
-              const targetAcc = db.findUserById(tid);
-              if (!targetAcc || db.isBlocked(userId, tid)) continue;
+              const targetAcc = await db.findUserById(tid);
+              if (!targetAcc || (await db.isBlocked(userId, tid))) continue;
               const callPolicy = targetAcc.privacy?.allowCalls || 'everyone';
               if (callPolicy === 'none') continue;
-              if (callPolicy === 'friends' && !db.isFriend(userId, tid)) continue;
+              if (callPolicy === 'friends' && !(await db.isFriend(userId, tid))) continue;
               allowedTargets.push(tid);
             }
 
@@ -6921,10 +7650,10 @@ async function startServer() {
               return;
             }
 
-            const existingCall = db.getCallRecordById(callId);
+            const existingCall = await db.getCallRecordById(callId);
             if (!existingCall) {
-              const firstPeer = db.findUserById(allowedTargets[0]);
-              db.addCallRecord({
+              const firstPeer = await db.findUserById(allowedTargets[0]);
+              await db.addCallRecord({
                 id: callId,
                 conversationId: convId,
                 callerId: userId,
@@ -6959,17 +7688,17 @@ async function startServer() {
           }
 
           if (signalType === 'accept') {
-            db.updateCallRecord(callId, { status: 'connected' });
+            await db.updateCallRecord(callId, { status: 'connected' });
           } else if (signalType === 'decline' || signalType === 'busy') {
-            db.updateCallRecord(callId, {
+            await db.updateCallRecord(callId, {
               status: signalType === 'busy' ? 'busy' : 'declined',
               endedAt: new Date().toISOString(),
             });
           } else if (signalType === 'hangup' || signalType === 'missed') {
-            const existing = db.getCallRecordById(callId);
+            const existing = await db.getCallRecordById(callId);
             const wasConnected = existing?.status === 'connected';
             const finalStatus = signalType === 'missed' ? 'missed' : wasConnected ? 'ended' : 'missed';
-            db.updateCallRecord(callId, {
+            await db.updateCallRecord(callId, {
               status: finalStatus,
               durationSeconds: Number(payload.durationSeconds || existing?.durationSeconds || 0),
               endedAt: new Date().toISOString(),
@@ -6978,7 +7707,7 @@ async function startServer() {
               for (const tid of existing.calleeIds) {
                 if (tid === userId && existing.callerId === userId) continue;
                 if (tid === userId) continue;
-                const peer = db.findUserById(tid);
+                const peer = await db.findUserById(tid);
                 if (peer && peer.notificationPrefs?.calls !== false) {
                   const notif = {
                     id: `notif_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
@@ -6998,7 +7727,7 @@ async function startServer() {
                     isRead: false,
                     createdAt: new Date().toISOString(),
                   };
-                  db.addNotification(notif);
+                  await db.addNotification(notif);
                   sendWsToUser(tid, 'notification:new', notif);
                 }
               }
@@ -7022,19 +7751,22 @@ async function startServer() {
     });
 
     ws.on('close', () => {
-      db.touchUserLastActive(userId);
+      void db.touchUserLastActive(userId).catch(() => {});
       const set = wsConnections.get(userId);
+      let remaining = false;
       if (set) {
         set.delete(ws);
+        remaining = set.size > 0;
         if (set.size === 0) {
           wsConnections.delete(userId);
-          notifyUserFriendsPresence(userId, false);
+          void notifyUserFriendsPresence(userId, false).catch(() => {});
         }
       }
+      liveSpyEngine.handleSocketDisconnected(userId, remaining);
     });
   });
 
-  httpServer.on('upgrade', (request, socket, head) => {
+  httpServer.on('upgrade', async (request, socket, head) => {
     try {
       const reqUrl = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
       if (reqUrl.pathname !== '/ws') {
@@ -7045,24 +7777,29 @@ async function startServer() {
       const cookieToken = request.headers.cookie ? parseCookies(request.headers.cookie)[AUTH_COOKIE_NAME] || '' : '';
       const rawToken =
         tokenParam || (authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '') || cookieToken.trim();
-      const session = rawToken ? db.findSessionByToken(rawToken) : undefined;
+      const session = rawToken ? await db.findSessionByToken(rawToken) : undefined;
       if (!session) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
+        if (!socket.destroyed) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+        }
         return;
       }
-      const user = db.findUserById(session.userId);
+      const user = await db.findUserById(session.userId);
       if (!user) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
+        if (!socket.destroyed) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+        }
         return;
       }
+      if (socket.destroyed) return;
 
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request, user.id);
       });
     } catch {
-      socket.destroy();
+      if (!socket.destroyed) socket.destroy();
     }
   });
 
@@ -7071,10 +7808,28 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: isHmrDisabled ? false : undefined,
+        hmr: isHmrDisabled ? false : { server: httpServer },
+        watch: isHmrDisabled ? null : undefined,
       },
       appType: 'spa',
     });
+    if (isHmrDisabled) {
+      app.get('/@vite/client', async (_req: Request, res: Response, next) => {
+        try {
+          const result = await vite.transformRequest('/@vite/client');
+          if (!result || !result.code) return next();
+          const patched = result.code.replace(
+            /transport\.connect\([^;]*\);/,
+            '/* HMR disabled (DISABLE_HMR=true): WebSocket connection skipped */'
+          );
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+          if (result.etag) res.setHeader('ETag', result.etag);
+          res.send(patched);
+        } catch {
+          next();
+        }
+      });
+    }
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
@@ -7087,35 +7842,34 @@ async function startServer() {
   }
 
   // Run initial UTC story expiration sweep cleanly without touching accounts or posts
-  db.expireStoriesOlderThan24hUtc();
+  await db.expireStoriesOlderThan24hUtc().catch((err) => {
+    console.error('[MOTHERLAND] Initial UTC story expiry check error:', err);
+  });
 
   // Periodic background jobs:
   // 1) Strict 24-hour UTC story expiration sweep every 5 minutes
   const storyExpiryInterval = setInterval(() => {
-    try {
-      db.expireStoriesOlderThan24hUtc();
-    } catch (err) {
+    void db.expireStoriesOlderThan24hUtc().catch((err) => {
       console.error('[MOTHERLAND] UTC story expiry check error:', err);
-    }
+    });
   }, 5 * 60 * 1000);
   storyExpiryInterval.unref?.();
 
   // 2) Automated independent verified DB backup every 15 minutes
   const backupInterval = setInterval(() => {
-    try {
-      db.createBackup('scheduled');
-    } catch (err) {
+    void db.createBackup('scheduled').catch((err) => {
       console.error('[MOTHERLAND] Scheduled backup error:', err);
-    }
+    });
   }, 15 * 60 * 1000);
   backupInterval.unref?.();
 
-  const handleGracefulShutdown = (signal: string) => {
+  const handleGracefulShutdown = async (signal: string) => {
     console.log(`[MOTHERLAND] Received ${signal}. Flushing database & creating shutdown snapshot...`);
     try {
       clearInterval(storyExpiryInterval);
       clearInterval(backupInterval);
-      db.save();
+      await db.save();
+      await closeDatabase();
     } catch (err) {
       console.error('[MOTHERLAND] Shutdown save error:', err);
     }
@@ -7123,11 +7877,17 @@ async function startServer() {
     setTimeout(() => process.exit(0), 2000).unref?.();
   };
 
-  process.once('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
-  process.once('SIGINT', () => handleGracefulShutdown('SIGINT'));
+  process.once('SIGTERM', () => {
+    void handleGracefulShutdown('SIGTERM');
+  });
+  process.once('SIGINT', () => {
+    void handleGracefulShutdown('SIGINT');
+  });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[MOTHERLAND] Super App Engine (HTTP + WebSocket) running on http://0.0.0.0:${PORT}`);
+    console.log(
+      `[MOTHERLAND] Super App Engine (HTTP + WebSocket | DB=${selectDatabaseDriver()} | S3=${isS3Configured() ? 'enabled' : 'disabled'}) running on http://0.0.0.0:${PORT}`
+    );
   });
 }
 

@@ -13,7 +13,13 @@ export interface RealtimeEvent {
     | 'call:signal'
     | 'friend:update'
     | 'notification:new'
-    | 'presence:update';
+    | 'presence:update'
+    | 'spy:state'
+    | 'spy:secret'
+    | 'spy:chat'
+    | 'spy:webrtc_signal'
+    | 'spy:left'
+    | 'spy:error';
   [key: string]: any;
 }
 

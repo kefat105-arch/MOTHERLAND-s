@@ -3,6 +3,7 @@ import { Mic, Square, Trash2, Send, Play, Pause, RotateCcw } from 'lucide-react'
 import { api } from '../../api';
 
 interface VoiceRecorderBarProps {
+  conversationId?: string;
   onCancel: () => void;
   onSendVoice: (payload: {
     url: string;
@@ -21,7 +22,7 @@ function formatSec(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export const VoiceRecorderBar: React.FC<VoiceRecorderBarProps> = ({ onCancel, onSendVoice }) => {
+export const VoiceRecorderBar: React.FC<VoiceRecorderBarProps> = ({ conversationId, onCancel, onSendVoice }) => {
   const [status, setStatus] = useState<'initializing' | 'recording' | 'preview' | 'uploading' | 'error'>('initializing');
   const [errorMsg, setErrorMsg] = useState('');
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -208,7 +209,11 @@ export const VoiceRecorderBar: React.FC<VoiceRecorderBarProps> = ({ onCancel, on
     try {
       const ext = mimeRef.current.includes('mp4') ? 'm4a' : mimeRef.current.includes('ogg') ? 'ogg' : 'webm';
       const file = new File([blob], `wave-voice-${Date.now()}.${ext}`, { type: blob.type || mimeRef.current });
-      const uploaded = await api.uploadMediaFile(file, (pct) => setUploadProgress(pct));
+      const uploaded = await api.uploadMediaFile(
+        file,
+        (pct) => setUploadProgress(pct),
+        conversationId ? { visibility: 'private', conversationId } : { visibility: 'private' }
+      );
       await onSendVoice({
         url: uploaded.url,
         mimeType: uploaded.mimeType,

@@ -62,6 +62,8 @@ import { WatchHistoryModal } from './components/WatchHistoryModal';
 import { CreatorProfileModal, CreatorProfileTarget } from './components/CreatorProfileModal';
 import { BangladeshServicesView } from './components/BangladeshServicesView';
 import { ServerManagementModal } from './components/ServerManagementModal';
+import { GamesHubView } from './components/games/GamesHubView';
+import { BmGamesIcon } from './components/games/BmGamesIcon';
 import { useWebRTC } from './hooks/useWebRTC';
 import {
   useBackHandler,
@@ -154,6 +156,13 @@ export default function App() {
   const seenNotifIdsRef = useRef<Set<string>>(new Set());
   const activeCallPhaseRef = useRef<string>('idle');
   currentUserRef.current = currentUser;
+  const spyEventListenersRef = useRef<Set<(evt: RealtimeEvent) => void>>(new Set());
+  const subscribeSpyEvents = useCallback((listener: (evt: RealtimeEvent) => void) => {
+    spyEventListenersRef.current.add(listener);
+    return () => {
+      spyEventListenersRef.current.delete(listener);
+    };
+  }, []);
 
   // Loading States (Never block initial render with a slow splash wall)
   const [isLoadingFeed, setIsLoadingFeed] = useState(false);
@@ -399,6 +408,8 @@ export default function App() {
           ...prev,
           [evt.userId]: Boolean(evt.isOnline),
         }));
+      } else if (typeof evt.type === 'string' && evt.type.startsWith('spy:')) {
+        spyEventListenersRef.current.forEach((cb) => cb(evt));
       }
     },
     [refreshUnreadMessages, refreshNotifications]
@@ -1959,14 +1970,16 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={refreshAll}
-                    disabled={isRefreshing}
-                    className="w-10 h-10 rounded-xl ml-glass hover:bg-[var(--bg-surface-alt)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-center transition-colors flex-shrink-0"
-                    title="Refresh Feed"
+                    data-testid="bm-games-hub-btn"
+                    onClick={() => {
+                      setActiveNav('games');
+                      window.scrollTo({ top: 0, behavior: 'auto' });
+                    }}
+                    className="w-10 h-10 rounded-xl ml-glass hover:bg-[var(--bg-surface-alt)] border border-[var(--accent-primary-border)]/45 text-[var(--text-primary)] flex items-center justify-center transition-all active:scale-95 flex-shrink-0"
+                    title="BM Games"
+                    aria-label="BM Games"
                   >
-                    <RefreshCw
-                      className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-[var(--accent-primary)]' : ''}`}
-                    />
+                    <BmGamesIcon className="w-6 h-6" />
                   </button>
                 </div>
 
@@ -2429,6 +2442,19 @@ export default function App() {
             onOpenAuth={() => setIsAuthOpen(true)}
           />
         )}
+
+        {/* ========================================================= */}
+        {/* TAB 8: MOTHERLAND GAMES HUB (BM GAMES)                    */}
+        {/* ========================================================= */}
+        {activeNav === 'games' && (
+          <GamesHubView
+            currentUser={currentUser}
+            sendWsEvent={sendWsEvent}
+            subscribeSpyEvents={subscribeSpyEvents}
+            onBack={() => navigateToHome({ scrollMode: 'restore' })}
+            onRequireAuth={() => setIsAuthOpen(true)}
+          />
+        )}
       </main>
 
       {/* Persistent Zero-Restart Watch Player + Floating Docked Mini-Player */}
@@ -2441,7 +2467,7 @@ export default function App() {
         }
         isMinimized={isWatchMinimized}
         isFullWatchVisible={activeNav === 'video' && !isWatchMinimized}
-        isPausedByOverlay={shortsPlayerState.isOpen || activeNav === 'youtube'}
+        isPausedByOverlay={shortsPlayerState.isOpen || activeNav === 'youtube' || activeNav === 'games'}
         anchorElement={watchAnchorElement}
         onMinimize={() => setIsWatchMinimized(true)}
         onExpand={() => {

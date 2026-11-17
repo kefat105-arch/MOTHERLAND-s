@@ -425,9 +425,15 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
       prev.map((p) => (p.id === item.id ? { ...p, status: 'uploading', progress: 5, error: undefined } : p))
     );
     try {
-      const uploaded = await api.uploadMediaFile(item.file, (pct) => {
-        setPendingAttachments((prev) => prev.map((p) => (p.id === item.id ? { ...p, progress: pct } : p)));
-      });
+      const uploaded = await api.uploadMediaFile(
+        item.file,
+        (pct) => {
+          setPendingAttachments((prev) => prev.map((p) => (p.id === item.id ? { ...p, progress: pct } : p)));
+        },
+        activeConversation?.id
+          ? { visibility: 'private', conversationId: activeConversation.id }
+          : { visibility: 'private' }
+      );
       setPendingAttachments((prev) =>
         prev.map((p) =>
           p.id === item.id
@@ -1871,6 +1877,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
 
               {isRecordingVoice ? (
                 <VoiceRecorderBar
+                  conversationId={activeConversation?.id}
                   onCancel={() => setIsRecordingVoice(false)}
                   onSendVoice={handleSendVoiceNote}
                 />

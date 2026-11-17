@@ -48,7 +48,44 @@ import type {
   ServerRegistryEntry,
   ServerSwitchHistoryEntry,
   AdminConfigChatMessage,
+  LoginActivityItem,
+  FieldPrivacyVisibility,
 } from '../types';
+
+export function normalizeEmailValue(raw?: string): string {
+  return String(raw || '').trim().toLowerCase();
+}
+
+export function normalizePhoneValue(raw?: string): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  const hasPlus = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return '';
+  return hasPlus ? `+${digits}` : digits;
+}
+
+export function isValidEmailFormat(raw?: string): boolean {
+  const email = normalizeEmailValue(raw);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+export function isValidPhoneFormat(raw?: string): boolean {
+  const normalized = normalizePhoneValue(raw);
+  const digits = normalized.replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 16;
+}
+
+export function canViewerSeePrivacyField(
+  visibility: FieldPrivacyVisibility | undefined,
+  isSelf: boolean,
+  isFriend: boolean
+): boolean {
+  if (isSelf) return true;
+  if (visibility === 'public') return true;
+  if (visibility === 'friends') return isFriend;
+  return false;
+}
 
 export interface UserAccount {
   id: string;
@@ -57,7 +94,11 @@ export interface UserAccount {
   passwordHash: string;
   passwordSalt: string;
   passwordIterations?: number;
+  hasPassword?: boolean;
   authProvider?: 'password' | 'google';
+  authProviders?: ('password' | 'google' | 'phone' | 'email')[];
+  googleId?: string;
+  googleEmail?: string;
   displayName: string;
   avatar: string;
   coverImage: string;
@@ -77,6 +118,8 @@ export interface UserAccount {
   isPhoneVerified: boolean;
   twoFactorEnabled: boolean;
   isPrivate: boolean;
+  deactivated?: boolean;
+  deactivatedAt?: string;
   privacy: UserPrivacySettings;
   notificationPrefs?: NotificationPreferences;
   translationPrefs?: TranslationPreferences;
@@ -96,10 +139,12 @@ export interface Session {
   id?: string;
   token?: string;
   tokenHash?: string;
+  refreshTokenHash?: string;
+  refreshExpiresAt?: string;
   userId: string;
   deviceName?: string;
   ipAddress?: string;
-  authMethod?: 'password' | 'google' | 'register' | 'switch' | 'legacy';
+  authMethod?: 'password' | 'google' | 'register' | 'switch' | 'legacy' | 'reactivate' | 'recovery';
   createdAt: string;
   lastUsedAt?: string;
   expiresAt: string;
@@ -137,10 +182,20 @@ export interface BlockRecord {
   createdAt: string;
 }
 
+export type OtpPurpose = 'register' | 'phone_verify' | 'email_verify' | 'forgot_password' | 'contact_change';
+
 export interface OtpRecord {
-  identifier: string; // email or phone
+  identifier: string; // normalized email or phone
   code: string;
-  type: 'register' | 'phone_verify' | 'forgot_password';
+  type: OtpPurpose;
+  channel?: 'email' | 'sms';
+  expiresAt: number;
+}
+
+export interface VerifiedContactRecord {
+  identifier: string;
+  method: 'email' | 'phone';
+  verifiedAt: string;
   expiresAt: number;
 }
 
@@ -187,6 +242,8 @@ export interface DatabaseSchema {
   watchHistory?: WatchHistoryRecord[];
   reports?: UserReport[];
   otpCodes: OtpRecord[];
+  verifiedContacts?: VerifiedContactRecord[];
+  loginActivity?: LoginActivityItem[];
   youtubeOAuth?: Record<string, YouTubeOAuthRecord>;
   servers?: ServerRegistryEntry[];
   serverHistory?: ServerSwitchHistoryEntry[];
@@ -271,6 +328,8 @@ function getInitialDbData(): DatabaseSchema {
     watchHistory: [],
     reports: [],
     otpCodes: [],
+    verifiedContacts: [],
+    loginActivity: [],
     youtubeOAuth: {},
     servers: [],
     serverHistory: [],
@@ -326,6 +385,8 @@ export class MotherlandDatabase {
     if (!Array.isArray(this.data.watchHistory)) this.data.watchHistory = [];
     if (!Array.isArray(this.data.reports)) this.data.reports = [];
     if (!Array.isArray(this.data.otpCodes)) this.data.otpCodes = [];
+    if (!Array.isArray(this.data.verifiedContacts)) this.data.verifiedContacts = [];
+    if (!Array.isArray(this.data.loginActivity)) this.data.loginActivity = [];
     if (!Array.isArray(this.data.mediaAssets)) this.data.mediaAssets = [];
     if (!Array.isArray(this.data.expiredStoriesArchive)) this.data.expiredStoriesArchive = [];
     if (!Array.isArray(this.data.migrationsApplied)) this.data.migrationsApplied = [];
@@ -482,6 +543,49 @@ export class MotherlandDatabase {
       const rec: MigrationRecord = {
         version: 3,
         name: 'v3_media_asset_metadata_registry',
+        appliedAt: nowIso,
+        backupFile: preMigrationBackupFile,
+      };
+      this.data.migrationsApplied!.push(rec);
+      newlyApplied.push(rec);
+    }
+
+    // v3 -> v4: Permanent identity linking, field-level privacy controls, reversible deactivation & refresh sessions
+    if (Number(this.data.schemaVersion || 0) < 4) {
+      for (const u of this.data.users) {
+        if (typeof u.deactivated !== 'boolean') u.deactivated = false;
+        if (typeof u.hasPassword !== 'boolean') {
+          u.hasPassword = u.authProvider !== 'google';
+        }
+        if (!Array.isArray(u.authProviders) || u.authProviders.length === 0) {
+          const providers: ('password' | 'google' | 'phone' | 'email')[] = [];
+          if (u.authProvider === 'google' || u.googleId) providers.push('google');
+          if (u.hasPassword !== false) providers.push('password');
+          if (u.email) providers.push('email');
+          if (u.phoneNumber) providers.push('phone');
+          u.authProviders = providers;
+        }
+        u.privacy = {
+          profileVisibility: u.privacy?.profileVisibility || 'public',
+          showOnlineStatus: u.privacy?.showOnlineStatus !== false,
+          showLastSeen: u.privacy?.showLastSeen !== false,
+          showReadReceipts: u.privacy?.showReadReceipts !== false,
+          allowDirectMessages: u.privacy?.allowDirectMessages || 'everyone',
+          allowCalls: u.privacy?.allowCalls || 'everyone',
+          showContactInfo: u.privacy?.showContactInfo !== false,
+          dobVisibility: u.privacy?.dobVisibility || 'only_me',
+          genderVisibility: u.privacy?.genderVisibility || 'friends',
+          contactVisibility:
+            u.privacy?.contactVisibility ||
+            (u.privacy?.showContactInfo === false ? 'only_me' : 'friends'),
+        };
+      }
+      if (!Array.isArray(this.data.verifiedContacts)) this.data.verifiedContacts = [];
+      if (!Array.isArray(this.data.loginActivity)) this.data.loginActivity = [];
+      this.data.schemaVersion = 4;
+      const rec: MigrationRecord = {
+        version: 4,
+        name: 'v4_facebook_identity_deactivation_and_privacy',
         appliedAt: nowIso,
         backupFile: preMigrationBackupFile,
       };
@@ -3262,4 +3366,13 @@ export class MotherlandDatabase {
   }
 }
 
-export const db = new MotherlandDatabase();
+let _lazyDbInstance: MotherlandDatabase | null = null;
+export const db: MotherlandDatabase = new Proxy({} as MotherlandDatabase, {
+  get(_target, prop) {
+    if (!_lazyDbInstance) {
+      _lazyDbInstance = new MotherlandDatabase();
+    }
+    const val = (_lazyDbInstance as any)[prop];
+    return typeof val === 'function' ? val.bind(_lazyDbInstance) : val;
+  },
+});

@@ -33,6 +33,10 @@ import type {
   ServerSwitchHistoryEntry,
   AdminConfigChatMessage,
   TranslationPreferences,
+  GameCatalogEntry,
+  LiveSpyCapacity,
+  LiveSpyPublicState,
+  LiveSpySecretAssignment,
 } from './types';
 import {
   getSuppressedIdsHeaderValue,
@@ -550,7 +554,8 @@ export const api = {
   // MOTHERLAND Device Media Upload with Real Progress
   async uploadMediaFile(
     file: File,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    options?: { visibility?: 'public' | 'private'; conversationId?: string }
   ): Promise<{ url: string; filename: string; size: number; mimeType: string }> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -561,6 +566,12 @@ export const api = {
       xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
       xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name));
       xhr.setRequestHeader('x-mime-type', file.type || 'application/octet-stream');
+      if (options?.visibility) {
+        xhr.setRequestHeader('x-visibility', options.visibility);
+      }
+      if (options?.conversationId) {
+        xhr.setRequestHeader('x-conversation-id', options.conversationId);
+      }
 
       xhr.upload.onprogress = (evt) => {
         if (evt.lengthComputable && onProgress) {
@@ -1614,6 +1625,42 @@ export const api = {
     if (!res.ok) {
       return { found: false, kind: preferredType === 'short' ? 'short' : 'long' };
     }
+    return res.json();
+  },
+
+  // Games Hub & LIVE SPY Multiplayer
+  async getGamesCatalog(): Promise<{ games: GameCatalogEntry[] }> {
+    const res = await authFetch(`${API_BASE}/games/catalog`);
+    if (!res.ok) return { games: [] };
+    return res.json();
+  },
+
+  async getLiveSpyState(): Promise<{ state: LiveSpyPublicState | null }> {
+    const res = await authFetch(`${API_BASE}/games/live-spy/state`);
+    if (!res.ok) return { state: null };
+    return res.json();
+  },
+
+  async getLiveSpySecret(): Promise<{ secret: LiveSpySecretAssignment | null }> {
+    const res = await authFetch(`${API_BASE}/games/live-spy/secret`);
+    if (!res.ok) return { secret: null };
+    return res.json();
+  },
+
+  async joinLiveSpyQueue(capacity: LiveSpyCapacity): Promise<{ state: LiveSpyPublicState }> {
+    const res = await authFetch(`${API_BASE}/games/live-spy/play-now`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capacity }),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async leaveLiveSpyRoom(): Promise<{ ok: boolean }> {
+    const res = await authFetch(`${API_BASE}/games/live-spy/leave`, {
+      method: 'POST',
+    });
+    if (!res.ok) return { ok: false };
     return res.json();
   },
 };
