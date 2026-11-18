@@ -212,7 +212,13 @@ export const NotificationsDrawer: React.FC<NotificationsDrawerProps> = ({
                 }`}
               >
                 <div className="w-9 h-9 rounded-xl overflow-hidden flex-shrink-0 border border-[var(--border-subtle)] relative">
-                  <img src={n.sender.avatar} alt={n.sender.displayName} className="w-full h-full object-cover" />
+                  {n.sender.avatar ? (
+                    <img src={n.sender.avatar} alt={n.sender.displayName} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-[var(--bg-surface-alt)] flex items-center justify-center text-xs font-bold text-[var(--text-primary)]">
+                      {(n.sender.displayName || 'M').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-[var(--bg-surface)] flex items-center justify-center shadow-sm">
                     {getIcon(n.type, n.category)}
                   </div>

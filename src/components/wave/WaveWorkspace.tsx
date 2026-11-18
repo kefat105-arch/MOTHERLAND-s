@@ -939,11 +939,17 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                 className="flex flex-col items-center gap-1 shrink-0 w-14 group cursor-pointer"
               >
                 <div className="relative">
-                  <img
-                    src={peer.avatar}
-                    alt={peer.displayName}
-                    className="w-11 h-11 rounded-full object-cover ring-2 ring-[var(--ml-accent-teal)]/50 group-hover:ring-[var(--ml-accent-teal)] transition"
-                  />
+                  {peer.avatar ? (
+                    <img
+                      src={peer.avatar}
+                      alt={peer.displayName}
+                      className="w-11 h-11 rounded-full object-cover ring-2 ring-[var(--ml-accent-teal)]/50 group-hover:ring-[var(--ml-accent-teal)] transition"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-sm ring-2 ring-[var(--ml-accent-teal)]/50">
+                      {(peer.displayName || 'W').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[var(--ml-surface)]" />
                 </div>
                 <span className="text-[11px] font-medium text-[var(--ml-text-secondary)] truncate w-full text-center">
@@ -970,7 +976,13 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                   className="w-full flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-xl hover:bg-[var(--ml-surface-soft)] transition text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <img src={person.avatar} alt={person.displayName} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                    {person.avatar ? (
+                      <img src={person.avatar} alt={person.displayName} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-xs shrink-0">
+                        {(person.displayName || 'W').slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <p className="text-xs font-semibold text-[var(--ml-text-primary)] truncate">{person.displayName}</p>
                       <p className="text-[11px] text-[var(--ml-text-muted)] truncate">@{person.username}</p>
@@ -1031,7 +1043,13 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                     className="flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl hover:bg-[var(--ml-surface-soft)] transition"
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <img src={peerAvatar} alt={peerTitle} className="w-10 h-10 rounded-full object-cover shrink-0" />
+                      {peerAvatar ? (
+                        <img src={peerAvatar} alt={peerTitle} className="w-10 h-10 rounded-full object-cover shrink-0" />
+                      ) : (
+                        <div className="w-10 h-10 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-sm shrink-0">
+                          {(peerTitle || 'W').slice(0, 1).toUpperCase()}
+                        </div>
+                      )}
                       <div className="min-w-0">
                         <p className="text-sm font-semibold text-[var(--ml-text-primary)] truncate">{peerTitle}</p>
                         <div className="flex items-center gap-1.5 text-xs text-[var(--ml-text-muted)] tabular-nums">
@@ -1205,11 +1223,17 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                 </button>
 
                 <div className="relative shrink-0">
-                  <img
-                    src={getConvAvatar(activeConversation)}
-                    alt={getConvTitle(activeConversation)}
-                    className="w-10 h-10 rounded-full object-cover"
-                  />
+                  {getConvAvatar(activeConversation) ? (
+                    <img
+                      src={getConvAvatar(activeConversation)}
+                      alt={getConvTitle(activeConversation)}
+                      className="w-10 h-10 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-sm">
+                      {(getConvTitle(activeConversation) || 'W').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   {activePeerOnline && (
                     <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[var(--ml-surface)]" />
                   )}
@@ -1455,11 +1479,17 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                   >
                     <div className={`flex items-end gap-2 max-w-[88%] sm:max-w-[74%] ${isOwn ? 'flex-row-reverse' : ''}`}>
                       {!isOwn && (
-                        <img
-                          src={msg.senderAvatar}
-                          alt={msg.senderName}
-                          className="w-7 h-7 rounded-full object-cover shrink-0 mb-1"
-                        />
+                        msg.senderAvatar ? (
+                          <img
+                            src={msg.senderAvatar}
+                            alt={msg.senderName}
+                            className="w-7 h-7 rounded-full object-cover shrink-0 mb-1"
+                          />
+                        ) : (
+                          <div className="w-7 h-7 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-[10px] shrink-0 mb-1">
+                            {(msg.senderName || 'W').slice(0, 1).toUpperCase()}
+                          </div>
+                        )
                       )}
 
                       <div
@@ -1518,7 +1548,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                                   />
                                 );
                               }
-                              if (att.mediaType === 'image') {
+                              if (att.mediaType === 'image' && att.url) {
                                 return (
                                   <a
                                     key={idx}
@@ -1535,7 +1565,7 @@ export const WaveWorkspace: React.FC<WaveWorkspaceProps> = ({
                                   </a>
                                 );
                               }
-                              if (att.mediaType === 'video') {
+                              if (att.mediaType === 'video' && att.url) {
                                 return (
                                   <video
                                     key={idx}

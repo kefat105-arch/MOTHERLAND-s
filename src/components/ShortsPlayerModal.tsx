@@ -936,7 +936,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                   isActive ? 'z-[2] opacity-100' : 'z-0 opacity-0 pointer-events-none'
                 }`}
               >
-                {hasYtSlotUrl && (slotIsYt || ytSlotUrls[slot]) && (
+                {hasYtSlotUrl && ytSlotUrls[slot] && (slotIsYt || ytSlotUrls[slot]) && (
                   <iframe
                     ref={(el) => {
                       ytSlotRefs.current[slot] = el;
@@ -971,7 +971,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                       videoSlotRefs.current[slot] = el;
                     }}
                     src={slotShort.videoUrl}
-                    poster={slotShort.thumbnailUrl}
+                    poster={slotShort.thumbnailUrl || undefined}
                     preload="auto"
                     loop
                     playsInline

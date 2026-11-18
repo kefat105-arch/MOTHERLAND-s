@@ -376,11 +376,17 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
                           }
                           className="shrink-0 cursor-pointer"
                         >
-                          <img
-                            src={item.userAvatar}
-                            alt={item.userDisplayName}
-                            className={`${isReply ? 'w-6 h-6' : 'w-8 h-8'} rounded-xl object-cover border border-[var(--border-subtle)]`}
-                          />
+                          {item.userAvatar ? (
+                            <img
+                              src={item.userAvatar}
+                              alt={item.userDisplayName}
+                              className={`${isReply ? 'w-6 h-6' : 'w-8 h-8'} rounded-xl object-cover border border-[var(--border-subtle)]`}
+                            />
+                          ) : (
+                            <div className={`${isReply ? 'w-6 h-6 text-[10px]' : 'w-8 h-8 text-xs'} rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex items-center justify-center font-bold text-[var(--text-primary)]`}>
+                              {(item.userDisplayName || 'M').slice(0, 1).toUpperCase()}
+                            </div>
+                          )}
                         </button>
                         <div className="flex-1 min-w-0">
                           <div className="bg-[var(--bg-surface-alt)] p-2.5 rounded-2xl border border-[var(--border-subtle)]">
@@ -503,11 +509,17 @@ export const CommentsDrawer: React.FC<CommentsDrawerProps> = ({
             <div className="flex items-center gap-2">
               {currentUser ? (
                 <>
-                  <img
-                    src={currentUser.avatar}
-                    alt={currentUser.displayName}
-                    className="w-8 h-8 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
-                  />
+                  {currentUser.avatar ? (
+                    <img
+                      src={currentUser.avatar}
+                      alt={currentUser.displayName}
+                      className="w-8 h-8 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex-shrink-0 flex items-center justify-center text-xs font-bold text-[var(--text-primary)]">
+                      {(currentUser.displayName || 'M').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   {!isYouTube && (
                     <FirePickerTrigger
                       size="sm"

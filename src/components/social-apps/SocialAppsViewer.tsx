@@ -449,11 +449,17 @@ export const SocialAppsViewer: React.FC<SocialAppsViewerProps> = ({
                             key={c.id}
                             className="p-2.5 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex gap-2.5"
                           >
-                            <img
-                              src={c.authorProfileImageUrl || ''}
-                              alt={c.authorDisplayName}
-                              className="w-7 h-7 rounded-full object-cover flex-shrink-0 bg-[var(--bg-surface)]"
-                            />
+                            {c.authorProfileImageUrl ? (
+                              <img
+                                src={c.authorProfileImageUrl}
+                                alt={c.authorDisplayName}
+                                className="w-7 h-7 rounded-full object-cover flex-shrink-0 bg-[var(--bg-surface)]"
+                              />
+                            ) : (
+                              <div className="w-7 h-7 rounded-full bg-[var(--accent-primary-soft)] text-[var(--accent-primary)] flex items-center justify-center text-[10px] font-bold flex-shrink-0">
+                                {c.authorDisplayName?.[0] || 'U'}
+                              </div>
+                            )}
                             <div className="min-w-0 flex-1">
                               <p className="text-[11px] font-bold text-[var(--text-primary)]">
                                 {c.authorDisplayName}
@@ -489,12 +495,16 @@ export const SocialAppsViewer: React.FC<SocialAppsViewerProps> = ({
                         }}
                         className="text-left p-2 rounded-xl bg-[var(--bg-surface-alt)] hover:border-[var(--accent-primary-border)] border border-[var(--border-subtle)] transition-all space-y-2"
                       >
-                        <img
-                          src={vid.thumbnailUrl}
-                          alt={vid.title}
-                          loading="lazy"
-                          className="w-full aspect-video rounded-lg object-cover bg-black"
-                        />
+                        {vid.thumbnailUrl ? (
+                          <img
+                            src={vid.thumbnailUrl}
+                            alt={vid.title}
+                            loading="lazy"
+                            className="w-full aspect-video rounded-lg object-cover bg-black"
+                          />
+                        ) : (
+                          <div className="w-full aspect-video rounded-lg bg-black" />
+                        )}
                         <p className="font-bold text-xs text-[var(--text-primary)] line-clamp-2">
                           {vid.title}
                         </p>
@@ -570,17 +580,19 @@ export const SocialAppsViewer: React.FC<SocialAppsViewerProps> = ({
               </div>
 
               <div className="w-full rounded-2xl overflow-hidden bg-black/90 border border-[var(--border-subtle)] flex justify-center">
-                <iframe
-                  key={`${activePlatformEmbed?.embedUrl || SOCIAL_PLATFORMS.facebook.curatedItems[activeFbIndex]?.embedUrl}-${reloadNonce}`}
-                  src={
-                    activePlatformEmbed?.embedUrl ||
-                    SOCIAL_PLATFORMS.facebook.curatedItems[activeFbIndex]?.embedUrl
-                  }
-                  title="Facebook Official Plugin"
-                  className="w-full max-w-[600px] h-[440px] border-0 bg-white"
-                  allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"
-                  allowFullScreen
-                />
+                {(activePlatformEmbed?.embedUrl || SOCIAL_PLATFORMS.facebook.curatedItems[activeFbIndex]?.embedUrl) ? (
+                  <iframe
+                    key={`${activePlatformEmbed?.embedUrl || SOCIAL_PLATFORMS.facebook.curatedItems[activeFbIndex]?.embedUrl}-${reloadNonce}`}
+                    src={
+                      activePlatformEmbed?.embedUrl ||
+                      SOCIAL_PLATFORMS.facebook.curatedItems[activeFbIndex]?.embedUrl
+                    }
+                    title="Facebook Official Plugin"
+                    className="w-full max-w-[600px] h-[440px] border-0 bg-white"
+                    allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"
+                    allowFullScreen
+                  />
+                ) : null}
               </div>
 
               <div className="p-3 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] text-[11px] text-[var(--text-secondary)] space-y-1">

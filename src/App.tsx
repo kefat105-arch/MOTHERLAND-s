@@ -60,7 +60,7 @@ import { PullToRefresh } from './components/common/PullToRefresh';
 import { SearchModal } from './components/SearchModal';
 import { WatchHistoryModal } from './components/WatchHistoryModal';
 import { CreatorProfileModal, CreatorProfileTarget } from './components/CreatorProfileModal';
-import { BangladeshServicesView } from './components/BangladeshServicesView';
+import { MotherlandLiveView } from './components/live/MotherlandLiveView';
 import { ServerManagementModal } from './components/ServerManagementModal';
 import { GamesHubView } from './components/games/GamesHubView';
 import { BmGamesIcon } from './components/games/BmGamesIcon';
@@ -1553,12 +1553,16 @@ export default function App() {
                   onClick={() => openShortsPlayer(shorts, actualIndex >= 0 ? actualIndex : 0)}
                   className="flex-shrink-0 w-[132px] sm:w-[148px] aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] snap-start relative group text-left shadow-sm"
                 >
-                  <img
-                    src={short.thumbnailUrl}
-                    alt={short.title}
-                    loading="lazy"
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
+                  {short.thumbnailUrl ? (
+                    <img
+                      src={short.thumbnailUrl}
+                      alt={short.title}
+                      loading="lazy"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-slate-900" />
+                  )}
                   <div className="absolute inset-0 bg-gradient-to-t from-[#13161C]/90 via-[#13161C]/15 to-transparent" />
                   <div className="absolute bottom-2.5 left-2.5 right-2.5">
                     <p className="text-[11px] font-bold text-white line-clamp-2 leading-snug drop-shadow">
@@ -1630,11 +1634,17 @@ export default function App() {
                 }
                 className="w-full h-28 bg-black/20 overflow-hidden block"
               >
-                <img
-                  src={req.sender.avatar}
-                  alt={req.sender.displayName}
-                  className="w-full h-full object-cover"
-                />
+                {req.sender.avatar ? (
+                  <img
+                    src={req.sender.avatar}
+                    alt={req.sender.displayName}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full bg-[var(--accent-primary-soft)] flex items-center justify-center text-2xl font-bold text-[var(--accent-primary)]">
+                    {req.sender.displayName?.[0] || 'U'}
+                  </div>
+                )}
               </button>
               <div className="p-2.5 flex-1 flex flex-col justify-between gap-2">
                 <div className="min-w-0">
@@ -1695,11 +1705,17 @@ export default function App() {
                   }
                   className="w-full h-28 bg-black/20 overflow-hidden block"
                 >
-                  <img
-                    src={person.avatar}
-                    alt={person.displayName}
-                    className="w-full h-full object-cover"
-                  />
+                  {person.avatar ? (
+                    <img
+                      src={person.avatar}
+                      alt={person.displayName}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-[var(--accent-primary-soft)] flex items-center justify-center text-2xl font-bold text-[var(--accent-primary)]">
+                      {person.displayName?.[0] || 'U'}
+                    </div>
+                  )}
                 </button>
                 <div className="p-2.5 flex-1 flex flex-col justify-between gap-2">
                   <div className="min-w-0">
@@ -1799,7 +1815,7 @@ export default function App() {
           unreadNotifications={unreadNotificationsCount}
           unreadMessages={unreadMessagesCount}
           isYouTubeActive={false}
-          isBdServicesActive={activeNav === 'bd_services'}
+          isMotherlandLiveActive={activeNav === 'motherland_live'}
           onOpenNotifications={() => {
             if (requireSignedIn()) {
               refreshNotifications();
@@ -1825,8 +1841,8 @@ export default function App() {
             setActiveNav('youtube');
             setYtRefreshSignal((s) => s + 1);
           }}
-          onOpenBdServices={() => {
-            setActiveNav('bd_services');
+          onOpenMotherlandLive={() => {
+            setActiveNav('motherland_live');
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
           onLogoClick={() => {
@@ -1870,11 +1886,17 @@ export default function App() {
                           onClick={() => setActiveNav('profile')}
                           className="flex-shrink-0"
                         >
-                          <img
-                            src={currentUser.avatar}
-                            alt={currentUser.displayName}
-                            className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)]"
-                          />
+                          {currentUser.avatar ? (
+                            <img
+                              src={currentUser.avatar}
+                              alt={currentUser.displayName}
+                              className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)]"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-[var(--accent-primary-soft)] border border-[var(--border-subtle)] flex items-center justify-center text-xs font-bold text-[var(--accent-primary)]">
+                              {currentUser.displayName?.[0] || 'U'}
+                            </div>
+                          )}
                         </button>
                         <button
                           type="button"
@@ -2374,8 +2396,8 @@ export default function App() {
             onOpenWatchHistory={() => {
               if (requireSignedIn()) setIsWatchHistoryOpen(true);
             }}
-            onOpenBdServices={() => {
-              setActiveNav('bd_services');
+            onOpenMotherlandLive={() => {
+              setActiveNav('motherland_live');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
             onOpenServerManagement={() => setIsServerModalOpen(true)}
@@ -2433,10 +2455,10 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* TAB 7: BANGLADESH SERVICES (বাংলাদেশ)                     */}
+        {/* TAB 7: MOTHERLAND LIVE (LIVE TV, MOVIES & DRAMA)          */}
         {/* ========================================================= */}
-        {activeNav === 'bd_services' && (
-          <BangladeshServicesView
+        {activeNav === 'motherland_live' && (
+          <MotherlandLiveView
             currentUser={currentUser}
             onBack={() => navigateToHome({ scrollMode: 'restore' })}
             onOpenAuth={() => setIsAuthOpen(true)}
@@ -2467,7 +2489,7 @@ export default function App() {
         }
         isMinimized={isWatchMinimized}
         isFullWatchVisible={activeNav === 'video' && !isWatchMinimized}
-        isPausedByOverlay={shortsPlayerState.isOpen || activeNav === 'youtube' || activeNav === 'games'}
+        isPausedByOverlay={shortsPlayerState.isOpen || activeNav === 'youtube' || activeNav === 'games' || activeNav === 'motherland_live'}
         anchorElement={watchAnchorElement}
         onMinimize={() => setIsWatchMinimized(true)}
         onExpand={() => {

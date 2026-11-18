@@ -26,9 +26,10 @@
     <link rel="preconnect" href="https://accounts.google.com">
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Cormorant+Garamond:ital,wght@0,700;1,700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script>
-      // Gracefully handle Vite HMR WebSocket connection closed warning in iframe dev previews
+      // Gracefully handle Vite HMR WebSocket connection closed / disabled-HMR warning in iframe dev previews
       window.addEventListener('unhandledrejection', function(e) {
-        if (e.reason && (typeof e.reason.message === 'string' && e.reason.message.includes('WebSocket closed') || String(e.reason).includes('WebSocket closed'))) {
+        var msg = e.reason && typeof e.reason.message === 'string' ? e.reason.message : String(e.reason || '');
+        if (msg.includes('WebSocket closed') || msg.includes('SendBeforeConnectError') || msg.includes('send was called before connect')) {
           e.preventDefault();
         }
       });

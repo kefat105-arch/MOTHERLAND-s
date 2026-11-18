@@ -478,7 +478,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       }}
                       className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary-border)] text-[11px] text-[var(--text-primary)] transition-colors"
                     >
-                      <img src={acc.avatar} alt="" className="w-4 h-4 rounded-full" />
+                      {acc.avatar ? (
+                        <img src={acc.avatar} alt="" className="w-4 h-4 rounded-full object-cover" />
+                      ) : (
+                        <span className="w-4 h-4 rounded-full bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-center text-[9px] font-bold">
+                          {(acc.displayName || 'M').slice(0, 1).toUpperCase()}
+                        </span>
+                      )}
                       <span>{acc.displayName}</span>
                     </button>
                   ))}

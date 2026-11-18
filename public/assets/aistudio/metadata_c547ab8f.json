@@ -1,0 +1,6 @@
+{
+  "name": "South Asia Live TV",
+  "description": "Mobile-first live television broadcast demo for Bangladesh and India.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -156,11 +156,17 @@ export const PostCard: React.FC<PostCardProps> = ({
             }
             className="flex items-center gap-3 min-w-0 text-left hover:opacity-90 cursor-pointer"
           >
-            <img
-              src={post.author.avatar}
-              alt={post.author.displayName}
-              className="w-10 h-10 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
-            />
+            {post.author.avatar ? (
+              <img
+                src={post.author.avatar}
+                alt={post.author.displayName}
+                className="w-10 h-10 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-xl bg-[var(--accent-primary-soft)] border border-[var(--border-subtle)] flex items-center justify-center text-xs font-bold text-[var(--accent-primary)] flex-shrink-0">
+                {post.author.displayName?.[0] || 'U'}
+              </div>
+            )}
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="font-bold text-sm text-[var(--text-primary)] truncate hover:underline">
@@ -422,11 +428,17 @@ export const PostCard: React.FC<PostCardProps> = ({
         {post.sharedPost && (
           <div className="mx-3.5 mb-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface-alt)] overflow-hidden">
             <div className="p-3 flex items-center gap-2.5">
-              <img
-                src={post.sharedPost.author.avatar}
-                alt={post.sharedPost.author.displayName}
-                className="w-8 h-8 rounded-lg object-cover"
-              />
+              {post.sharedPost.author.avatar ? (
+                <img
+                  src={post.sharedPost.author.avatar}
+                  alt={post.sharedPost.author.displayName}
+                  className="w-8 h-8 rounded-lg object-cover"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-[var(--accent-primary-soft)] flex items-center justify-center text-xs font-bold text-[var(--accent-primary)]">
+                  {post.sharedPost.author.displayName?.[0] || 'U'}
+                </div>
+              )}
               <div>
                 <span className="text-xs font-bold text-[var(--text-primary)] block">
                   {post.sharedPost.author.displayName}
@@ -513,13 +525,15 @@ export const PostCard: React.FC<PostCardProps> = ({
             onTouchStart={handleCarouselTouchStart}
             onTouchEnd={(e) => handleCarouselTouchEnd(e, postImages.length)}
           >
-            <img
-              src={postImages[activeImageIndex] || postImages[0]}
-              alt="Post attachment"
-              onClick={() => setLightboxIndex(activeImageIndex)}
-              className="w-full max-h-[520px] object-cover cursor-zoom-in"
-              loading="lazy"
-            />
+            {(postImages[activeImageIndex] || postImages[0]) && (
+              <img
+                src={postImages[activeImageIndex] || postImages[0]}
+                alt="Post attachment"
+                onClick={() => setLightboxIndex(activeImageIndex)}
+                className="w-full max-h-[520px] object-cover cursor-zoom-in"
+                loading="lazy"
+              />
+            )}
 
             {postImages.length > 1 && (
               <>
@@ -742,13 +756,15 @@ export const PostCard: React.FC<PostCardProps> = ({
           >
             <X className="w-5 h-5" />
           </button>
-          <img
-            src={postImages[lightboxIndex]}
-            alt="Full screen view"
-            style={{ transform: lightboxDragY ? `translateY(${lightboxDragY}px)` : undefined }}
-            className="max-w-full max-h-[88dvh] object-contain rounded-xl transition-transform"
-            onClick={(e) => e.stopPropagation()}
-          />
+          {postImages[lightboxIndex] && (
+            <img
+              src={postImages[lightboxIndex]}
+              alt="Full screen view"
+              style={{ transform: lightboxDragY ? `translateY(${lightboxDragY}px)` : undefined }}
+              className="max-w-full max-h-[88dvh] object-contain rounded-xl transition-transform"
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
         </div>
       )}
     </>

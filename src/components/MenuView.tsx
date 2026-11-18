@@ -18,7 +18,6 @@ import {
   UserPlus,
   WifiOff,
   History,
-  Globe,
   Server,
   Languages,
 } from 'lucide-react';
@@ -26,6 +25,7 @@ import { api } from '../api';
 import type { UserProfile, YouTubeOAuthStatus } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 import { WaveLogo } from './wave/WaveLogo';
+import { MotherlandLiveIcon } from './live/MotherlandLiveIcon';
 import {
   SUPPORTED_TRANSLATION_LANGUAGES,
   setTranslationPrefs,
@@ -49,7 +49,7 @@ interface MenuViewProps {
   onOpenSocialApps: () => void;
   onOpenPlatformHub: () => void;
   onOpenWatchHistory?: () => void;
-  onOpenBdServices?: () => void;
+  onOpenMotherlandLive?: () => void;
   onOpenServerManagement?: () => void;
   onUserUpdated?: (user: UserProfile) => void;
   onOpenAuth: () => void;
@@ -72,7 +72,7 @@ export const MenuView: React.FC<MenuViewProps> = ({
   onOpenSocialApps,
   onOpenPlatformHub,
   onOpenWatchHistory,
-  onOpenBdServices,
+  onOpenMotherlandLive,
   onOpenServerManagement,
   onUserUpdated,
   onOpenAuth,
@@ -129,11 +129,17 @@ export const MenuView: React.FC<MenuViewProps> = ({
           className="w-full text-left ml-glass rounded-2xl p-4 flex items-center justify-between gap-3 hover:border-[var(--accent-primary-border)] transition-all"
         >
           <div className="flex items-center gap-3 min-w-0">
-            <img
-              src={currentUser.avatar}
-              alt={currentUser.displayName}
-              className="w-12 h-12 rounded-2xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
-            />
+            {currentUser.avatar ? (
+              <img
+                src={currentUser.avatar}
+                alt={currentUser.displayName}
+                className="w-12 h-12 rounded-2xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-2xl bg-[var(--accent-primary-soft)] border border-[var(--border-subtle)] flex items-center justify-center text-base font-bold text-[var(--accent-primary)] flex-shrink-0">
+                {currentUser.displayName?.[0] || 'U'}
+              </div>
+            )}
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-sm text-[var(--text-primary)] truncate">
@@ -448,21 +454,21 @@ export const MenuView: React.FC<MenuViewProps> = ({
           </p>
         </button>
 
-        {onOpenBdServices && (
+        {onOpenMotherlandLive && (
           <button
             type="button"
-            onClick={onOpenBdServices}
-            data-testid="menu-bd-services-btn"
-            className="col-span-2 ml-glass rounded-2xl p-3.5 flex items-center justify-between text-left hover:border-emerald-500/40 transition-all"
+            onClick={onOpenMotherlandLive}
+            data-testid="menu-motherland-live-btn"
+            className="col-span-2 ml-glass rounded-2xl p-3.5 flex items-center justify-between text-left hover:border-rose-500/40 transition-all"
           >
             <div className="flex items-center gap-3">
-              <Globe className="w-5 h-5 text-emerald-500" />
+              <MotherlandLiveIcon className="w-5 h-5" />
               <div>
                 <p className="text-xs font-bold text-[var(--text-primary)]">
-                  BANGLADESH SERVICES (বাংলাদেশ)
+                  Motherland live
                 </p>
                 <p className="text-[10px] text-[var(--text-secondary)]">
-                  NID, e-Passport, Education, MFS, Banking, Health &amp; Emergency
+                  Live TV Channels across Bangladesh, Cartoon, India &amp; Pakistan
                 </p>
               </div>
             </div>

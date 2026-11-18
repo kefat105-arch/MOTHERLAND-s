@@ -477,11 +477,17 @@ export const CreateModal: React.FC<CreateModalProps> = ({
               {/* Author & Audience */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2.5">
-                  <img
-                    src={currentUser.avatar}
-                    alt={currentUser.displayName}
-                    className="w-9 h-9 rounded-xl object-cover border border-[var(--border-subtle)]"
-                  />
+                  {currentUser.avatar ? (
+                    <img
+                      src={currentUser.avatar}
+                      alt={currentUser.displayName}
+                      className="w-9 h-9 rounded-xl object-cover border border-[var(--border-subtle)]"
+                    />
+                  ) : (
+                    <div className="w-9 h-9 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex items-center justify-center text-xs font-bold text-[var(--text-primary)]">
+                      {(currentUser.displayName || 'M').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   <div>
                     <span className="font-bold text-xs text-[var(--text-primary)] block">
                       {currentUser.displayName}

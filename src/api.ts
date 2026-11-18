@@ -1576,35 +1576,97 @@ export const api = {
     return parseJsonOrThrow(res);
   },
 
-  // Bangladesh Services Prefs & Eligibility
-  async getBdServicePrefs(): Promise<{ favorites: string[]; recent: string[] }> {
-    const res = await authFetch(`${API_BASE}/bd-services/prefs`);
-    if (!res.ok) return { favorites: [], recent: [] };
+  // Motherland live (Live TV Channels across BD, Cartoon, PK, IN)
+  async getMotherlandLiveChannels(params?: {
+    region?: string;
+    category?: string;
+    q?: string;
+    refresh?: string;
+  }): Promise<{
+    channels: any[];
+    total: number;
+    counts?: { all: number; BD: number; BANGLA: number; CARTOON: number; PK: number; IN: number };
+  }> {
+    const qs = new URLSearchParams();
+    if (params?.region) qs.set('region', params.region);
+    if (params?.category) qs.set('category', params.category);
+    if (params?.q) qs.set('q', params.q);
+    if (params?.refresh) qs.set('refresh', params.refresh);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await authFetch(`${API_BASE}/motherland-live/channels${suffix}`);
+    return parseJsonOrThrow(res);
+  },
+
+  async resolveMotherlandYoutubeLive(channelId: string): Promise<{
+    videoId: string;
+    title: string;
+    channelAvatar?: string;
+  }> {
+    const res = await authFetch(`${API_BASE}/motherland-live/youtube-live/${encodeURIComponent(channelId)}`);
+    return parseJsonOrThrow(res);
+  },
+
+  async getMotherlandLiveChannelSocial(channelId: string): Promise<{
+    likesCount: number;
+    isLiked: boolean;
+    comments: Array<{
+      id: string;
+      channelId: string;
+      userId: string;
+      authorName: string;
+      authorAvatar?: string;
+      text: string;
+      createdAt: string;
+    }>;
+  }> {
+    const res = await authFetch(`${API_BASE}/motherland-live/channel-social/${encodeURIComponent(channelId)}`);
+    if (!res.ok) return { likesCount: 0, isLiked: false, comments: [] };
     return res.json();
   },
 
-  async toggleBdServiceFavorite(serviceId: string): Promise<{ favorites: string[]; isFavorite: boolean }> {
-    const res = await authFetch(`${API_BASE}/bd-services/favorite`, {
+  async toggleMotherlandLiveLike(channelId: string): Promise<{ likesCount: number; isLiked: boolean }> {
+    const res = await authFetch(`${API_BASE}/motherland-live/like`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serviceId }),
+      body: JSON.stringify({ channelId }),
     });
     return parseJsonOrThrow(res);
   },
 
-  async recordBdServiceRecent(serviceId: string): Promise<{ recent: string[] }> {
-    const res = await authFetch(`${API_BASE}/bd-services/recent`, {
+  async addMotherlandLiveComment(channelId: string, text: string): Promise<{
+    comment: any;
+    comments: any[];
+  }> {
+    const res = await authFetch(`${API_BASE}/motherland-live/comment`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serviceId }),
+      body: JSON.stringify({ channelId, text }),
     });
-    if (!res.ok) return { recent: [] };
+    return parseJsonOrThrow(res);
+  },
+
+  async getMotherlandLivePrefs(): Promise<{ favorites: string[]; recent: string[] }> {
+    const res = await authFetch(`${API_BASE}/motherland-live/prefs`);
+    if (!res.ok) return { favorites: [], recent: [] };
     return res.json();
   },
 
-  async getBdServiceEligibility(): Promise<{ authenticated: boolean; ageYears: number | null; loanEligible: boolean | null; isMinor: boolean }> {
-    const res = await authFetch(`${API_BASE}/bd-services/eligibility`);
-    if (!res.ok) return { authenticated: false, ageYears: null, loanEligible: null, isMinor: false };
+  async toggleMotherlandLiveFavorite(channelId: string): Promise<{ favorites: string[]; isFavorite: boolean }> {
+    const res = await authFetch(`${API_BASE}/motherland-live/favorite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId }),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async recordMotherlandLiveRecent(channelId: string): Promise<{ recent: string[] }> {
+    const res = await authFetch(`${API_BASE}/motherland-live/recent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId }),
+    });
+    if (!res.ok) return { recent: [] };
     return res.json();
   },
 

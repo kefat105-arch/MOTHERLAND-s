@@ -1072,11 +1072,17 @@ export const LiveSpyGame: React.FC<LiveSpyGameProps> = ({
                         onClick={() => sendWsEvent('spy:vote', { targetUserId: candidate.userId })}
                         className="min-h-[40px] px-3 py-1.5 rounded-xl bg-[#162033] hover:bg-red-950/80 border border-white/15 hover:border-red-400/60 text-xs font-bold text-slate-100 flex items-center gap-2 transition-colors"
                       >
-                        <img
-                          src={candidate.avatar}
-                          alt={candidate.displayName}
-                          className="w-5 h-5 rounded-full object-cover"
-                        />
+                        {candidate.avatar ? (
+                          <img
+                            src={candidate.avatar}
+                            alt={candidate.displayName}
+                            className="w-5 h-5 rounded-full object-cover"
+                          />
+                        ) : (
+                          <span className="w-5 h-5 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold">
+                            {(candidate.displayName || 'P').slice(0, 1).toUpperCase()}
+                          </span>
+                        )}
                         <span>Vote {candidate.displayName}</span>
                       </button>
                     ))}

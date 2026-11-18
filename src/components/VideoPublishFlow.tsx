@@ -886,11 +886,17 @@ export const VideoPublishFlow: React.FC<VideoPublishFlowProps> = ({
                   {(ytStatus?.channel || googleAuth) && (
                     <div className="p-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface-alt)] flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <img
-                          src={ytStatus?.channel?.avatar || googleAuth?.avatarUrl || ''}
-                          alt={ytStatus?.channel?.title || googleAuth?.channelTitle || googleAuth?.name || 'YouTube'}
-                          className="w-10 h-10 rounded-full object-cover border border-red-500/30"
-                        />
+                        {(ytStatus?.channel?.avatar || googleAuth?.avatarUrl) ? (
+                          <img
+                            src={ytStatus?.channel?.avatar || googleAuth?.avatarUrl || undefined}
+                            alt={ytStatus?.channel?.title || googleAuth?.channelTitle || googleAuth?.name || 'YouTube'}
+                            className="w-10 h-10 rounded-full object-cover border border-red-500/30"
+                          />
+                        ) : (
+                          <div className="w-10 h-10 rounded-full bg-red-600/20 border border-red-500/30 flex items-center justify-center text-xs font-bold text-red-400">
+                            YT
+                          </div>
+                        )}
                         <div className="min-w-0">
                           <div className="text-xs font-bold text-[var(--text-primary)] truncate">
                             {ytStatus?.channel?.title || googleAuth?.channelTitle || googleAuth?.name || 'YouTube Channel'}

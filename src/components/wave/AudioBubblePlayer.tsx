@@ -83,7 +83,7 @@ export const AudioBubblePlayer: React.FC<AudioBubblePlayerProps> = ({
     <div className="flex items-center gap-2.5 min-w-[215px] max-w-[280px] py-0.5 select-none">
       <audio
         ref={audioRef}
-        src={src}
+        src={src || undefined}
         preload="metadata"
         onLoadedMetadata={(e) => {
           const d = e.currentTarget.duration;

@@ -471,12 +471,12 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
             allowFullScreen
             className={`relative z-[2] w-full h-full border-0 ${showFloatingMiniBar ? 'pointer-events-none' : ''}`}
           />
-        ) : (
+        ) : !isYouTube && video.videoUrl ? (
           <video
             ref={nativeVideoRef}
             key="native-watch-persistent-video"
             src={video.videoUrl}
-            poster={video.thumbnailUrl}
+            poster={video.thumbnailUrl || undefined}
             preload="auto"
             autoPlay
             playsInline
@@ -517,7 +517,7 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
             }}
             className="relative z-[2] w-full h-full object-contain cursor-pointer"
           />
-        )}
+        ) : null}
 
         {/* MOTHERLAND Branded Pause (Smooth Rotating Logo Ring) & Buffering Overlay */}
         <VideoBrandOverlay

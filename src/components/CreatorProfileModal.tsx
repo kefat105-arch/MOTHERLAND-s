@@ -564,11 +564,13 @@ export const CreatorProfileModal: React.FC<CreatorProfileModalProps> = ({
                           className="w-full text-left flex gap-3 p-2 rounded-2xl bg-[var(--bg-surface-alt)] hover:border-[var(--accent-primary-border)] border border-[var(--border-subtle)] transition-colors cursor-pointer group"
                         >
                           <div className="relative w-32 aspect-video rounded-xl overflow-hidden bg-black shrink-0">
-                            <img
-                              src={vid.thumbnailUrl}
-                              alt={vid.title}
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                            />
+                            {vid.thumbnailUrl ? (
+                              <img
+                                src={vid.thumbnailUrl}
+                                alt={vid.title}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                              />
+                            ) : null}
                             <div className="absolute inset-0 bg-black/25 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
                               <Play className="w-5 h-5 text-white fill-current" />
                             </div>

@@ -135,19 +135,25 @@ export const StoriesBar: React.FC<StoriesBarProps> = ({
               className="relative w-full h-full block focus:outline-none text-left"
             >
               {ownStory.mediaType === 'video' ? (
-                <video
-                  src={ownStory.mediaUrl}
-                  muted
-                  playsInline
-                  preload="metadata"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
+                ownStory.mediaUrl ? (
+                  <video
+                    src={ownStory.mediaUrl}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full bg-slate-900" />
+                )
+              ) : ownStory.mediaUrl || currentUser?.avatar ? (
                 <img
-                  src={ownStory.mediaUrl || currentUser?.avatar || ''}
+                  src={ownStory.mediaUrl || currentUser?.avatar || undefined}
                   alt={currentUser?.displayName || 'Your story'}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-[var(--accent-primary-soft)] to-slate-900" />
               )}
               <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-black/25" />
               <div className="absolute top-2 left-2 w-8 h-8 rounded-full p-0.5 bg-gradient-to-tr from-[var(--accent-primary)] to-orange-500">
@@ -224,20 +230,26 @@ export const StoriesBar: React.FC<StoriesBarProps> = ({
             className="flex-shrink-0 w-[94px] sm:w-[104px] h-[146px] sm:h-[160px] rounded-2xl overflow-hidden relative group focus:outline-none border border-[var(--border-subtle)] shadow-sm text-left bg-black"
           >
             {story.mediaType === 'video' ? (
-              <video
-                src={story.mediaUrl}
-                muted
-                playsInline
-                preload="metadata"
-                className="w-full h-full object-cover"
-              />
-            ) : (
+              story.mediaUrl ? (
+                <video
+                  src={story.mediaUrl}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full bg-black" />
+              )
+            ) : story.mediaUrl || story.userAvatar ? (
               <img
-                src={story.mediaUrl || story.userAvatar}
+                src={story.mediaUrl || story.userAvatar || undefined}
                 alt={story.userDisplayName}
                 loading="lazy"
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
               />
+            ) : (
+              <div className="w-full h-full bg-gradient-to-br from-[var(--accent-primary-soft)] to-slate-900" />
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/15 to-black/25" />
             <div
@@ -247,11 +259,17 @@ export const StoriesBar: React.FC<StoriesBarProps> = ({
                   : 'bg-gradient-to-tr from-[var(--accent-primary)] to-orange-500'
               }`}
             >
-              <img
-                src={story.userAvatar}
-                alt={story.userDisplayName}
-                className="w-full h-full rounded-full object-cover border border-black/40"
-              />
+              {story.userAvatar ? (
+                <img
+                  src={story.userAvatar}
+                  alt={story.userDisplayName}
+                  className="w-full h-full rounded-full object-cover border border-black/40"
+                />
+              ) : (
+                <span className="w-full h-full rounded-full bg-[var(--accent-primary)] text-white text-[10px] font-bold flex items-center justify-center">
+                  {story.userDisplayName?.[0] || 'U'}
+                </span>
+              )}
             </div>
             <span className="absolute bottom-2 left-2 right-2 text-[11px] font-bold text-white leading-tight line-clamp-2 drop-shadow">
               {story.userDisplayName}
@@ -314,11 +332,17 @@ export const StoriesBar: React.FC<StoriesBarProps> = ({
             {/* Header */}
             <div className="absolute top-7 left-3 right-3 z-30 flex items-center justify-between text-white">
               <div className="flex items-center gap-2.5">
-                <img
-                  src={currentStory.userAvatar}
-                  alt={currentStory.userDisplayName}
-                  className="w-9 h-9 rounded-xl object-cover border border-[#D0AF72]/50"
-                />
+                {currentStory.userAvatar ? (
+                  <img
+                    src={currentStory.userAvatar}
+                    alt={currentStory.userDisplayName}
+                    className="w-9 h-9 rounded-xl object-cover border border-[#D0AF72]/50"
+                  />
+                ) : (
+                  <span className="w-9 h-9 rounded-xl bg-[var(--accent-primary)] text-white text-xs font-bold flex items-center justify-center border border-[#D0AF72]/50">
+                    {currentStory.userDisplayName?.[0] || 'U'}
+                  </span>
+                )}
                 <div>
                   <span className="font-bold text-sm block leading-tight">{currentStory.userDisplayName}</span>
                   <span className="text-[10px] text-[#9CB0CA]">
@@ -358,21 +382,23 @@ export const StoriesBar: React.FC<StoriesBarProps> = ({
               onMouseUp={() => setIsPaused(false)}
             >
               {currentStory.mediaType === 'video' ? (
-                <video
-                  src={currentStory.mediaUrl}
-                  autoPlay
-                  playsInline
-                  loop
-                  muted
-                  className="w-full h-full object-contain"
-                />
-              ) : (
+                currentStory.mediaUrl ? (
+                  <video
+                    src={currentStory.mediaUrl}
+                    autoPlay
+                    playsInline
+                    loop
+                    muted
+                    className="w-full h-full object-contain"
+                  />
+                ) : null
+              ) : currentStory.mediaUrl ? (
                 <img
                   src={currentStory.mediaUrl}
                   alt="Story"
                   className="w-full h-full object-cover select-none"
                 />
-              )}
+              ) : null}
 
               {/* Tap Navigation Zones */}
               <div className="absolute inset-y-0 left-0 w-1/3 z-20 cursor-pointer" onClick={handlePrev} />

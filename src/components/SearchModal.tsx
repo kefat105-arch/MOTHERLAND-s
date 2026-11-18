@@ -242,7 +242,9 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                         }}
                         className="rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] aspect-[9/16] relative text-left group"
                       >
-                        <img src={s.thumbnailUrl} alt={s.title} className="w-full h-full object-cover" />
+                        {s.thumbnailUrl ? (
+                          <img src={s.thumbnailUrl} alt={s.title} className="w-full h-full object-cover" />
+                        ) : null}
                         <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent" />
                         <div className="absolute bottom-2 left-2 right-2">
                           <p className="text-[11px] font-bold text-white line-clamp-2">{s.title}</p>
@@ -272,7 +274,9 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                         className="w-full p-2 rounded-2xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary)] flex items-center gap-3 text-left"
                       >
                         <div className="relative w-32 aspect-video rounded-xl overflow-hidden bg-black flex-shrink-0">
-                          <img src={v.thumbnailUrl} alt={v.title} className="w-full h-full object-cover" />
+                          {v.thumbnailUrl ? (
+                            <img src={v.thumbnailUrl} alt={v.title} className="w-full h-full object-cover" />
+                          ) : null}
                           <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
                             <Play className="w-4 h-4 text-white fill-current" />
                           </div>

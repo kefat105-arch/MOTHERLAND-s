@@ -1,23 +1,24 @@
 import React from 'react';
-import { Bell, Search, Crown, UserCheck, Youtube, Globe } from 'lucide-react';
+import { Bell, Search, Crown, UserCheck, Youtube } from 'lucide-react';
 import type { UserProfile } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 import { WaveLogo } from './wave/WaveLogo';
 import { MotherlandLogo } from './layout/MotherlandLogo';
+import { MotherlandLiveIcon } from './live/MotherlandLiveIcon';
 
 interface HeaderProps {
   currentUser: UserProfile | null;
   unreadNotifications: number;
   unreadMessages: number;
   isYouTubeActive?: boolean;
-  isBdServicesActive?: boolean;
+  isMotherlandLiveActive?: boolean;
   onOpenNotifications: () => void;
   onOpenMessages: () => void;
   onOpenSearch: () => void;
   onOpenProfile: () => void;
   onOpenAuth: () => void;
   onOpenYouTube: () => void;
-  onOpenBdServices?: () => void;
+  onOpenMotherlandLive?: () => void;
   onLogoClick: () => void;
 }
 
@@ -26,14 +27,14 @@ export const Header: React.FC<HeaderProps> = ({
   unreadNotifications,
   unreadMessages,
   isYouTubeActive = false,
-  isBdServicesActive = false,
+  isMotherlandLiveActive = false,
   onOpenNotifications,
   onOpenMessages,
   onOpenSearch,
   onOpenProfile,
   onOpenAuth,
   onOpenYouTube,
-  onOpenBdServices,
+  onOpenMotherlandLive,
   onLogoClick,
 }) => {
   return (
@@ -59,22 +60,25 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Action Controls (Fitted cleanly from 320px Android up to 1440px+ desktop) */}
         <div className="flex items-center gap-[3px] min-[375px]:gap-1 sm:gap-2 shrink-0">
-          {/* Bangladesh Services Quick Entry */}
-          {onOpenBdServices && (
+          {/* Motherland live (Live TV, Movies & Drama) Quick Entry */}
+          {onOpenMotherlandLive && (
             <button
               type="button"
-              onClick={onOpenBdServices}
-              data-testid="header-bd-services-btn"
-              title="BANGLADESH SERVICES (বাংলাদেশ)"
-              aria-label="Bangladesh Services"
-              className={`h-7 min-[375px]:h-8 sm:h-10 px-1.5 sm:px-2.5 rounded-xl border flex items-center justify-center gap-1 text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
-                isBdServicesActive
-                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
-                  : 'bg-[var(--bg-surface)] hover:bg-emerald-500/10 border-[var(--border-subtle)] text-[var(--text-primary)]'
+              onClick={onOpenMotherlandLive}
+              data-testid="header-motherland-live-btn"
+              title="Motherland live — Live TV"
+              aria-label="Motherland live"
+              className={`h-7 min-[375px]:h-8 sm:h-10 px-1.5 min-[375px]:px-2 sm:px-2.5 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
+                isMotherlandLiveActive
+                  ? 'bg-rose-600 text-white border-rose-500 shadow-sm'
+                  : 'bg-[var(--bg-surface)] hover:bg-rose-500/10 border-[var(--border-subtle)] hover:border-rose-500/40 text-[var(--text-primary)]'
               }`}
             >
-              <Globe className={`w-3.5 h-3.5 min-[375px]:w-4 min-[375px]:h-4 ${isBdServicesActive ? 'text-white' : 'text-emerald-500'}`} />
-              <span className="hidden md:inline">বাংলাদেশ</span>
+              <MotherlandLiveIcon
+                className="w-4 h-4 min-[375px]:w-[17px] min-[375px]:h-[17px]"
+                active={isMotherlandLiveActive}
+              />
+              <span className="hidden md:inline">Live TV</span>
             </button>
           )}
 

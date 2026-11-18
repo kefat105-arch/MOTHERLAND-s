@@ -407,11 +407,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       {/* Cover Image & Avatar Header */}
       <div className="relative">
         <div className="h-44 sm:h-64 w-full bg-[var(--bg-surface-alt)] overflow-hidden rounded-b-3xl relative">
-          <img
-            src={currentUser.coverImage}
-            alt="Cover"
-            className="w-full h-full object-cover"
-          />
+          {currentUser.coverImage ? (
+            <img
+              src={currentUser.coverImage}
+              alt="Cover"
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-[#0A1324] via-[#132A46] to-[#1F6E6C]/40" />
+          )}
           <div className="absolute inset-0 bg-gradient-to-t from-[var(--bg-canvas)] via-transparent to-black/25" />
         </div>
 
@@ -419,11 +423,17 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         <div className="px-4 sm:px-6 relative -mt-16 sm:-mt-20 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div className="flex items-end gap-3.5">
             <div className="w-24 h-24 sm:w-32 sm:h-32 rounded-3xl p-1 bg-gradient-to-tr from-[var(--accent-primary)] via-[var(--accent-royal)] to-[var(--accent-gold)] shadow-xl flex-shrink-0">
-              <img
-                src={currentUser.avatar}
-                alt={currentUser.displayName}
-                className="w-full h-full object-cover rounded-[22px] bg-[var(--bg-surface-solid)]"
-              />
+              {currentUser.avatar ? (
+                <img
+                  src={currentUser.avatar}
+                  alt={currentUser.displayName}
+                  className="w-full h-full object-cover rounded-[22px] bg-[var(--bg-surface-solid)]"
+                />
+              ) : (
+                <div className="w-full h-full rounded-[22px] bg-[var(--bg-surface-solid)] flex items-center justify-center text-2xl font-extrabold text-[var(--accent-primary)]">
+                  {currentUser.displayName?.[0] || 'U'}
+                </div>
+              )}
             </div>
             <div className="mb-1">
               <div className="flex items-center gap-2 flex-wrap">
@@ -695,7 +705,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               {myOwnLongVideos.map((video) => (
                 <div key={video.id} className="rounded-2xl overflow-hidden ml-glass">
                   <div className="aspect-video w-full relative bg-black">
-                    <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover" />
+                    {video.thumbnailUrl ? (
+                      <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover" />
+                    ) : null}
                     <span className="absolute bottom-2 right-2 bg-black/80 px-1.5 py-0.5 rounded text-[10px] text-white font-mono">
                       {video.duration}
                     </span>
@@ -712,7 +724,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 <div key={vp.id} className="rounded-2xl overflow-hidden ml-glass">
                   <div className="aspect-video w-full relative bg-black">
                     {vp.mediaUrl ? (
-                      <video src={vp.mediaUrl} poster={vp.thumbnailUrl} controls playsInline className="w-full h-full object-cover" />
+                      <video src={vp.mediaUrl} poster={vp.thumbnailUrl || undefined} controls playsInline className="w-full h-full object-cover" />
                     ) : null}
                   </div>
                   <div className="p-3">
@@ -740,7 +752,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   key={short.id}
                   className="aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] relative"
                 >
-                  <img src={short.thumbnailUrl} alt={short.title} className="w-full h-full object-cover" />
+                  {short.thumbnailUrl ? (
+                    <img src={short.thumbnailUrl} alt={short.title} className="w-full h-full object-cover" />
+                  ) : null}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-transparent flex items-end p-2.5">
                     <span className="text-[11px] font-bold text-white line-clamp-2">{short.title}</span>
                   </div>
@@ -752,7 +766,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   className="aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] relative"
                 >
                   {sp.mediaUrl && (
-                    <video src={sp.mediaUrl} poster={sp.thumbnailUrl} controls playsInline className="w-full h-full object-cover" />
+                    <video src={sp.mediaUrl} poster={sp.thumbnailUrl || undefined} controls playsInline className="w-full h-full object-cover" />
                   )}
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-transparent to-transparent p-2.5 pointer-events-none">
                     <span className="text-[11px] font-bold text-white line-clamp-2">{sp.content || 'Small Video'}</span>
@@ -808,11 +822,17 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   }
                   className="ml-glass rounded-2xl p-3 flex items-center gap-3 text-left hover:border-[var(--accent-primary-border)] transition-colors cursor-pointer"
                 >
-                  <img
-                    src={person.avatar}
-                    alt={person.displayName}
-                    className="w-11 h-11 rounded-xl object-cover border border-[var(--border-subtle)] shrink-0"
-                  />
+                  {person.avatar ? (
+                    <img
+                      src={person.avatar}
+                      alt={person.displayName}
+                      className="w-11 h-11 rounded-xl object-cover border border-[var(--border-subtle)] shrink-0"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] shrink-0 flex items-center justify-center text-xs font-bold text-[var(--text-primary)]">
+                      {(person.displayName || 'M').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-bold text-[var(--text-primary)] truncate">{person.displayName}</p>
                     <p className="text-[11px] text-[var(--text-secondary)] truncate">@{person.username}</p>
@@ -851,7 +871,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                             onClick={() => onPlaySavedVideo?.(vid)}
                             className="relative w-28 aspect-video rounded-xl overflow-hidden bg-black shrink-0 group cursor-pointer"
                           >
-                            <img src={vid.thumbnailUrl} alt={vid.title} className="w-full h-full object-cover" />
+                            {vid.thumbnailUrl ? (
+                              <img src={vid.thumbnailUrl} alt={vid.title} className="w-full h-full object-cover" />
+                            ) : null}
                             <div className="absolute inset-0 bg-black/35 flex items-center justify-center group-hover:bg-black/50 transition">
                               <Play className="w-5 h-5 text-white fill-current" />
                             </div>
@@ -1233,7 +1255,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                         }`}
                       >
                         <div className="flex items-center gap-2.5 overflow-hidden">
-                          <img src={acc.avatar} alt="" className="w-7 h-7 rounded-lg object-cover" />
+                          {acc.avatar ? (
+                            <img src={acc.avatar} alt="" className="w-7 h-7 rounded-lg object-cover" />
+                          ) : (
+                            <div className="w-7 h-7 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-center text-[10px] font-bold text-[var(--text-primary)] shrink-0">
+                              {(acc.displayName || 'M').slice(0, 1).toUpperCase()}
+                            </div>
+                          )}
                           <div className="overflow-hidden">
                             <p className="text-xs font-bold text-[var(--text-primary)] truncate">{acc.displayName}</p>
                             <p className="text-[10px] text-[var(--text-secondary)]">@{acc.username}</p>

@@ -242,11 +242,23 @@ export const GroupInfoDrawer: React.FC<GroupInfoDrawerProps> = ({
           <>
             {/* Header Summary */}
             <div className="flex flex-col items-center text-center">
-              <img
-                src={isGroup ? conversation.photo || peer?.avatar || conversation.participants[0]?.avatar : peer?.avatar}
-                alt={isGroup ? conversation.name || 'Wave Group' : peer?.displayName || 'User'}
-                className="w-16 h-16 rounded-full object-cover mb-2.5 ring-2 ring-[var(--ml-border)]"
-              />
+              {(() => {
+                const headerAvatar = isGroup
+                  ? conversation.photo || peer?.avatar || conversation.participants[0]?.avatar
+                  : peer?.avatar;
+                const headerLabel = isGroup ? conversation.name || 'Wave Group' : peer?.displayName || 'User';
+                return headerAvatar ? (
+                  <img
+                    src={headerAvatar}
+                    alt={headerLabel}
+                    className="w-16 h-16 rounded-full object-cover mb-2.5 ring-2 ring-[var(--ml-border)]"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-xl mb-2.5 ring-2 ring-[var(--ml-border)]">
+                    {headerLabel.slice(0, 1).toUpperCase()}
+                  </div>
+                );
+              })()}
               {isGroup && isAdmin ? (
                 <div className="w-full flex gap-1.5 items-center mt-1">
                   <input
@@ -419,7 +431,13 @@ export const GroupInfoDrawer: React.FC<GroupInfoDrawerProps> = ({
                         className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl bg-[var(--ml-surface-soft)]"
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <img src={member.avatar} alt={member.displayName} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                          {member.avatar ? (
+                            <img src={member.avatar} alt={member.displayName} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                          ) : (
+                            <div className="w-8 h-8 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-xs shrink-0">
+                              {(member.displayName || 'W').slice(0, 1).toUpperCase()}
+                            </div>
+                          )}
                           <div className="min-w-0">
                             <p className="text-xs font-semibold text-[var(--ml-text-primary)] truncate">
                               {member.displayName} {isSelf ? '(You)' : ''}
@@ -531,7 +549,7 @@ export const GroupInfoDrawer: React.FC<GroupInfoDrawerProps> = ({
             ) : (
               <div className="grid grid-cols-2 gap-2">
                 {mediaItems.map((item, idx) =>
-                  item.mediaType === 'image' ? (
+                  item.mediaType === 'image' && item.url ? (
                     <a
                       key={`${item.messageId}-${idx}`}
                       href={item.url}

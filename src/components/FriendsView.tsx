@@ -423,11 +423,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                     className="flex items-center gap-3 min-w-0 text-left"
                   >
                     <div className="relative flex-shrink-0">
-                      <img
-                        src={friend.avatar}
-                        alt={friend.displayName}
-                        className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)]"
-                      />
+                      {friend.avatar ? (
+                        <img
+                          src={friend.avatar}
+                          alt={friend.displayName}
+                          className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)]"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex items-center justify-center text-sm font-bold text-[var(--text-primary)]">
+                          {(friend.displayName || 'M').slice(0, 1).toUpperCase()}
+                        </div>
+                      )}
                       {friend.isOnline && (
                         <span
                           className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-[var(--bg-canvas)]"
@@ -534,11 +540,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   onClick={() => setViewingProfile(req.sender)}
                   className="flex items-center gap-3 min-w-0 text-left"
                 >
-                  <img
-                    src={req.sender.avatar}
-                    alt={req.sender.displayName}
-                    className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
-                  />
+                  {req.sender.avatar ? (
+                    <img
+                      src={req.sender.avatar}
+                      alt={req.sender.displayName}
+                      className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex-shrink-0 flex items-center justify-center text-sm font-bold text-[var(--text-primary)]">
+                      {(req.sender.displayName || 'M').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   <div className="min-w-0">
                     <span className="font-bold text-sm text-[var(--text-primary)] block truncate">
                       {req.sender.displayName}
@@ -593,11 +605,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                     onClick={() => target && setViewingProfile(target)}
                     className="flex items-center gap-3 min-w-0 text-left"
                   >
-                    <img
-                      src={target?.avatar}
-                      alt={target?.displayName}
-                      className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
-                    />
+                    {target?.avatar ? (
+                      <img
+                        src={target.avatar}
+                        alt={target?.displayName}
+                        className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex-shrink-0 flex items-center justify-center text-sm font-bold text-[var(--text-primary)]">
+                        {(target?.displayName || 'M').slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <span className="font-bold text-sm text-[var(--text-primary)] block truncate">
                         {target?.displayName || 'MOTHERLAND User'}
@@ -644,11 +662,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   onClick={() => setViewingProfile(user)}
                   className="flex items-center gap-3 min-w-0 text-left"
                 >
-                  <img
-                    src={user.avatar}
-                    alt={user.displayName}
-                    className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
-                  />
+                  {user.avatar ? (
+                    <img
+                      src={user.avatar}
+                      alt={user.displayName}
+                      className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex-shrink-0 flex items-center justify-center text-sm font-bold text-[var(--text-primary)]">
+                      {(user.displayName || 'M').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="font-bold text-sm text-[var(--text-primary)] truncate">
@@ -728,11 +752,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                     onClick={() => setViewingProfile(user)}
                     className="flex items-center gap-3 min-w-0 text-left"
                   >
-                    <img
-                      src={user.avatar}
-                      alt={user.displayName}
-                      className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
-                    />
+                    {user.avatar ? (
+                      <img
+                        src={user.avatar}
+                        alt={user.displayName}
+                        className="w-12 h-12 rounded-xl object-cover border border-[var(--border-subtle)] flex-shrink-0"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex-shrink-0 flex items-center justify-center text-sm font-bold text-[var(--text-primary)]">
+                        {(user.displayName || 'M').slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <span className="font-bold text-sm text-[var(--text-primary)] block truncate">
                         {user.displayName}
@@ -764,11 +794,15 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="h-28 bg-[var(--bg-surface-alt)] relative">
-              <img
-                src={viewingProfile.coverImage}
-                alt={viewingProfile.displayName}
-                className="w-full h-full object-cover"
-              />
+              {viewingProfile.coverImage ? (
+                <img
+                  src={viewingProfile.coverImage}
+                  alt={viewingProfile.displayName}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-[#0A1324] via-[#132A46] to-[#1F6E6C]/40" />
+              )}
               <button
                 type="button"
                 onClick={() => setViewingProfile(null)}
@@ -779,11 +813,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
             </div>
             <div className="p-5 -mt-10 relative space-y-3">
               <div className="flex items-end justify-between gap-3">
-                <img
-                  src={viewingProfile.avatar}
-                  alt={viewingProfile.displayName}
-                  className="w-20 h-20 rounded-2xl object-cover border-2 border-[var(--accent-gold-border)] shadow-lg bg-[var(--bg-surface-solid)]"
-                />
+                {viewingProfile.avatar ? (
+                  <img
+                    src={viewingProfile.avatar}
+                    alt={viewingProfile.displayName}
+                    className="w-20 h-20 rounded-2xl object-cover border-2 border-[var(--accent-gold-border)] shadow-lg bg-[var(--bg-surface-solid)]"
+                  />
+                ) : (
+                  <div className="w-20 h-20 rounded-2xl border-2 border-[var(--accent-gold-border)] shadow-lg bg-[var(--bg-surface-solid)] flex items-center justify-center text-2xl font-bold text-[var(--accent-primary)]">
+                    {viewingProfile.displayName?.[0] || 'U'}
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   {renderRelationshipButton(viewingProfile)}
                 </div>

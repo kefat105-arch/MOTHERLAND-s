@@ -1481,11 +1481,17 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                     <div className="space-y-2 max-h-48 overflow-y-auto">
                       {comments.map((cmt) => (
                         <div key={cmt.id} className="p-2 rounded-xl bg-[#111728] border border-white/5 flex items-start gap-2.5 text-xs">
-                          <img
-                            src={cmt.authorProfileImageUrl}
-                            alt={cmt.authorDisplayName}
-                            className="w-6 h-6 rounded-full object-cover mt-0.5"
-                          />
+                          {cmt.authorProfileImageUrl ? (
+                            <img
+                              src={cmt.authorProfileImageUrl}
+                              alt={cmt.authorDisplayName}
+                              className="w-6 h-6 rounded-full object-cover mt-0.5"
+                            />
+                          ) : (
+                            <div className="w-6 h-6 rounded-full bg-white/10 mt-0.5 flex items-center justify-center text-[10px] font-bold text-white shrink-0">
+                              {(cmt.authorDisplayName || 'Y').slice(0, 1).toUpperCase()}
+                            </div>
+                          )}
                           <div className="flex-1 min-w-0">
                             <span className="font-bold text-[11px] text-white block">{cmt.authorDisplayName}</span>
                             <p className="text-slate-300 text-[11px] mt-0.5">
@@ -1545,12 +1551,14 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                         }`}
                       >
                         <div className="relative aspect-video bg-black overflow-hidden">
-                          <img
-                            src={vid.thumbnailUrl}
-                            alt={vid.title}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                            loading="lazy"
-                          />
+                          {vid.thumbnailUrl ? (
+                            <img
+                              src={vid.thumbnailUrl}
+                              alt={vid.title}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              loading="lazy"
+                            />
+                          ) : null}
                           {vid.duration && (
                             <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/80 text-[10px] font-mono text-white">
                               {vid.duration}
@@ -1766,11 +1774,17 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
               {authUser ? (
                 <>
                   <div className="flex items-center gap-3 min-w-0">
-                    <img
-                      src={authUser.avatarUrl}
-                      alt={authUser.channelTitle || authUser.name}
-                      className="w-12 h-12 rounded-full object-cover border-2 border-red-500/60"
-                    />
+                    {authUser.avatarUrl ? (
+                      <img
+                        src={authUser.avatarUrl}
+                        alt={authUser.channelTitle || authUser.name}
+                        className="w-12 h-12 rounded-full object-cover border-2 border-red-500/60"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-full bg-red-600/20 border-2 border-red-500/60 flex items-center justify-center text-sm font-bold text-white shrink-0">
+                        {(authUser.channelTitle || authUser.name || 'Y').slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <div className="font-bold text-sm text-white truncate">
                         {authUser.channelTitle || authUser.name}
@@ -1857,7 +1871,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                   {channelVideos.map((vid) => (
                     <div key={vid.youtubeId} className="p-3 rounded-2xl bg-[#0f1422] border border-white/10 space-y-2.5">
                       <div className="relative aspect-video rounded-xl bg-black overflow-hidden">
-                        <img src={vid.thumbnailUrl} alt={vid.title} className="w-full h-full object-cover" />
+                        {vid.thumbnailUrl ? (
+                          <img src={vid.thumbnailUrl} alt={vid.title} className="w-full h-full object-cover" />
+                        ) : null}
                         <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/75 text-[10px] text-white uppercase font-bold flex items-center gap-1">
                           {vid.privacyStatus === 'private' ? (
                             <Lock className="w-2.5 h-2.5 text-amber-400" />
@@ -1928,7 +1944,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                   {studioVideos.map((vid) => (
                     <div key={vid.id} className="p-3 rounded-2xl bg-[#0f1422] border border-white/10 space-y-2">
                       <div className="relative aspect-video rounded-xl bg-black overflow-hidden">
-                        <img src={vid.thumbnailUrl} alt={vid.title} className="w-full h-full object-cover" />
+                        {vid.thumbnailUrl ? (
+                          <img src={vid.thumbnailUrl} alt={vid.title} className="w-full h-full object-cover" />
+                        ) : null}
                         <span className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-black/70 text-[10px] text-white uppercase font-bold">
                           {vid.privacyStatus}
                         </span>
@@ -1987,7 +2005,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                     className="rounded-2xl bg-[#0f1422] border border-white/10 overflow-hidden hover:border-red-500/40 transition-colors"
                   >
                     <div className="aspect-video bg-black">
-                      <img src={pl.thumbnailUrl} alt={pl.title} className="w-full h-full object-cover" />
+                      {pl.thumbnailUrl ? (
+                        <img src={pl.thumbnailUrl} alt={pl.title} className="w-full h-full object-cover" />
+                      ) : null}
                     </div>
                     <div className="p-3">
                       <h4 className="font-bold text-xs text-white line-clamp-2">{pl.title}</h4>
@@ -2014,7 +2034,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                 {savedVideosList.map((sv) => (
                   <div key={sv.videoId} className="rounded-2xl bg-[#0f1422] border border-white/10 overflow-hidden p-3 space-y-2">
                     <div className="aspect-video rounded-xl bg-black overflow-hidden">
-                      <img src={sv.thumbnailUrl} alt={sv.title} className="w-full h-full object-cover" />
+                      {sv.thumbnailUrl ? (
+                        <img src={sv.thumbnailUrl} alt={sv.title} className="w-full h-full object-cover" />
+                      ) : null}
                     </div>
                     <h4 className="font-bold text-xs text-white line-clamp-2">{sv.title}</h4>
                     <p className="text-[11px] text-slate-400">{sv.channelTitle}</p>

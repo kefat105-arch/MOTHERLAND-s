@@ -7132,52 +7132,895 @@ app.post('/api/admin/servers/chat', ah(async (req: Request, res: Response) => {
 }));
 
 // ==========================================
-// 5C. BANGLADESH SERVICES PREFS & AGE GUARD
+// 5C. MOTHERLAND LIVE (LIVE TV CHANNELS, BD + CARTOON + HLS PROXY + SOCIAL)
 // ==========================================
-app.get('/api/bd-services/prefs', ah(async (req: Request, res: Response) => {
-  const userId = (req as any).userId as string | undefined;
-  if (!userId) return res.json({ favorites: [], recent: [] });
-  res.json(await db.getBdServicePrefs(userId));
-}));
+interface LiveTvStreamSource {
+  url: string;
+  referrer?: string;
+  userAgent?: string;
+}
 
-app.post('/api/bd-services/favorite', ah(async (req: Request, res: Response) => {
-  const user = requireAuth(req, res);
-  if (!user) return;
-  const serviceId = String(req.body?.serviceId || '').trim();
-  if (!serviceId) return res.status(400).json({ error: 'serviceId is required' });
-  res.json(await db.toggleBdServiceFavorite(user.id, serviceId));
-}));
+interface LiveTvChannelItem {
+  id: string;
+  name: string;
+  country: 'BD' | 'IN' | 'PK' | 'INTL';
+  categories: string[];
+  logo: string;
+  streamType: 'hls' | 'youtube_live';
+  streams: LiveTvStreamSource[];
+  youtubeLiveQuery?: string;
+  youtubeHandle?: string;
+  matchKeywords?: string[];
+  isBangla?: boolean;
+  isCartoon?: boolean;
+}
 
-app.post('/api/bd-services/recent', ah(async (req: Request, res: Response) => {
-  const userId = (req as any).userId as string | undefined;
-  if (!userId) return res.json({ recent: [] });
-  const serviceId = String(req.body?.serviceId || '').trim();
-  if (!serviceId) return res.status(400).json({ error: 'serviceId is required' });
-  const recent = await db.recordBdServiceRecent(userId, serviceId);
-  res.json({ recent });
-}));
+const BD_YOUTUBE_LIVE_CHANNELS: LiveTvChannelItem[] = [
+  {
+    id: 'somoy-tv-bd',
+    name: 'Somoy TV',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.ibb.co/kgf3jmSJ/1000044379.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@somoynews360',
+    youtubeLiveQuery: 'Somoy TV live bangladesh',
+    matchKeywords: ['somoy', 'সময়', 'সময়'],
+    isBangla: true,
+  },
+  {
+    id: 'jamuna-tv-bd',
+    name: 'Jamuna TV',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://www.jamuna.tv/uploads/settings/jtv-logo-whitelogo-1-1754573204.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@jamunatvbd',
+    youtubeLiveQuery: 'Jamuna TV live bangladesh',
+    matchKeywords: ['jamuna', 'যমুনা'],
+    isBangla: true,
+  },
+  {
+    id: 'ekattor-tv-bd',
+    name: 'Ekattor TV',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.imgur.com/zoLwwUK.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'Ekattor TV live bangladesh',
+    matchKeywords: ['ekattor', 'একাত্তর'],
+    isBangla: true,
+  },
+  {
+    id: 'independent-tv-bd',
+    name: 'Independent TV',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.imgur.com/POXFhGN.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@IndependentTelevision',
+    youtubeLiveQuery: 'Independent Television live bangladesh',
+    matchKeywords: ['independent', 'ইনডিপেনডেন্ট'],
+    isBangla: true,
+  },
+  {
+    id: 'channel-24-bd',
+    name: 'Channel 24',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.imgur.com/4JLkaF7.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@channel24digital',
+    youtubeLiveQuery: 'Channel 24 live bangladesh',
+    matchKeywords: ['channel 24', 'চ্যানেল ২৪', 'চ্যানেল 24'],
+    isBangla: true,
+  },
+  {
+    id: 'atn-news-bd',
+    name: 'ATN News',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.imgur.com/4qZQKjo.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'ATN News live bangladesh',
+    matchKeywords: ['atn news', 'এটিএন নিউজ'],
+    isBangla: true,
+  },
+  {
+    id: 'news24-bd',
+    name: 'News 24',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.imgur.com/fkTHh75.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'NEWS24 Television live bangladesh',
+    matchKeywords: ['news24', 'news 24', 'নিউজ২৪', 'নিউজ ২৪'],
+    isBangla: true,
+  },
+  {
+    id: 'dbc-news-bd',
+    name: 'DBC News',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.imgur.com/T41h2W5.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'DBC News live bangladesh',
+    matchKeywords: ['dbc', 'ডিবিসি'],
+    isBangla: true,
+  },
+  {
+    id: 'ekhon-tv-bd',
+    name: 'Ekhon TV',
+    country: 'BD',
+    categories: ['news'],
+    logo: 'https://i.imgur.com/xZ88g1Y.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@ekhontv',
+    youtubeLiveQuery: 'Ekhon TV live bangladesh',
+    matchKeywords: ['ekhon', 'এখন'],
+    isBangla: true,
+  },
+  {
+    id: 'channel-i-bd',
+    name: 'Channel i',
+    country: 'BD',
+    categories: ['entertainment', 'general'],
+    logo: 'https://i.imgur.com/X0JJlOX.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'Channel i live bangladesh',
+    matchKeywords: ['channel i', 'চ্যানেল আই'],
+    isBangla: true,
+  },
+  {
+    id: 'desh-tv-bd',
+    name: 'Desh TV',
+    country: 'BD',
+    categories: ['news', 'general'],
+    logo: 'https://i.imgur.com/ItrZok1.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'Desh TV live bangladesh',
+    matchKeywords: ['desh tv', 'দেশ টিভি'],
+    isBangla: true,
+  },
+  {
+    id: 'rtv-bd',
+    name: 'RTV',
+    country: 'BD',
+    categories: ['entertainment', 'general'],
+    logo: 'https://i.imgur.com/hP9d0kW.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'RTV live bangladesh',
+    matchKeywords: ['rtv', 'আরটিভি'],
+    isBangla: true,
+  },
+  {
+    id: 'ntv-bd',
+    name: 'NTV',
+    country: 'BD',
+    categories: ['entertainment', 'general'],
+    logo: 'https://i.imgur.com/H82M24l.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@ntvbd',
+    youtubeLiveQuery: 'NTV live bangladesh',
+    matchKeywords: ['ntv', 'এনটিভি'],
+    isBangla: true,
+  },
+  {
+    id: 'btv-bd',
+    name: 'BTV National',
+    country: 'BD',
+    categories: ['general'],
+    logo: 'https://i.imgur.com/5OE2FDt.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'BTV Bangladesh Television live',
+    matchKeywords: ['btv', 'বাংলাদেশ টেলিভিশন'],
+    isBangla: true,
+  },
+];
 
-app.get('/api/bd-services/eligibility', ah(async (req: Request, res: Response) => {
-  const userId = (req as any).userId as string | undefined;
-  const user = userId ? await db.findUserById(userId) : undefined;
-  let ageYears: number | null = null;
-  if (user?.dateOfBirth) {
-    const dob = new Date(user.dateOfBirth);
-    if (!Number.isNaN(dob.getTime())) {
-      const today = new Date();
-      ageYears = today.getFullYear() - dob.getFullYear();
-      const mDiff = today.getMonth() - dob.getMonth();
-      if (mDiff < 0 || (mDiff === 0 && today.getDate() < dob.getDate())) {
-        ageYears -= 1;
+const EMERGENCY_LIVE_TV_FALLBACK: LiveTvChannelItem[] = [
+  {
+    id: 'ATNBangla.bd',
+    name: 'ATN Bangla',
+    country: 'BD',
+    categories: ['general'],
+    logo: 'https://i.imgur.com/K1HmMRz.png',
+    streamType: 'hls',
+    streams: [{ url: 'https://tvsen5.aynaott.com/atnbangla/index.m3u8' }],
+    isBangla: true,
+  },
+  {
+    id: 'BanglaVision.bd',
+    name: 'Bangla Vision',
+    country: 'BD',
+    categories: ['general'],
+    logo: 'https://i.imgur.com/nCWgp38.png',
+    streamType: 'hls',
+    streams: [{ url: 'https://tvsen5.aynaott.com/banglavision/index.m3u8' }],
+    isBangla: true,
+  },
+  {
+    id: 'BoishakhiTV.bd',
+    name: 'Boishakhi TV',
+    country: 'BD',
+    categories: ['general'],
+    logo: 'https://i.imgur.com/gxL05Y4.png',
+    streamType: 'hls',
+    streams: [{ url: 'https://boishakhi.sonarbanglatv.com/boishakhi/boishakhitv/index.m3u8' }],
+    isBangla: true,
+  },
+];
+
+let cachedLiveTvChannels: { items: LiveTvChannelItem[]; cachedAt: number } | null = null;
+let liveTvCatalogBuildPromise: Promise<LiveTvChannelItem[]> | null = null;
+const LIVE_TV_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+const TARGET_LIVE_TV_CHANNEL_COUNT = 420;
+
+// Persistent social state (Likes + Comments per live TV channel)
+const LIVE_SOCIAL_FILE = path.join(process.cwd(), 'data', 'motherland_live_social.json');
+interface LiveChannelComment {
+  id: string;
+  channelId: string;
+  userId: string;
+  authorName: string;
+  authorAvatar?: string;
+  text: string;
+  createdAt: string;
+}
+interface LiveSocialStore {
+  likesByChannel: Record<string, string[]>;
+  commentsByChannel: Record<string, LiveChannelComment[]>;
+}
+let liveSocialStoreCache: LiveSocialStore | null = null;
+
+function readLiveSocialStore(): LiveSocialStore {
+  if (liveSocialStoreCache) return liveSocialStoreCache;
+  try {
+    if (fs.existsSync(LIVE_SOCIAL_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(LIVE_SOCIAL_FILE, 'utf-8'));
+      liveSocialStoreCache = {
+        likesByChannel: parsed?.likesByChannel || {},
+        commentsByChannel: parsed?.commentsByChannel || {},
+      };
+      return liveSocialStoreCache;
+    }
+  } catch {
+    // ignore read failure
+  }
+  liveSocialStoreCache = { likesByChannel: {}, commentsByChannel: {} };
+  return liveSocialStoreCache;
+}
+
+function writeLiveSocialStore(store: LiveSocialStore) {
+  liveSocialStoreCache = store;
+  try {
+    const dir = path.dirname(LIVE_SOCIAL_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(LIVE_SOCIAL_FILE, JSON.stringify(store, null, 2));
+  } catch (err) {
+    console.warn('Could not persist motherland_live_social.json:', err);
+  }
+}
+
+function isPrivateOrDisallowedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '0.0.0.0' || h.endsWith('.local')) {
+    return true;
+  }
+  const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+  }
+  return false;
+}
+
+function isCartoonChannel(c: any): boolean {
+  const cats: string[] = Array.isArray(c?.categories) ? c.categories : [];
+  if (cats.some((cat) => cat === 'kids' || cat === 'animation')) return true;
+  const name = String(c?.name || '');
+  return /cartoon|kids|nick|disney|pogo|boomerang|babytv|sonic|cbbc|cbeebies|toons|anime|animax|moonbug|duronto/i.test(name);
+}
+
+function isBanglaChannel(c: any): boolean {
+  if (c?.country === 'BD') return true;
+  const name = String(c?.name || '');
+  return /bangla|bengali|kolkata|dhaka|jalsha|aath|ananda|ghanta|rupashi|rupasi|tara|sangeet bangla|calcutta|desh|somoy|jamuna|ekattor|deepto|boishakhi|iqra bangla|peace tv bangla|atn/i.test(name);
+}
+
+async function isHlsStreamPlayable(stream: LiveTvStreamSource): Promise<boolean> {
+  try {
+    const parsed = new URL(stream.url);
+    if (isPrivateOrDisallowedHost(parsed.hostname)) return false;
+    const headers: Record<string, string> = {
+      'User-Agent':
+        stream.userAgent ||
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: '*/*',
+    };
+    if (stream.referrer) headers.Referer = stream.referrer;
+    const r = await fetch(parsed.toString(), {
+      headers,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(3500),
+    });
+    if (!r.ok) return false;
+    const text = await r.text();
+    return text.trimStart().startsWith('#EXTM3U');
+  } catch {
+    return false;
+  }
+}
+
+async function filterWorkingHlsChannels(
+  candidates: LiveTvChannelItem[],
+  maxDesired: number
+): Promise<LiveTvChannelItem[]> {
+  const working: LiveTvChannelItem[] = [];
+  const batchSize = 40;
+  for (let i = 0; i < candidates.length && working.length < maxDesired; i += batchSize) {
+    const batch = candidates.slice(i, i + batchSize);
+    const checked = await Promise.all(
+      batch.map(async (ch) => {
+        for (const s of ch.streams) {
+          if (await isHlsStreamPlayable(s)) {
+            return { ...ch, streams: [s, ...ch.streams.filter((x) => x.url !== s.url)] };
+          }
+        }
+        return null;
+      })
+    );
+    for (const item of checked) {
+      if (item && working.length < maxDesired) {
+        working.push(item);
       }
     }
   }
-  const isMinor = ageYears !== null && ageYears < 18;
+  return working;
+}
+
+async function buildMotherlandLiveCatalog(): Promise<LiveTvChannelItem[]> {
+  try {
+    const [chRes, stRes, lgRes] = await Promise.all([
+      fetch('https://iptv-org.github.io/api/channels.json'),
+      fetch('https://iptv-org.github.io/api/streams.json'),
+      fetch('https://iptv-org.github.io/api/logos.json'),
+    ]);
+    if (!chRes.ok || !stRes.ok || !lgRes.ok) {
+      throw new Error('Upstream channel directory unavailable');
+    }
+
+    const [channels, streams, logos] = await Promise.all([
+      chRes.json() as Promise<any[]>,
+      stRes.json() as Promise<any[]>,
+      lgRes.json() as Promise<any[]>,
+    ]);
+
+    const logoMap = new Map<string, string>();
+    for (const l of logos) {
+      if (!l?.channel || !l?.url || typeof l.url !== 'string') continue;
+      if (!l.url.startsWith('https://')) continue;
+      if (!logoMap.has(l.channel)) {
+        logoMap.set(l.channel, l.url);
+      }
+    }
+
+    const streamsByChannel = new Map<string, LiveTvStreamSource[]>();
+    for (const s of streams) {
+      if (!s?.channel || !s?.url || typeof s.url !== 'string') continue;
+      if (!s.url.startsWith('http://') && !s.url.startsWith('https://')) continue;
+      const list = streamsByChannel.get(s.channel) || [];
+      if (list.length < 3 && !list.some((x) => x.url === s.url)) {
+        list.push({
+          url: s.url,
+          referrer: s.referrer || undefined,
+          userAgent: s.user_agent || undefined,
+        });
+        streamsByChannel.set(s.channel, list);
+      }
+    }
+
+    const bdCandidates: LiveTvChannelItem[] = [];
+    const banglaGlobalCandidates: LiveTvChannelItem[] = [];
+    const cartoonCandidates: LiveTvChannelItem[] = [];
+    const pkCandidates: LiveTvChannelItem[] = [];
+    const inCandidates: LiveTvChannelItem[] = [];
+
+    const toLiveItem = (c: any, countryOverride?: 'BD' | 'IN' | 'PK' | 'INTL'): LiveTvChannelItem => {
+      const chStreams = streamsByChannel.get(c.id) || [];
+      const sortedStreams = [...chStreams].sort((a, b) => {
+        const aHttps = a.url.startsWith('https://') ? 0 : 1;
+        const bHttps = b.url.startsWith('https://') ? 0 : 1;
+        return aHttps - bHttps;
+      });
+      const rawCountry = c.country === 'BD' || c.country === 'IN' || c.country === 'PK' ? c.country : 'INTL';
+      const cartoon = isCartoonChannel(c);
+      const cats = Array.isArray(c.categories) && c.categories.length > 0 ? [...c.categories] : ['general'];
+      if (cartoon && !cats.includes('kids')) cats.unshift('kids');
+
+      return {
+        id: String(c.id),
+        name: String(c.name || c.id),
+        country: countryOverride || rawCountry,
+        categories: cats,
+        logo: logoMap.get(c.id) || '',
+        streamType: 'hls',
+        streams: sortedStreams,
+        isBangla: isBanglaChannel(c),
+        isCartoon: cartoon,
+      };
+    };
+
+    for (const c of channels) {
+      if (!c || c.is_nsfw) continue;
+      const chStreams = streamsByChannel.get(c.id);
+      if (!chStreams || chStreams.length === 0) continue;
+      const logo = logoMap.get(c.id) || '';
+
+      if (c.country === 'BD') {
+        bdCandidates.push(toLiveItem(c, 'BD'));
+      } else if (isBanglaChannel(c) && logo) {
+        banglaGlobalCandidates.push(toLiveItem(c));
+      } else if (isCartoonChannel(c) && logo && chStreams.some((s) => s.url.startsWith('https://'))) {
+        cartoonCandidates.push(toLiveItem(c));
+      } else if ((c.country === 'PK' || c.country === 'IN') && logo) {
+        const item = toLiveItem(c);
+        if (c.country === 'PK') pkCandidates.push(item);
+        else inCandidates.push(item);
+      }
+    }
+
+    // Prioritize famous cartoon channels first before probing
+    const famousCartoonRegex = /cartoon network|disney|nick|boomerang|pogo|babytv|cbbc|cbeebies|moonbug|duronto|animax|baby shark|dora|avatar|detective conan|crunchyroll|abc kids|ducktv|90's kids|90s kids|epic kids|chithiram|cartoonito/i;
+    cartoonCandidates.sort((a, b) => {
+      const aFam = famousCartoonRegex.test(a.name) ? 0 : 1;
+      const bFam = famousCartoonRegex.test(b.name) ? 0 : 1;
+      if (aFam !== bFam) return aFam - bFam;
+      return a.name.localeCompare(b.name);
+    });
+
+    // Probe streams in parallel so dead 403/404/502/timeout HLS streams are filtered out
+    const [bdWorking, banglaGlobalWorking, cartoonWorking, pkWorking, inWorking] = await Promise.all([
+      filterWorkingHlsChannels(bdCandidates, 50),
+      filterWorkingHlsChannels(banglaGlobalCandidates, 80),
+      filterWorkingHlsChannels(cartoonCandidates.slice(0, 180), 65),
+      filterWorkingHlsChannels(pkCandidates.slice(0, 140), 90),
+      filterWorkingHlsChannels(inCandidates.slice(0, 220), 160),
+    ]);
+
+    // Merge BD HLS + verified 24/7 BD YouTube Live networks without duplicate station names
+    const normalizeName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const seenBdNames = new Set(bdWorking.map((b) => normalizeName(b.name)));
+    const extraBdLive = BD_YOUTUBE_LIVE_CHANNELS.filter((b) => !seenBdNames.has(normalizeName(b.name)));
+
+    const bdMerged = [...bdWorking, ...extraBdLive].sort((a, b) => a.name.localeCompare(b.name));
+    banglaGlobalWorking.sort((a, b) => a.name.localeCompare(b.name));
+    pkWorking.sort((a, b) => a.name.localeCompare(b.name));
+    inWorking.sort((a, b) => a.name.localeCompare(b.name));
+
+    const merged = [
+      ...bdMerged,
+      ...banglaGlobalWorking,
+      ...cartoonWorking,
+      ...pkWorking,
+      ...inWorking,
+    ].slice(0, TARGET_LIVE_TV_CHANNEL_COUNT);
+
+    if (merged.length > 0) {
+      cachedLiveTvChannels = { items: merged, cachedAt: Date.now() };
+      return merged;
+    }
+  } catch (err) {
+    console.warn('Live TV catalog fetch warning:', err);
+  }
+
+  return cachedLiveTvChannels?.items || [...EMERGENCY_LIVE_TV_FALLBACK, ...BD_YOUTUBE_LIVE_CHANNELS];
+}
+
+async function getMotherlandLiveCatalog(forceRefresh = false): Promise<LiveTvChannelItem[]> {
+  if (
+    !forceRefresh &&
+    cachedLiveTvChannels &&
+    Date.now() - cachedLiveTvChannels.cachedAt < LIVE_TV_CATALOG_TTL_MS
+  ) {
+    return cachedLiveTvChannels.items;
+  }
+
+  if (liveTvCatalogBuildPromise && !forceRefresh) {
+    return liveTvCatalogBuildPromise;
+  }
+
+  liveTvCatalogBuildPromise = buildMotherlandLiveCatalog().finally(() => {
+    liveTvCatalogBuildPromise = null;
+  });
+  return liveTvCatalogBuildPromise;
+}
+
+// Warm live catalog shortly after boot so opening Motherland live is instant
+setTimeout(() => {
+  void getMotherlandLiveCatalog(false).catch(() => {});
+}, 1500);
+
+app.get('/api/motherland-live/channels', ah(async (req: Request, res: Response) => {
+  const forceRefresh = req.query.refresh === '1';
+  const region = String(req.query.region || 'all').toUpperCase();
+  const category = String(req.query.category || 'all').toLowerCase();
+  const q = String(req.query.q || '').trim().toLowerCase();
+
+  let list = await getMotherlandLiveCatalog(forceRefresh);
+  const counts = {
+    all: list.length,
+    BD: list.filter((c) => c.country === 'BD').length,
+    BANGLA: list.filter((c) => c.isBangla || c.country === 'BD').length,
+    CARTOON: list.filter((c) => c.isCartoon || c.categories.includes('kids') || c.categories.includes('animation')).length,
+    PK: list.filter((c) => c.country === 'PK').length,
+    IN: list.filter((c) => c.country === 'IN').length,
+  };
+
+  if (region === 'BD' || region === 'PK' || region === 'IN') {
+    list = list.filter((c) => c.country === region);
+  } else if (region === 'BANGLA') {
+    list = list.filter((c) => c.isBangla || c.country === 'BD');
+  } else if (region === 'CARTOON') {
+    list = list.filter((c) => c.isCartoon || c.categories.includes('kids') || c.categories.includes('animation'));
+  }
+
+  if (category === 'cartoon' || category === 'kids') {
+    list = list.filter((c) => c.isCartoon || c.categories.includes('kids') || c.categories.includes('animation'));
+  } else if (category === 'bangla') {
+    list = list.filter((c) => c.isBangla || c.country === 'BD');
+  } else if (category && category !== 'all' && category !== 'saved') {
+    list = list.filter((c) => c.categories.some((cat) => cat.toLowerCase() === category));
+  }
+
+  if (q) {
+    list = list.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.country.toLowerCase().includes(q) ||
+        c.categories.some((cat) => cat.toLowerCase().includes(q))
+    );
+  }
+
+  res.json({ channels: list, total: counts.all, counts });
+}));
+
+const ytLiveChannelCache = new Map<string, { videoId: string; title: string; channelAvatar?: string; cachedAt: number }>();
+
+app.get('/api/motherland-live/youtube-live/:channelId', ah(async (req: Request, res: Response) => {
+  const channelId = String(req.params.channelId || '').trim();
+  const catalog = await getMotherlandLiveCatalog();
+  const ch = catalog.find((c) => c.id === channelId);
+  if (!ch || ch.streamType !== 'youtube_live') {
+    return res.status(404).json({ error: 'Live TV channel not found' });
+  }
+
+  const cached = ytLiveChannelCache.get(channelId);
+  if (cached && Date.now() - cached.cachedAt < 180 * 1000) {
+    return res.json(cached);
+  }
+
+  const browserHeaders = {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9,bn;q=0.8',
+  };
+  const keywords = (ch.matchKeywords && ch.matchKeywords.length > 0
+    ? ch.matchKeywords
+    : [ch.name.toLowerCase()]
+  ).map((k) => k.toLowerCase());
+
+  let videoId = '';
+  let title = `${ch.name} Live`;
+  const channelAvatar = ch.logo || '';
+
+  // Step 1: Official YouTube @handle/live direct check (guaranteed right channel & strictly live)
+  if (ch.youtubeHandle) {
+    try {
+      const r = await fetch(`https://www.youtube.com/${ch.youtubeHandle}/live`, {
+        headers: browserHeaders,
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) {
+        const html = await r.text();
+        if (/"isLive"\s*:\s*true/.test(html)) {
+          const vid = html.match(/"videoId":"([A-Za-z0-9_-]{11})"/)?.[1] || '';
+          if (vid) {
+            videoId = vid;
+          }
+        }
+      }
+    } catch {
+      // fall through to live search
+    }
+  }
+
+  // Step 2: YouTube LIVE-filtered search (?sp=EgJAAQ%3D%3D) verifying LIVE badge AND channel keywords
+  if (!videoId) {
+    const query = ch.youtubeLiveQuery || `${ch.name} live bangladesh`;
+    try {
+      const r = await fetch(
+        `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=EgJAAQ%3D%3D`,
+        {
+          headers: browserHeaders,
+          signal: AbortSignal.timeout(5500),
+        }
+      );
+      if (r.ok) {
+        const html = await r.text();
+        const blocks = html.split('"videoRenderer":{').slice(1, 14);
+        for (const blk of blocks) {
+          const isLive =
+            blk.includes('"style":"LIVE"') ||
+            blk.includes('watching now') ||
+            blk.includes('BADGE_STYLE_TYPE_LIVE_NOW');
+          if (!isLive) continue;
+          const vid = blk.match(/^"videoId":"([A-Za-z0-9_-]{11})"/)?.[1];
+          const itemTitle = blk.match(/"title":\{"runs":\[\{"text":"([^"]+)/)?.[1] || '';
+          const owner = blk.match(/"ownerText":\{"runs":\[\{"text":"([^"]+)/)?.[1] || '';
+          const hay = `${itemTitle} ${owner}`.toLowerCase();
+          if (vid && keywords.some((kw) => hay.includes(kw))) {
+            videoId = vid;
+            title = itemTitle || title;
+            break;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Step 3: Official YouTube Data API search (strictly eventType=live + keyword verification; NEVER fallback to VOD)
+  if (!videoId) {
+    try {
+      const searchData = await fetchFromYouTubeApi('search', {
+        part: 'snippet',
+        type: 'video',
+        eventType: 'live',
+        q: ch.youtubeLiveQuery || `${ch.name} live`,
+        maxResults: '8',
+      });
+      const matched = (searchData.items || []).find((it: any) => {
+        const hay = `${it?.snippet?.title || ''} ${it?.snippet?.channelTitle || ''}`.toLowerCase();
+        return Boolean(it?.id?.videoId) && keywords.some((kw) => hay.includes(kw));
+      });
+      if (matched?.id?.videoId) {
+        videoId = matched.id.videoId;
+        title = matched.snippet?.title || title;
+      }
+    } catch {
+      // No VOD fallback allowed for Motherland live
+    }
+  }
+
+  if (!videoId) {
+    return res.status(404).json({ error: `${ch.name} live broadcast is currently offline.` });
+  }
+
+  const payload = { videoId, title, channelAvatar, cachedAt: Date.now() };
+  ytLiveChannelCache.set(channelId, payload);
+  res.json(payload);
+}));
+
+function buildProxyUrl(targetUrl: string, ref?: string, ua?: string): string {
+  const qs = new URLSearchParams({ url: targetUrl });
+  if (ref) qs.set('ref', ref);
+  if (ua) qs.set('ua', ua);
+  return `/api/motherland-live/hls-proxy?${qs.toString()}`;
+}
+
+app.get('/api/motherland-live/hls-proxy', async (req: Request, res: Response) => {
+  const rawUrl = String(req.query.url || '').trim();
+  const ref = String(req.query.ref || '').trim();
+  const ua = String(req.query.ua || '').trim();
+  if (!rawUrl) {
+    return res.status(400).send('url query parameter is required');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return res.status(400).send('Invalid stream URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return res.status(400).send('Unsupported protocol');
+  }
+  if (isPrivateOrDisallowedHost(parsed.hostname)) {
+    return res.status(403).send('Disallowed stream host');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const headers: Record<string, string> = {
+      'User-Agent':
+        ua ||
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: '*/*',
+    };
+    if (ref) headers.Referer = ref;
+
+    const upstream = await fetch(parsed.toString(), {
+      headers,
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!upstream.ok) {
+      return res.status(upstream.status).send(`Upstream stream returned ${upstream.status}`);
+    }
+
+    const finalUrl = upstream.url || parsed.toString();
+    const contentType = upstream.headers.get('content-type') || '';
+    const isPlaylist =
+      contentType.toLowerCase().includes('mpegurl') ||
+      finalUrl.toLowerCase().includes('.m3u8');
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+    if (isPlaylist) {
+      const text = await upstream.text();
+      if (text.trimStart().startsWith('#EXTM3U')) {
+        const rewritten = text
+          .split(/\r?\n/)
+          .map((line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return line;
+            if (trimmed.startsWith('#')) {
+              return line.replace(/URI="([^"]+)"/g, (_match, uriVal: string) => {
+                try {
+                  const abs = new URL(uriVal, finalUrl).toString();
+                  return `URI="${buildProxyUrl(abs, ref, ua)}"`;
+                } catch {
+                  return `URI="${uriVal}"`;
+                }
+              });
+            }
+            try {
+              const abs = new URL(trimmed, finalUrl).toString();
+              return buildProxyUrl(abs, ref, ua);
+            } catch {
+              return line;
+            }
+          })
+          .join('\n');
+
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
+        return res.status(200).send(rewritten);
+      }
+      res.setHeader('Content-Type', contentType || 'text/plain; charset=utf-8');
+      return res.status(200).send(text);
+    }
+
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    if (contentType) res.setHeader('Content-Type', contentType);
+    return res.status(200).send(buf);
+  } catch (err: any) {
+    clearTimeout(timer);
+    return res.status(502).send(err?.message || 'Live stream proxy timeout');
+  }
+});
+
+// Channel Likes & Comments
+app.get('/api/motherland-live/channel-social/:channelId', ah(async (req: Request, res: Response) => {
+  const channelId = String(req.params.channelId || '').trim();
+  const userId = (req as any).userId as string | undefined;
+  const store = readLiveSocialStore();
+  const likes = store.likesByChannel[channelId] || [];
+  const comments = store.commentsByChannel[channelId] || [];
   res.json({
-    authenticated: Boolean(user),
-    ageYears,
-    loanEligible: ageYears === null ? null : ageYears >= 18,
-    isMinor,
+    likesCount: likes.length,
+    isLiked: userId ? likes.includes(userId) : false,
+    comments,
+  });
+}));
+
+app.post('/api/motherland-live/like', ah(async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const channelId = String(req.body?.channelId || '').trim();
+  if (!channelId) return res.status(400).json({ error: 'channelId is required' });
+
+  const store = readLiveSocialStore();
+  const current = store.likesByChannel[channelId] || [];
+  const hasLiked = current.includes(user.id);
+  const next = hasLiked ? current.filter((id) => id !== user.id) : [...current, user.id];
+  store.likesByChannel[channelId] = next;
+  writeLiveSocialStore(store);
+
+  res.json({
+    likesCount: next.length,
+    isLiked: !hasLiked,
+  });
+}));
+
+app.post('/api/motherland-live/comment', ah(async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const channelId = String(req.body?.channelId || '').trim();
+  const text = String(req.body?.text || '').trim();
+  if (!channelId || !text) {
+    return res.status(400).json({ error: 'channelId and text are required' });
+  }
+
+  const store = readLiveSocialStore();
+  const list = store.commentsByChannel[channelId] || [];
+  const comment: LiveChannelComment = {
+    id: `mlc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    channelId,
+    userId: user.id,
+    authorName: user.displayName || user.username,
+    authorAvatar: user.avatar,
+    text: text.slice(0, 500),
+    createdAt: new Date().toISOString(),
+  };
+  store.commentsByChannel[channelId] = [comment, ...list].slice(0, 150);
+  writeLiveSocialStore(store);
+
+  res.json({
+    comment,
+    comments: store.commentsByChannel[channelId],
+  });
+}));
+
+app.get('/api/motherland-live/prefs', ah(async (req: Request, res: Response) => {
+  const userId = (req as any).userId as string | undefined;
+  if (!userId) return res.json({ favorites: [], recent: [] });
+  const prefs = await db.getBdServicePrefs(userId);
+  const strip = (arr: string[]) =>
+    (arr || []).filter((s) => s.startsWith('ml_live:')).map((s) => s.slice('ml_live:'.length));
+  res.json({
+    favorites: strip(prefs.favorites),
+    recent: strip(prefs.recent),
+  });
+}));
+
+app.post('/api/motherland-live/favorite', ah(async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const channelId = String(req.body?.channelId || req.body?.videoId || '').trim();
+  if (!channelId) return res.status(400).json({ error: 'channelId is required' });
+  const result = await db.toggleBdServiceFavorite(user.id, `ml_live:${channelId}`);
+  res.json({
+    favorites: (result.favorites || [])
+      .filter((s) => s.startsWith('ml_live:'))
+      .map((s) => s.slice('ml_live:'.length)),
+    isFavorite: result.isFavorite,
+  });
+}));
+
+app.post('/api/motherland-live/recent', ah(async (req: Request, res: Response) => {
+  const userId = (req as any).userId as string | undefined;
+  if (!userId) return res.json({ recent: [] });
+  const channelId = String(req.body?.channelId || req.body?.videoId || '').trim();
+  if (!channelId) return res.status(400).json({ error: 'channelId is required' });
+  const recent = await db.recordBdServiceRecent(userId, `ml_live:${channelId}`);
+  res.json({
+    recent: (recent || [])
+      .filter((s) => s.startsWith('ml_live:'))
+      .map((s) => s.slice('ml_live:'.length)),
   });
 }));
 

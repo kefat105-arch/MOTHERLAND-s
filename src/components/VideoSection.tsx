@@ -749,12 +749,14 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
       className="cursor-pointer rounded-2xl overflow-hidden ml-glass hover:border-[var(--accent-primary)] transition-all group"
     >
       <div className="relative aspect-video bg-black overflow-hidden">
-        <img
-          src={video.thumbnailUrl}
-          alt={video.title}
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-          loading="lazy"
-        />
+        {video.thumbnailUrl ? (
+          <img
+            src={video.thumbnailUrl}
+            alt={video.title}
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            loading="lazy"
+          />
+        ) : null}
         <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/80 text-[10px] font-mono text-white font-semibold tabular-nums">
           {video.duration}
         </span>
@@ -788,11 +790,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           className="flex-shrink-0 cursor-pointer"
           aria-label={`View ${video.channel.title} profile`}
         >
-          <img
-            src={video.channel.avatar}
-            alt={video.channel.title}
-            className="w-8 h-8 rounded-full object-cover border border-[var(--border-subtle)] mt-0.5 hover:ring-2 hover:ring-[var(--accent-primary)] transition"
-          />
+          {video.channel.avatar ? (
+            <img
+              src={video.channel.avatar}
+              alt={video.channel.title}
+              className="w-8 h-8 rounded-full object-cover border border-[var(--border-subtle)] mt-0.5 hover:ring-2 hover:ring-[var(--accent-primary)] transition"
+            />
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] mt-0.5 flex items-center justify-center text-xs font-bold text-[var(--text-primary)]">
+              {(video.channel.title || 'M').slice(0, 1).toUpperCase()}
+            </div>
+          )}
         </button>
         <div className="min-w-0 flex-1">
           <h3 className="text-xs sm:text-sm font-bold text-[var(--text-primary)] line-clamp-2 leading-snug group-hover:text-[var(--accent-primary)] transition-colors">
@@ -896,11 +904,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 }
                 className="flex items-center gap-3 min-w-0 text-left group cursor-pointer"
               >
-                <img
-                  src={watchingVideo.channel.avatar}
-                  alt={watchingVideo.channel.title}
-                  className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)] group-hover:ring-2 group-hover:ring-[var(--accent-primary)] transition"
-                />
+                {watchingVideo.channel.avatar ? (
+                  <img
+                    src={watchingVideo.channel.avatar}
+                    alt={watchingVideo.channel.title}
+                    className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)] group-hover:ring-2 group-hover:ring-[var(--accent-primary)] transition"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex items-center justify-center text-sm font-bold text-[var(--text-primary)]">
+                    {(watchingVideo.channel.title || 'M').slice(0, 1).toUpperCase()}
+                  </div>
+                )}
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 font-bold text-sm text-[var(--text-primary)] group-hover:text-[var(--accent-primary)] truncate">
                     <span>{watchingVideo.channel.title}</span>
@@ -1131,11 +1145,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 }
                 className="flex items-center gap-3 min-w-0 text-left group cursor-pointer"
               >
-                <img
-                  src={watchingVideo.channel.avatar}
-                  alt={watchingVideo.channel.title}
-                  className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)]"
-                />
+                {watchingVideo.channel.avatar ? (
+                  <img
+                    src={watchingVideo.channel.avatar}
+                    alt={watchingVideo.channel.title}
+                    className="w-10 h-10 rounded-full object-cover border border-[var(--border-subtle)]"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] flex items-center justify-center text-sm font-bold text-[var(--text-primary)]">
+                    {(watchingVideo.channel.title || 'M').slice(0, 1).toUpperCase()}
+                  </div>
+                )}
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 font-bold text-sm text-[var(--text-primary)] truncate">
                     <span>{watchingVideo.channel.title}</span>
@@ -1319,7 +1339,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                   className="flex gap-3 cursor-pointer group p-2 rounded-2xl border border-transparent hover:border-[var(--border-subtle)] hover:bg-[var(--bg-surface)] transition-all"
                 >
                   <div className="relative w-40 aspect-video rounded-xl overflow-hidden bg-black flex-shrink-0">
-                    <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover" />
+                    {video.thumbnailUrl ? (
+                      <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover" />
+                    ) : null}
                     <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/80 text-white text-[10px] font-mono tabular-nums">
                       {video.duration}
                     </span>
@@ -1429,7 +1451,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                   className="cursor-pointer rounded-2xl overflow-hidden ml-glass hover:border-[var(--accent-primary)] transition-all group"
                 >
                   <div className="relative aspect-video bg-black overflow-hidden">
-                    <img src={live.thumbnailUrl} alt={live.title} className="w-full h-full object-cover" />
+                    {live.thumbnailUrl ? (
+                      <img src={live.thumbnailUrl} alt={live.title} className="w-full h-full object-cover" />
+                    ) : null}
                     <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">
                       LIVE
                     </span>
@@ -1641,7 +1665,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 className="w-64 flex-shrink-0 cursor-pointer rounded-2xl ml-glass overflow-hidden hover:border-[var(--accent-primary)] transition-colors"
               >
                 <div className="relative aspect-video bg-black">
-                  <img src={live.thumbnailUrl} alt={live.title} className="w-full h-full object-cover" />
+                  {live.thumbnailUrl ? (
+                    <img src={live.thumbnailUrl} alt={live.title} className="w-full h-full object-cover" />
+                  ) : null}
                   <span className="absolute top-2 left-2 px-2 py-0.5 rounded bg-red-600 text-white text-[10px] font-bold">
                     LIVE
                   </span>
@@ -1749,12 +1775,14 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 className="w-36 sm:w-40 flex-shrink-0 cursor-pointer group"
               >
                 <div className="relative aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] shadow-sm">
-                  <img
-                    src={short.thumbnailUrl}
-                    alt={short.title}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    loading="lazy"
-                  />
+                  {short.thumbnailUrl ? (
+                    <img
+                      src={short.thumbnailUrl}
+                      alt={short.title}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      loading="lazy"
+                    />
+                  ) : null}
                   <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/90 via-black/45 to-transparent">
                     <p className="text-[11px] font-bold text-white line-clamp-2 leading-snug">
                       {short.title}

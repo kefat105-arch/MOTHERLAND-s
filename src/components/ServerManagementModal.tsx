@@ -33,7 +33,7 @@ const SERVICE_OPTIONS: { id: ManagedServiceDomain; label: string }[] = [
   { id: 'video', label: 'Video & Shorts' },
   { id: 'messaging', label: 'WAVE Messaging' },
   { id: 'calls', label: 'WebRTC Calls' },
-  { id: 'bd_services', label: 'BD Services' },
+  { id: 'bd_services', label: 'Motherland live' },
 ];
 
 export const ServerManagementModal: React.FC<ServerManagementModalProps> = ({

@@ -175,7 +175,13 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <img src={user.avatar} alt={user.displayName} className="w-10 h-10 rounded-full object-cover shrink-0" />
+                  {user.avatar ? (
+                    <img src={user.avatar} alt={user.displayName} className="w-10 h-10 rounded-full object-cover shrink-0" />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-[var(--ml-accent-teal)]/20 text-[var(--ml-accent-teal)] flex items-center justify-center font-bold text-sm shrink-0">
+                      {(user.displayName || 'W').slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-[var(--ml-text-primary)] truncate">{user.displayName}</p>
                     <p className="text-xs text-[var(--ml-text-muted)] truncate">@{user.username}</p>
