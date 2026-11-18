@@ -235,6 +235,12 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const activeChannelIdRef = useRef<string | null>(null);
+  const [preferDirectStream, setPreferDirectStream] = useState(false);
+
+  useEffect(() => {
+    activeChannelIdRef.current = activeChannel?.id || null;
+  }, [activeChannel?.id]);
 
   const loadChannels = useCallback(async (forceRefresh = false) => {
     setIsLoadingCatalog(true);
@@ -332,25 +338,32 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
 
   // Resolve 24/7 YouTube-Live broadcast for channels with streamType === 'youtube_live'
   const resolveYoutubeLiveChannel = useCallback(async (ch: LiveTvChannelItem) => {
+    const targetId = ch.id;
     setYtLiveLoading(true);
     setYtLiveError(null);
     setYtLiveVideoId(null);
     try {
-      const data = await api.resolveMotherlandYoutubeLive(ch.id);
+      const data = await api.resolveMotherlandYoutubeLive(targetId);
+      if (activeChannelIdRef.current !== targetId) return;
       if (data?.videoId) {
         setYtLiveVideoId(data.videoId);
       } else {
         setYtLiveError(`${ch.name} live broadcast is currently unavailable.`);
       }
     } catch (err: any) {
+      if (activeChannelIdRef.current !== targetId) return;
       setYtLiveError(err?.message || `${ch.name} live stream is currently offline.`);
     } finally {
-      setYtLiveLoading(false);
+      if (activeChannelIdRef.current === targetId) {
+        setYtLiveLoading(false);
+      }
     }
   }, []);
 
   // Attach HLS or YouTube Live stream to the top TV player
   useEffect(() => {
+    let cancelled = false;
+
     if (!activeChannel) {
       if (hlsRef.current) {
         hlsRef.current.destroy();
@@ -371,7 +384,9 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
       setIsBuffering(false);
       setQualityLevels([]);
       void resolveYoutubeLiveChannel(activeChannel);
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
     // HLS stream channel
@@ -388,7 +403,9 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
       return;
     }
 
-    const proxiedSrc = buildHlsProxySrc(currentStream);
+    const canTryDirect = currentStream.url.startsWith('https://');
+    const sourceUrl =
+      preferDirectStream && canTryDirect ? currentStream.url : buildHlsProxySrc(currentStream);
 
     if (hlsRef.current) {
       hlsRef.current.destroy();
@@ -401,13 +418,19 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
     setSelectedQuality(-1);
 
     const handleStreamFailure = () => {
+      if (cancelled) return;
+      if (!preferDirectStream && canTryDirect) {
+        setPreferDirectStream(true);
+        return;
+      }
       if (streamIndex + 1 < activeChannel.streams.length) {
+        setPreferDirectStream(false);
         setStreamIndex((idx) => idx + 1);
       } else {
         setIsBuffering(false);
         setIsPlaying(false);
         setStreamError(
-          `${activeChannel.name} stream is currently offline or unreachable. Choose another channel logo below.`
+          `${activeChannel.name} stream is currently offline or geo-blocked here. Tap another channel logo below to switch.`
         );
       }
     };
@@ -425,10 +448,11 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
       });
       hlsRef.current = hls;
 
-      hls.loadSource(proxiedSrc);
+      hls.loadSource(sourceUrl);
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
+        if (cancelled) return;
         const levels = (data.levels || []).map((lvl, idx) => ({
           index: idx,
           label: lvl.height ? `${lvl.height}p` : `Stream ${idx + 1}`,
@@ -445,6 +469,7 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (cancelled) return;
         if (data.fatal) {
           hls.destroy();
           hlsRef.current = null;
@@ -452,10 +477,11 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
         }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = proxiedSrc;
+      video.src = sourceUrl;
       video.addEventListener(
         'loadedmetadata',
         () => {
+          if (cancelled) return;
           setIsBuffering(false);
           video.play().catch(() => {
             video.muted = true;
@@ -472,6 +498,7 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
     }
 
     return () => {
+      cancelled = true;
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
@@ -484,14 +511,18 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
         // ignore video reset errors
       }
     };
-  }, [activeChannel?.id, activeChannel?.streamType, streamIndex, resolveYoutubeLiveChannel]);
+  }, [activeChannel?.id, activeChannel?.streamType, streamIndex, preferDirectStream, resolveYoutubeLiveChannel]);
 
   const handleSelectChannel = useCallback(
     (ch: LiveTvChannelItem) => {
+      const wasBrowsing = !activeChannelIdRef.current;
+      activeChannelIdRef.current = ch.id;
       setActiveChannel(ch);
       setStreamIndex(0);
+      setPreferDirectStream(false);
       setStreamError(null);
       setYtLiveError(null);
+      setIsPlaying(false);
 
       if (currentUser) {
         api
@@ -512,8 +543,8 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
         });
       }
 
-      if (typeof window !== 'undefined') {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+      if (wasBrowsing && typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'auto' });
       }
     },
     [currentUser]
@@ -702,111 +733,225 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
     return counts.IN;
   };
 
-  return (
-    <div
-      data-testid="motherland-live-view"
-      className="min-h-[calc(100vh-56px)] bg-[#0A0C10] text-[#F8FAFC] pb-14"
-    >
-      {/* 1. YouTube-Style Sticky Header with Integrated Live TV Search */}
-      <div className="sticky top-0 z-30 bg-[#0A0C10]/95 backdrop-blur-xl border-b border-white/10">
-        <div className="max-w-7xl mx-auto px-3 sm:px-5 h-14 flex items-center justify-between gap-2 sm:gap-4">
-          <div className="flex items-center gap-2 min-w-0 shrink-0">
+  const renderFilterControls = (compact = false) => (
+    <section className={compact ? 'space-y-2' : 'space-y-2.5'}>
+      {/* Search Input */}
+      <div className={compact ? 'relative w-full' : 'relative w-full md:hidden'}>
+        <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder={`Search ${counts.all || 500} Live TV channels...`}
+          className={`w-full ${compact ? 'h-9 text-xs' : 'h-11 text-sm'} pl-10 pr-9 rounded-xl bg-[#131720] border border-white/10 text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500`}
+        />
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => setSearchQuery('')}
+            aria-label="Clear channel search"
+            className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+
+      {/* Region & Special Filter Tabs */}
+      <div
+        role="tablist"
+        aria-label="Channel region and collection"
+        className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5"
+      >
+        {REGION_TABS.map((tab) => {
+          const active = region === tab.id;
+          const tabCount = getRegionCount(tab.id);
+          return (
             <button
+              key={tab.id}
               type="button"
-              onClick={() => {
-                if (activeChannel) {
-                  setActiveChannel(null);
-                } else {
-                  onBack();
-                }
-              }}
-              data-testid="motherland-live-back-btn"
-              aria-label={activeChannel ? 'Back to all channels' : 'Back to MOTHERLAND'}
-              className="min-w-[44px] min-h-[44px] -ml-1.5 rounded-xl flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 transition-colors shrink-0"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setRegion(tab.id)}
+              className={`${compact ? 'min-h-[34px] px-2.5 py-1 text-[11px]' : 'min-h-[40px] px-3.5 py-2 text-xs'} rounded-xl font-semibold whitespace-nowrap shrink-0 border transition-colors ${
+                active
+                  ? 'bg-rose-600 text-white border-rose-500'
+                  : 'bg-[#131720] text-slate-300 border-white/10 hover:bg-white/10 hover:text-white'
+              }`}
             >
-              <ArrowLeft className="w-5 h-5" />
+              <span>{tab.label}</span>
+              {tabCount > 0 && (
+                <span className="ml-1 tabular-nums opacity-80">({tabCount})</span>
+              )}
             </button>
+          );
+        })}
+      </div>
 
+      {/* Category Tabs */}
+      <div
+        role="tablist"
+        aria-label="Channel category"
+        className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5"
+      >
+        {CATEGORY_TABS.map((tab) => {
+          const active = category === tab.id;
+          return (
             <button
+              key={tab.id}
               type="button"
-              onClick={() => setActiveChannel(null)}
-              className="flex items-center gap-2.5 min-w-0 text-left group"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setCategory(tab.id)}
+              className={`${compact ? 'min-h-[32px] px-2.5 py-1 text-[11px]' : 'min-h-[38px] px-3.5 py-1.5 text-xs'} rounded-xl font-semibold whitespace-nowrap shrink-0 border transition-colors ${
+                active
+                  ? 'bg-white text-[#0A0C10] border-white'
+                  : 'bg-[#131720] text-slate-300 border-white/10 hover:bg-white/10 hover:text-white'
+              }`}
             >
-              <div className="w-9 h-9 rounded-xl bg-rose-600/15 border border-rose-500/30 flex items-center justify-center shrink-0">
-                <MotherlandLiveIcon className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-sm sm:text-base font-bold tracking-tight text-white group-hover:text-rose-400 transition-colors truncate leading-tight">
-                  Motherland live
-                </h1>
-                <p className="text-[11px] text-slate-400 truncate leading-tight tabular-nums">
-                  {counts.all > 0 ? `${counts.all} Live TV Channels` : 'Live Television'}
-                </p>
-              </div>
+              <span>{tab.label}</span>
+              {tab.id === 'saved' && favoriteIds.length > 0 && (
+                <span className="ml-1 tabular-nums opacity-75">({favoriteIds.length})</span>
+              )}
             </button>
-          </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 
-          {/* Desktop Integrated YouTube-Style Search Bar */}
-          <div className="hidden md:flex flex-1 max-w-md relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={`Search ${counts.all || 420} Live TV channels (Somoy, Cartoon Network...)`}
-              className="w-full h-10 pl-10 pr-9 rounded-full bg-[#131720] border border-white/15 text-xs sm:text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                aria-label="Clear channel search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-white"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
+  const renderCommentsPanel = () => {
+    if (!activeChannel || !showComments) return null;
+    return (
+      <div
+        data-testid="live-comments-panel"
+        className="px-3 sm:px-4 py-3 border-t border-white/10 bg-[#0B0E14] space-y-3"
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold text-white">
+            Live Comments · {activeChannel.name}
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowComments(false)}
+            className="text-[11px] font-semibold text-slate-400 hover:text-white"
+          >
+            Close
+          </button>
+        </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            {activeChannel && (
+        <form onSubmit={handleSubmitComment} className="flex items-center gap-2">
+          <input
+            type="text"
+            value={commentText}
+            onChange={(e) => setCommentText(e.target.value)}
+            placeholder={
+              currentUser
+                ? `Comment on ${activeChannel.name}...`
+                : 'Sign in to write a live comment...'
+            }
+            className="flex-1 h-10 px-3 rounded-xl bg-[#131720] border border-white/15 text-xs sm:text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
+          />
+          <button
+            type="submit"
+            disabled={commentPending || (!commentText.trim() && Boolean(currentUser))}
+            className="min-h-[40px] px-3.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>{currentUser ? 'Post' : 'Sign in'}</span>
+          </button>
+        </form>
+
+        {comments.length === 0 ? (
+          <p className="text-xs text-slate-400 py-1">
+            No comments yet on {activeChannel.name}. Be the first to share your thoughts.
+          </p>
+        ) : (
+          <div className="space-y-2.5 max-h-48 overflow-y-auto pr-1">
+            {comments.map((c) => (
+              <div key={c.id} className="flex items-start gap-2.5">
+                {c.authorAvatar ? (
+                  <img
+                    src={c.authorAvatar}
+                    alt={c.authorName}
+                    referrerPolicy="no-referrer"
+                    className="w-7 h-7 rounded-full object-cover shrink-0 bg-slate-800"
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-rose-600/25 border border-rose-500/30 flex items-center justify-center text-[11px] font-bold text-white shrink-0">
+                    {c.authorName.slice(0, 1).toUpperCase()}
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-semibold text-white truncate">
+                      {c.authorName}
+                    </span>
+                    <span className="text-[10px] text-slate-500 shrink-0">
+                      {formatCommentTime(c.createdAt)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 mt-0.5 break-words">
+                    {c.text}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // =========================================================================
+  // WATCH MODE: Fixed Pinned Split View so the running Top Live Video NEVER
+  // scrolls away while the user scrolls & switches channels below!
+  // =========================================================================
+  if (activeChannel) {
+    return (
+      <div
+        data-testid="motherland-live-view"
+        className="fixed top-[57px] inset-x-0 bottom-[calc(58px+env(safe-area-inset-bottom))] md:bottom-0 z-25 bg-[#0A0C10] text-[#F8FAFC] overflow-hidden"
+      >
+        <div className="max-w-7xl mx-auto h-full flex flex-col lg:grid lg:grid-cols-12">
+          {/* PINNED TOP / LEFT PLAYER COLUMN */}
+          <div
+            ref={playerContainerRef}
+            data-testid="motherland-live-player-section"
+            className="flex-shrink-0 lg:col-span-7 xl:col-span-8 lg:flex lg:flex-col lg:overflow-y-auto bg-[#0E121A] border-b lg:border-b-0 lg:border-r border-white/10"
+          >
+            {/* Compact Watch Header Bar */}
+            <div className="px-3 sm:px-4 h-11 bg-[#0B0E14] border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => setActiveChannel(null)}
-                className="min-h-[40px] px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition-colors"
+                data-testid="motherland-live-back-btn"
+                className="min-h-[34px] px-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition-colors shrink-0"
               >
-                <LayoutGrid className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">All Channels</span>
+                <ArrowLeft className="w-3.5 h-3.5 text-rose-400" />
+                <span>All Channels</span>
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => loadChannels(true)}
-              disabled={isLoadingCatalog}
-              aria-label="Refresh channels"
-              className="min-w-[44px] min-h-[44px] rounded-xl bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white flex items-center justify-center transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${isLoadingCatalog ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
-        </div>
-      </div>
 
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-3 sm:px-5 pt-4 space-y-5">
-        {/* ============================================================
-            WATCH MODE: Only shown when user selects a channel!
-            Selected channel moves to the Top 16:9 Player with
-            Like, Comment, Share & Save bar right underneath.
-           ============================================================ */}
-        {activeChannel && (
-          <section
-            ref={playerContainerRef}
-            data-testid="motherland-live-player-section"
-            className="rounded-2xl overflow-hidden bg-[#131720] border border-white/10 shadow-2xl"
-          >
-            {/* 16:9 Live TV Viewport */}
-            <div className="relative w-full aspect-video max-h-[68vh] bg-black overflow-hidden">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
+                <span className="text-xs sm:text-sm font-bold text-white truncate">
+                  {activeChannel.name}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => loadChannels(true)}
+                disabled={isLoadingCatalog}
+                aria-label="Refresh channels"
+                className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white flex items-center justify-center transition-colors disabled:opacity-50 shrink-0"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCatalog ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+
+            {/* Pinned 16:9 Live TV Viewport */}
+            <div className="relative w-full aspect-video max-h-[32vh] sm:max-h-[40vh] lg:max-h-[58vh] bg-black overflow-hidden shrink-0">
               {activeChannel.streamType === 'youtube_live' ? (
                 <>
                   {ytLiveVideoId ? (
@@ -825,8 +970,8 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                   ) : null}
 
                   {ytLiveLoading && (
-                    <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-2.5">
-                      <Loader2 className="w-9 h-9 text-rose-500 animate-spin" />
+                    <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-2">
+                      <Loader2 className="w-8 h-8 text-rose-500 animate-spin" />
                       <p className="text-xs font-semibold text-white">
                         Connecting {activeChannel.name} 24/7 Live Broadcast...
                       </p>
@@ -834,20 +979,20 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                   )}
 
                   {ytLiveError && !ytLiveLoading && (
-                    <div className="absolute inset-0 bg-[#0A0C10]/95 flex flex-col items-center justify-center gap-3 p-5 text-center">
+                    <div className="absolute inset-0 bg-[#0A0C10]/95 flex flex-col items-center justify-center gap-2.5 p-4 text-center">
                       <ChannelLogoBadge
                         logo={activeChannel.logo}
                         name={activeChannel.name}
-                        sizeClass="w-16 h-16"
+                        sizeClass="w-12 h-12 sm:w-14 sm:h-14"
                       />
-                      <div className="space-y-1 max-w-md">
-                        <p className="text-sm font-semibold text-white">{activeChannel.name}</p>
-                        <p className="text-xs text-slate-400">{ytLiveError}</p>
+                      <div className="space-y-0.5 max-w-md">
+                        <p className="text-xs sm:text-sm font-semibold text-white">{activeChannel.name}</p>
+                        <p className="text-[11px] sm:text-xs text-slate-400">{ytLiveError}</p>
                       </div>
                       <button
                         type="button"
                         onClick={() => resolveYoutubeLiveChannel(activeChannel)}
-                        className="min-h-[42px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors"
+                        className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors"
                       >
                         Retry Live Broadcast
                       </button>
@@ -872,8 +1017,8 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                   />
 
                   {isBuffering && !streamError && (
-                    <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2.5 pointer-events-none">
-                      <Loader2 className="w-9 h-9 text-rose-500 animate-spin" />
+                    <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 pointer-events-none">
+                      <Loader2 className="w-8 h-8 text-rose-500 animate-spin" />
                       <p className="text-xs font-semibold text-white">
                         Tuning {activeChannel.name}...
                       </p>
@@ -881,23 +1026,24 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                   )}
 
                   {streamError && (
-                    <div className="absolute inset-0 bg-[#0A0C10]/90 flex flex-col items-center justify-center gap-3 p-5 text-center">
+                    <div className="absolute inset-0 bg-[#0A0C10]/90 flex flex-col items-center justify-center gap-2.5 p-4 text-center">
                       <ChannelLogoBadge
                         logo={activeChannel.logo}
                         name={activeChannel.name}
-                        sizeClass="w-16 h-16"
+                        sizeClass="w-12 h-12 sm:w-14 sm:h-14"
                       />
-                      <div className="space-y-1 max-w-md">
-                        <p className="text-sm font-semibold text-white">{activeChannel.name}</p>
-                        <p className="text-xs text-slate-400">{streamError}</p>
+                      <div className="space-y-0.5 max-w-md">
+                        <p className="text-xs sm:text-sm font-semibold text-white">{activeChannel.name}</p>
+                        <p className="text-[11px] sm:text-xs text-slate-400">{streamError}</p>
                       </div>
                       <button
                         type="button"
                         onClick={() => {
                           setStreamError(null);
+                          setPreferDirectStream(false);
                           setStreamIndex((i) => (i + 1) % Math.max(1, activeChannel.streams.length));
                         }}
-                        className="min-h-[42px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors"
+                        className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors"
                       >
                         Retry Live Stream
                       </button>
@@ -907,63 +1053,63 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
               )}
 
               {/* Top-Left LIVE Overlay */}
-              <div className="absolute top-3 left-3 flex items-center gap-2 px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md border border-white/10 pointer-events-none">
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-rose-400">
-                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+              <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-black/75 backdrop-blur-md border border-white/10 pointer-events-none">
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
                   LIVE
                 </span>
-                <span className="text-xs font-semibold text-white truncate max-w-[180px] sm:max-w-xs">
+                <span className="text-[11px] font-semibold text-white truncate max-w-[160px] sm:max-w-xs">
                   {activeChannel.name}
                 </span>
               </div>
             </div>
 
             {/* Channel Header + Playback Controls */}
-            <div className="px-3.5 sm:px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-white/10">
-              <div className="flex items-center gap-3 min-w-0">
+            <div className="px-3 sm:px-4 py-2 flex items-center justify-between gap-2 border-t border-white/10 bg-[#131720] shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
                 <ChannelLogoBadge
                   logo={activeChannel.logo}
                   name={activeChannel.name}
-                  sizeClass="w-12 h-12"
+                  sizeClass="w-9 h-9 sm:w-11 sm:h-11"
                 />
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base sm:text-lg font-bold text-white truncate">
+                  <div className="flex items-center gap-1.5">
+                    <h2 className="text-xs sm:text-base font-bold text-white truncate">
                       {activeChannel.name}
                     </h2>
-                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-400 shrink-0">
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-400 shrink-0">
                       <Radio className="w-3 h-3" /> LIVE TV
                     </span>
                   </div>
-                  <p className="text-xs text-slate-400 truncate">
+                  <p className="text-[10px] sm:text-xs text-slate-400 truncate">
                     {COUNTRY_NAMES[activeChannel.country] || activeChannel.country}
-                    <span className="mx-1.5 text-slate-600">·</span>
+                    <span className="mx-1 text-slate-600">·</span>
                     <span className="capitalize">{activeChannel.categories.join(', ')}</span>
                   </p>
                 </div>
               </div>
 
               {activeChannel.streamType !== 'youtube_live' && (
-                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap shrink-0">
+                <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                   <button
                     type="button"
                     onClick={handleTogglePlayPause}
                     aria-label={isPlaying ? 'Pause' : 'Play'}
-                    className="min-w-[42px] min-h-[42px] rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white flex items-center justify-center transition-colors"
+                    className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white flex items-center justify-center transition-colors"
                   >
-                    {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-current" />}
+                    {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-current" />}
                   </button>
 
                   <button
                     type="button"
                     onClick={handleToggleMute}
                     aria-label={isMuted ? 'Unmute' : 'Mute'}
-                    className="min-w-[42px] min-h-[42px] rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white flex items-center justify-center transition-colors"
+                    className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white flex items-center justify-center transition-colors"
                   >
                     {isMuted ? (
-                      <VolumeX className="w-4 h-4 text-rose-400" />
+                      <VolumeX className="w-3.5 h-3.5 text-rose-400" />
                     ) : (
-                      <Volume2 className="w-4 h-4" />
+                      <Volume2 className="w-3.5 h-3.5" />
                     )}
                   </button>
 
@@ -975,7 +1121,7 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                     value={isMuted ? 0 : volume}
                     onChange={(e) => handleVolumeChange(Number(e.target.value))}
                     aria-label="Volume"
-                    className="w-20 accent-rose-500 hidden sm:block cursor-pointer"
+                    className="w-16 accent-rose-500 hidden sm:block cursor-pointer"
                   />
 
                   {qualityLevels.length > 1 && (
@@ -983,7 +1129,7 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                       value={selectedQuality}
                       onChange={(e) => handleQualityChange(Number(e.target.value))}
                       aria-label="Stream quality"
-                      className="h-[42px] px-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-semibold text-white focus:outline-none focus:border-rose-500"
+                      className="h-9 px-2 rounded-lg bg-white/5 border border-white/10 text-[11px] font-semibold text-white focus:outline-none focus:border-rose-500"
                     >
                       <option value={-1} className="bg-[#131720]">
                         Auto
@@ -1000,30 +1146,28 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                     type="button"
                     onClick={handleFullscreen}
                     aria-label="Fullscreen"
-                    className="min-w-[42px] min-h-[42px] rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white flex items-center justify-center transition-colors"
+                    className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white flex items-center justify-center transition-colors"
                   >
-                    <Maximize2 className="w-4 h-4" />
+                    <Maximize2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
               )}
             </div>
 
-            {/* ============================================================
-                LIKE · COMMENT · SHARE · SAVE ACTION BAR DIRECTLY BELOW VIDEO
-               ============================================================ */}
-            <div className="px-3.5 sm:px-5 py-2.5 border-t border-white/10 bg-[#0E121A] flex items-center gap-2 overflow-x-auto no-scrollbar">
+            {/* LIKE · COMMENT · SHARE · SAVE ACTION BAR DIRECTLY BELOW VIDEO */}
+            <div className="px-3 sm:px-4 py-2 border-t border-white/10 bg-[#0E121A] flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0">
               <button
                 type="button"
                 onClick={handleToggleLike}
                 disabled={likePending}
                 data-testid="live-like-btn"
-                className={`min-h-[44px] px-4 rounded-xl border text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                className={`min-h-[36px] sm:min-h-[40px] px-3 sm:px-4 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
                   isLiked
                     ? 'bg-rose-600/20 border-rose-500/50 text-rose-400'
                     : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-200'
                 }`}
               >
-                <ThumbsUp className={`w-4 h-4 ${isLiked ? 'fill-current' : ''}`} />
+                <ThumbsUp className={`w-3.5 h-3.5 ${isLiked ? 'fill-current' : ''}`} />
                 <span>Like</span>
                 <span className="tabular-nums opacity-85">{likesCount}</span>
               </button>
@@ -1032,13 +1176,13 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                 type="button"
                 onClick={() => setShowComments((v) => !v)}
                 data-testid="live-comment-btn"
-                className={`min-h-[44px] px-4 rounded-xl border text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                className={`min-h-[36px] sm:min-h-[40px] px-3 sm:px-4 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
                   showComments
                     ? 'bg-white text-[#0A0C10] border-white'
                     : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-200'
                 }`}
               >
-                <MessageCircle className="w-4 h-4" />
+                <MessageCircle className="w-3.5 h-3.5" />
                 <span>Comment</span>
                 <span className="tabular-nums opacity-85">{comments.length}</span>
               </button>
@@ -1047,16 +1191,16 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                 type="button"
                 onClick={handleShareChannel}
                 data-testid="live-share-btn"
-                className="min-h-[44px] px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors"
+                className="min-h-[36px] sm:min-h-[40px] px-3 sm:px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
               >
                 {shareCopied ? (
                   <>
-                    <Check className="w-4 h-4 text-emerald-400" />
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
                     <span className="text-emerald-400">Link Copied</span>
                   </>
                 ) : (
                   <>
-                    <Share2 className="w-4 h-4" />
+                    <Share2 className="w-3.5 h-3.5" />
                     <span>Share</span>
                   </>
                 )}
@@ -1066,176 +1210,209 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                 type="button"
                 onClick={() => handleToggleFavorite(activeChannel.id)}
                 data-testid="live-save-btn"
-                className={`min-h-[44px] px-4 rounded-xl border text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                className={`min-h-[36px] sm:min-h-[40px] px-3 sm:px-4 rounded-xl border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
                   isCurrentFav
                     ? 'bg-rose-600/20 border-rose-500/50 text-rose-400'
                     : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-200'
                 }`}
               >
-                <Bookmark className={`w-4 h-4 ${isCurrentFav ? 'fill-current' : ''}`} />
+                <Bookmark className={`w-3.5 h-3.5 ${isCurrentFav ? 'fill-current' : ''}`} />
                 <span>{isCurrentFav ? 'Saved' : 'Save'}</span>
               </button>
             </div>
 
-            {/* Expandable Inline Comments Panel */}
-            {showComments && (
-              <div
-                data-testid="live-comments-panel"
-                className="px-3.5 sm:px-5 py-4 border-t border-white/10 bg-[#0B0E14] space-y-4"
-              >
-                <form onSubmit={handleSubmitComment} className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={commentText}
-                    onChange={(e) => setCommentText(e.target.value)}
-                    placeholder={
-                      currentUser
-                        ? `Comment on ${activeChannel.name}...`
-                        : 'Sign in to write a live comment...'
-                    }
-                    className="flex-1 h-11 px-3.5 rounded-xl bg-[#131720] border border-white/15 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
-                  />
-                  <button
-                    type="submit"
-                    disabled={commentPending || (!commentText.trim() && Boolean(currentUser))}
-                    className="min-h-[44px] px-4 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>{currentUser ? 'Post' : 'Sign in'}</span>
-                  </button>
-                </form>
+            {/* Desktop inline comments inside left column */}
+            <div className="hidden lg:block">{renderCommentsPanel()}</div>
+          </div>
 
-                {comments.length === 0 ? (
-                  <p className="text-xs text-slate-400 py-1">
-                    No comments yet on {activeChannel.name}. Be the first to share your thoughts.
-                  </p>
-                ) : (
-                  <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-                    {comments.map((c) => (
-                      <div key={c.id} className="flex items-start gap-2.5">
-                        {c.authorAvatar ? (
-                          <img
-                            src={c.authorAvatar}
-                            alt={c.authorName}
-                            referrerPolicy="no-referrer"
-                            className="w-8 h-8 rounded-full object-cover shrink-0 bg-slate-800"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-rose-600/25 border border-rose-500/30 flex items-center justify-center text-xs font-bold text-white shrink-0">
-                            {c.authorName.slice(0, 1).toUpperCase()}
-                          </div>
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="font-semibold text-white truncate">
-                              {c.authorName}
-                            </span>
-                            <span className="text-[11px] text-slate-500 shrink-0">
-                              {formatCommentTime(c.createdAt)}
-                            </span>
-                          </div>
-                          <p className="text-xs sm:text-sm text-slate-300 mt-0.5 break-words">
-                            {c.text}
-                          </p>
-                        </div>
+          {/* INDEPENDENTLY SCROLLABLE CHANNEL SWITCHER COLUMN (NEVER MOVES TOP VIDEO!) */}
+          <div className="flex-1 min-h-0 overflow-y-auto lg:col-span-5 xl:col-span-4 px-3 sm:px-4 py-3 space-y-3 bg-[#0A0C10]">
+            {/* Mobile inline comments inside scrollable lower area so pinned player stays compact */}
+            <div className="lg:hidden">{renderCommentsPanel()}</div>
+
+            {renderFilterControls(true)}
+
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-xs sm:text-sm font-bold text-white">
+                Switch Channel While Watching
+              </h2>
+              <span className="text-[11px] font-mono tabular-nums text-slate-400">
+                {filteredChannels.length} channels
+              </span>
+            </div>
+
+            {filteredChannels.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-[#131720] border border-white/10 text-center space-y-2.5">
+                <Tv className="w-8 h-8 text-slate-500 mx-auto" />
+                <p className="text-xs font-semibold text-white">No matching channels found</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setRegion('all');
+                    setCategory('all');
+                  }}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold"
+                >
+                  Show All Channels
+                </button>
+              </div>
+            ) : (
+              <div
+                data-testid="live-channel-switcher-grid"
+                className="grid grid-cols-3 gap-2 sm:gap-2.5"
+              >
+                {filteredChannels.map((ch) => {
+                  const isSelected = activeChannel.id === ch.id;
+                  return (
+                    <button
+                      key={ch.id}
+                      type="button"
+                      onClick={() => handleSelectChannel(ch)}
+                      data-testid={`live-channel-card-${ch.id}`}
+                      className={`group relative rounded-xl p-2 sm:p-2.5 flex flex-col items-center text-center gap-1.5 border transition-all active:scale-[0.98] ${
+                        isSelected
+                          ? 'bg-rose-600/15 border-rose-500 ring-1 ring-rose-500/40'
+                          : 'bg-[#131720] border-white/10 hover:border-white/25 hover:bg-white/[0.04]'
+                      }`}
+                    >
+                      {isSelected && (
+                        <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                      )}
+
+                      <ChannelLogoBadge
+                        logo={ch.logo}
+                        name={ch.name}
+                        sizeClass="w-11 h-11 sm:w-12 sm:h-12"
+                      />
+
+                      <div className="w-full min-w-0 space-y-0.5">
+                        <p
+                          className={`text-[11px] font-semibold truncate ${
+                            isSelected ? 'text-rose-300' : 'text-white group-hover:text-rose-300'
+                          }`}
+                        >
+                          {ch.name}
+                        </p>
+                        <p className="text-[10px] text-slate-400 truncate">
+                          {COUNTRY_NAMES[ch.country] || ch.country} · {ch.categories[0] || 'TV'}
+                        </p>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    </button>
+                  );
+                })}
               </div>
             )}
-          </section>
-        )}
 
-        {/* ============================================================
-            FILTER BAR (Mobile Search + Region Chips + Category Chips)
-           ============================================================ */}
-        <section className="space-y-2.5">
-          {/* Mobile Search Input */}
-          <div className="relative w-full md:hidden">
+            {recentIds.length > 0 && channels.length > 0 && category !== 'saved' && (
+              <section className="pt-3 border-t border-white/10 space-y-2 pb-4">
+                <h3 className="text-[11px] font-semibold text-slate-400">Recently Watched Channels</h3>
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+                  {recentIds
+                    .map((id) => channels.find((c) => c.id === id))
+                    .filter((ch): ch is LiveTvChannelItem => Boolean(ch))
+                    .slice(0, 12)
+                    .map((ch) => (
+                      <button
+                        key={ch.id}
+                        type="button"
+                        onClick={() => handleSelectChannel(ch)}
+                        className="shrink-0 px-2.5 py-1.5 rounded-xl bg-[#131720] border border-white/10 hover:border-white/25 flex items-center gap-2 text-left transition-colors"
+                      >
+                        <ChannelLogoBadge logo={ch.logo} name={ch.name} sizeClass="w-7 h-7" />
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold text-white truncate max-w-[100px]">
+                            {ch.name}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                </div>
+              </section>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // BROWSE MODE: YouTube-Style Homepage Grid (3 cards per row)
+  // =========================================================================
+  return (
+    <div
+      data-testid="motherland-live-view"
+      className="min-h-[calc(100vh-56px)] bg-[#0A0C10] text-[#F8FAFC] pb-14"
+    >
+      {/* 1. YouTube-Style Sticky Header with Integrated Live TV Search */}
+      <div className="sticky top-0 z-30 bg-[#0A0C10]/95 backdrop-blur-xl border-b border-white/10">
+        <div className="max-w-7xl mx-auto px-3 sm:px-5 h-14 flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 min-w-0 shrink-0">
+            <button
+              type="button"
+              onClick={onBack}
+              data-testid="motherland-live-back-btn"
+              aria-label="Back to MOTHERLAND"
+              className="min-w-[44px] min-h-[44px] -ml-1.5 rounded-xl flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/10 transition-colors shrink-0"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-2.5 min-w-0 text-left">
+              <div className="w-9 h-9 rounded-xl bg-rose-600/15 border border-rose-500/30 flex items-center justify-center shrink-0">
+                <MotherlandLiveIcon className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-sm sm:text-base font-bold tracking-tight text-white truncate leading-tight">
+                  Motherland live
+                </h1>
+                <p className="text-[11px] text-slate-400 truncate leading-tight tabular-nums">
+                  {counts.all > 0 ? `${counts.all} Live TV Channels` : 'Live Television'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Desktop Integrated YouTube-Style Search Bar */}
+          <div className="hidden md:flex flex-1 max-w-md relative">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={`Search ${counts.all || 420} Live TV channels...`}
-              className="w-full h-11 pl-10 pr-9 rounded-xl bg-[#131720] border border-white/10 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
+              placeholder={`Search ${counts.all || 500} Live TV channels (Somoy, Geo, Cartoon Network...)`}
+              className="w-full h-10 pl-10 pr-9 rounded-full bg-[#131720] border border-white/15 text-xs sm:text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-rose-500"
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery('')}
                 aria-label="Clear channel search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-white"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          {/* Region & Special Filter Tabs (Bangladesh, Bangla TV, Cartoon & Kids, PK, IN) */}
-          <div
-            role="tablist"
-            aria-label="Channel region and collection"
-            className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5"
-          >
-            {REGION_TABS.map((tab) => {
-              const active = region === tab.id;
-              const tabCount = getRegionCount(tab.id);
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setRegion(tab.id)}
-                  className={`min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors ${
-                    active
-                      ? 'bg-rose-600 text-white border-rose-500'
-                      : 'bg-[#131720] text-slate-300 border-white/10 hover:bg-white/10 hover:text-white'
-                  }`}
-                >
-                  <span>{tab.label}</span>
-                  {tabCount > 0 && (
-                    <span className="ml-1.5 tabular-nums opacity-80">({tabCount})</span>
-                  )}
-                </button>
-              );
-            })}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => loadChannels(true)}
+              disabled={isLoadingCatalog}
+              aria-label="Refresh channels"
+              className="min-w-[44px] min-h-[44px] rounded-xl bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 hover:text-white flex items-center justify-center transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoadingCatalog ? 'animate-spin' : ''}`} />
+            </button>
           </div>
+        </div>
+      </div>
 
-          {/* Category Tabs */}
-          <div
-            role="tablist"
-            aria-label="Channel category"
-            className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5"
-          >
-            {CATEGORY_TABS.map((tab) => {
-              const active = category === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setCategory(tab.id)}
-                  className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors ${
-                    active
-                      ? 'bg-white text-[#0A0C10] border-white'
-                      : 'bg-[#131720] text-slate-300 border-white/10 hover:bg-white/10 hover:text-white'
-                  }`}
-                >
-                  <span>{tab.label}</span>
-                  {tab.id === 'saved' && favoriteIds.length > 0 && (
-                    <span className="ml-1.5 tabular-nums opacity-75">({favoriteIds.length})</span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </section>
+      {/* Main Browse Content */}
+      <div className="max-w-7xl mx-auto px-3 sm:px-5 pt-4 space-y-5">
+        {renderFilterControls(false)}
 
-        {/* Catalog Error */}
         {catalogError && (
           <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-500/30 flex items-center justify-between gap-3">
             <p className="text-xs sm:text-sm text-rose-200">{catalogError}</p>
@@ -1249,37 +1426,22 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
           </div>
         )}
 
-        {/* ============================================================
-            CHANNEL DIRECTORY:
-            - When NO channel is active: YouTube Homepage-style rich 16:9 cards with Logos
-            - When a channel IS active: Clean logo grid below the running video for instant switching
-           ============================================================ */}
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm sm:text-base font-bold text-white">
-              {activeChannel
-                ? 'Switch Channel While Watching'
-                : 'Live TV Channels'}
-            </h2>
+            <h2 className="text-sm sm:text-base font-bold text-white">Live TV Channels</h2>
             <span className="text-xs font-mono tabular-nums text-slate-400">
               {filteredChannels.length} channels
             </span>
           </div>
 
           {isLoadingCatalog ? (
-            <div
-              className={
-                activeChannel
-                  ? 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 sm:gap-3'
-                  : 'grid grid-cols-3 gap-2 sm:gap-3.5 md:gap-4'
-              }
-            >
-              {Array.from({ length: activeChannel ? 18 : 12 }).map((_, i) => (
+            <div className="grid grid-cols-3 gap-2 sm:gap-3.5 md:gap-4">
+              {Array.from({ length: 12 }).map((_, i) => (
                 <div
                   key={i}
                   className="rounded-xl sm:rounded-2xl bg-[#131720] border border-white/10 p-2 sm:p-3 flex flex-col gap-2 sm:gap-3 animate-pulse"
                 >
-                  <div className={activeChannel ? 'h-12 w-12 sm:h-14 sm:w-14 mx-auto rounded-xl bg-white/10' : 'aspect-video w-full rounded-lg sm:rounded-xl bg-white/10'} />
+                  <div className="aspect-video w-full rounded-lg sm:rounded-xl bg-white/10" />
                   <div className="h-3 sm:h-3.5 w-3/4 rounded bg-white/10" />
                   <div className="h-2.5 sm:h-3 w-1/2 rounded bg-white/5" />
                 </div>
@@ -1308,54 +1470,7 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                 Show All Channels
               </button>
             </div>
-          ) : activeChannel ? (
-            /* WATCH MODE: Logo tiles below running video (3 per row on mobile, 4-6 on wider screens) */
-            <div
-              data-testid="live-channel-switcher-grid"
-              className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 sm:gap-3"
-            >
-              {filteredChannels.map((ch) => {
-                const isSelected = activeChannel.id === ch.id;
-                return (
-                  <button
-                    key={ch.id}
-                    type="button"
-                    onClick={() => handleSelectChannel(ch)}
-                    data-testid={`live-channel-card-${ch.id}`}
-                    className={`group relative rounded-xl sm:rounded-2xl p-2 sm:p-3 flex flex-col items-center text-center gap-1.5 sm:gap-2 border transition-all active:scale-[0.98] ${
-                      isSelected
-                        ? 'bg-rose-600/15 border-rose-500 ring-1 ring-rose-500/40'
-                        : 'bg-[#131720] border-white/10 hover:border-white/25 hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    {isSelected && (
-                      <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-                    )}
-
-                    <ChannelLogoBadge
-                      logo={ch.logo}
-                      name={ch.name}
-                      sizeClass="w-12 h-12 sm:w-16 sm:h-16"
-                    />
-
-                    <div className="w-full min-w-0 space-y-0.5">
-                      <p
-                        className={`text-[11px] sm:text-xs font-semibold truncate ${
-                          isSelected ? 'text-rose-300' : 'text-white group-hover:text-rose-300'
-                        }`}
-                      >
-                        {ch.name}
-                      </p>
-                      <p className="text-[10px] text-slate-400 truncate">
-                        {COUNTRY_NAMES[ch.country] || ch.country} · {ch.categories[0] || 'TV'}
-                      </p>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
           ) : (
-            /* BROWSE MODE: Strictly 3 columns across (3 lines side-by-side) YouTube-style Live TV cards */
             <div
               data-testid="live-homepage-grid"
               className="grid grid-cols-3 gap-2 sm:gap-3.5 md:gap-4"
@@ -1368,7 +1483,6 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                   data-testid={`live-channel-card-${ch.id}`}
                   className="group text-left rounded-xl sm:rounded-2xl overflow-hidden bg-[#131720] border border-white/10 hover:border-rose-500/40 transition-all active:scale-[0.99] flex flex-col min-w-0"
                 >
-                  {/* 16:9 YouTube-style Broadcast Preview Card displaying the official Channel Logo */}
                   <div className="relative aspect-video w-full bg-gradient-to-br from-[#171C28] via-[#10141D] to-[#0B0E14] flex items-center justify-center p-2 sm:p-5 overflow-hidden">
                     <ChannelLogoBadge
                       logo={ch.logo}
@@ -1382,7 +1496,6 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Card Footer: Channel Avatar (sm+) + Channel Title + Metadata */}
                   <div className="p-2 sm:p-3 flex items-start gap-2 sm:gap-3 min-w-0">
                     <div className="hidden sm:block shrink-0">
                       <ChannelLogoBadge
@@ -1410,7 +1523,6 @@ export const MotherlandLiveView: React.FC<MotherlandLiveViewProps> = ({
           )}
         </section>
 
-        {/* Recently Tuned Channels */}
         {recentIds.length > 0 && channels.length > 0 && category !== 'saved' && (
           <section className="pt-3 border-t border-white/10 space-y-2.5">
             <h3 className="text-xs font-semibold text-slate-400">Recently Watched Channels</h3>

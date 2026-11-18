@@ -7330,6 +7330,155 @@ const BD_YOUTUBE_LIVE_CHANNELS: LiveTvChannelItem[] = [
     matchKeywords: ['btv', 'বাংলাদেশ টেলিভিশন'],
     isBangla: true,
   },
+  {
+    id: 'deepto-tv-bd',
+    name: 'Deepto TV',
+    country: 'BD',
+    categories: ['entertainment', 'general'],
+    logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/5/59/Deepto_TV_logo.svg/320px-Deepto_TV_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@DeeptoTV',
+    youtubeLiveQuery: 'Deepto TV live bangladesh',
+    matchKeywords: ['deepto', 'দীপ্ত'],
+    isBangla: true,
+  },
+  {
+    id: 'nagorik-tv-bd',
+    name: 'Nagorik TV',
+    country: 'BD',
+    categories: ['entertainment', 'news'],
+    logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/1/1d/Nagorik_TV_logo.svg/320px-Nagorik_TV_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@NagorikTelevision',
+    youtubeLiveQuery: 'Nagorik TV live bangladesh',
+    matchKeywords: ['nagorik', 'নাগরিক'],
+    isBangla: true,
+  },
+  {
+    id: 'satv-bd',
+    name: 'SA TV',
+    country: 'BD',
+    categories: ['entertainment', 'general'],
+    logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/9/9a/SATV_logo.svg/320px-SATV_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'SATV live bangladesh',
+    matchKeywords: ['satv', 'sa tv', 'এসএ টিভি'],
+    isBangla: true,
+  },
+  {
+    id: 'mohona-tv-bd',
+    name: 'Mohona TV',
+    country: 'BD',
+    categories: ['general', 'news'],
+    logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/f/f1/Mohona_TV_logo.svg/320px-Mohona_TV_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'Mohona TV live bangladesh',
+    matchKeywords: ['mohona', 'মোহনা'],
+    isBangla: true,
+  },
+  {
+    id: 'bijoy-tv-bd',
+    name: 'Bijoy TV',
+    country: 'BD',
+    categories: ['general', 'news'],
+    logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/0/00/Bijoy_TV_logo.svg/320px-Bijoy_TV_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'Bijoy TV live bangladesh',
+    matchKeywords: ['bijoy', 'বিজয়', 'বিজয়'],
+    isBangla: true,
+  },
+  {
+    id: 'asian-tv-bd',
+    name: 'Asian TV',
+    country: 'BD',
+    categories: ['entertainment', 'general'],
+    logo: 'https://upload.wikimedia.org/wikipedia/en/thumb/2/25/Asian_TV_Bangladesh_logo.svg/320px-Asian_TV_Bangladesh_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'Asian TV live bangladesh',
+    matchKeywords: ['asian tv', 'এশিয়ান টিভি'],
+    isBangla: true,
+  },
+  {
+    id: 'btv-world-bd',
+    name: 'BTV World',
+    country: 'BD',
+    categories: ['general', 'news'],
+    logo: 'https://i.imgur.com/5OE2FDt.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'BTV World live bangladesh',
+    matchKeywords: ['btv world', 'btv', 'বিটিভি'],
+    isBangla: true,
+  },
+  {
+    id: 'sangsad-tv-bd',
+    name: 'Sangsad Bangladesh TV',
+    country: 'BD',
+    categories: ['general', 'news'],
+    logo: 'https://i.imgur.com/5OE2FDt.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeLiveQuery: 'Sangsad Bangladesh TV live',
+    matchKeywords: ['sangsad', 'সংসদ'],
+    isBangla: true,
+  },
+];
+
+const PK_YOUTUBE_LIVE_CHANNELS: LiveTvChannelItem[] = [
+  {
+    id: 'geo-news-pk',
+    name: 'Geo News',
+    country: 'PK',
+    categories: ['news'],
+    logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Geo_News_logo.svg/320px-Geo_News_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@geonews',
+    youtubeLiveQuery: 'Geo News live pakistan',
+    matchKeywords: ['geo news', 'جیو نیوز'],
+  },
+  {
+    id: 'express-news-pk',
+    name: 'Express News',
+    country: 'PK',
+    categories: ['news'],
+    logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Express_News_Pakistan_logo.png/320px-Express_News_Pakistan_logo.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@ExpressNewspk',
+    youtubeLiveQuery: 'Express News live pakistan',
+    matchKeywords: ['express news', 'ایکسپریس نیوز'],
+  },
+  {
+    id: 'bol-news-pk',
+    name: 'BOL News',
+    country: 'PK',
+    categories: ['news'],
+    logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/BOL_Network_logo.svg/320px-BOL_Network_logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@BOLNewsofficial',
+    youtubeLiveQuery: 'BOL News live pakistan',
+    matchKeywords: ['bol news', 'بول نیوز'],
+  },
+  {
+    id: 'dawn-news-pk',
+    name: 'Dawn News',
+    country: 'PK',
+    categories: ['news'],
+    logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/DawnNews_Logo.svg/320px-DawnNews_Logo.svg.png',
+    streamType: 'youtube_live',
+    streams: [],
+    youtubeHandle: '@DawnNews',
+    youtubeLiveQuery: 'Dawn News live pakistan',
+    matchKeywords: ['dawn news', 'dawnnews'],
+  },
 ];
 
 const EMERGENCY_LIVE_TV_FALLBACK: LiveTvChannelItem[] = [
@@ -7368,7 +7517,7 @@ const EMERGENCY_LIVE_TV_FALLBACK: LiveTvChannelItem[] = [
 let cachedLiveTvChannels: { items: LiveTvChannelItem[]; cachedAt: number } | null = null;
 let liveTvCatalogBuildPromise: Promise<LiveTvChannelItem[]> | null = null;
 const LIVE_TV_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
-const TARGET_LIVE_TV_CHANNEL_COUNT = 420;
+const TARGET_LIVE_TV_CHANNEL_COUNT = 650;
 
 // Persistent social state (Likes + Comments per live TV channel)
 const LIVE_SOCIAL_FILE = path.join(process.cwd(), 'data', 'motherland_live_social.json');
@@ -7469,11 +7618,13 @@ async function isHlsStreamPlayable(stream: LiveTvStreamSource): Promise<boolean>
   }
 }
 
-async function filterWorkingHlsChannels(
+async function probeAndRankHlsChannels(
   candidates: LiveTvChannelItem[],
-  maxDesired: number
+  maxDesired: number,
+  keepUnverifiedFallback = false
 ): Promise<LiveTvChannelItem[]> {
   const working: LiveTvChannelItem[] = [];
+  const unverified: LiveTvChannelItem[] = [];
   const batchSize = 40;
   for (let i = 0; i < candidates.length && working.length < maxDesired; i += batchSize) {
     const batch = candidates.slice(i, i + batchSize);
@@ -7481,19 +7632,29 @@ async function filterWorkingHlsChannels(
       batch.map(async (ch) => {
         for (const s of ch.streams) {
           if (await isHlsStreamPlayable(s)) {
-            return { ...ch, streams: [s, ...ch.streams.filter((x) => x.url !== s.url)] };
+            return {
+              ok: true as const,
+              item: { ...ch, streams: [s, ...ch.streams.filter((x) => x.url !== s.url)] },
+            };
           }
         }
-        return null;
+        return { ok: false as const, item: ch };
       })
     );
-    for (const item of checked) {
-      if (item && working.length < maxDesired) {
-        working.push(item);
+    for (const entry of checked) {
+      if (entry.ok && working.length < maxDesired) {
+        working.push(entry.item);
+      } else if (!entry.ok && keepUnverifiedFallback) {
+        unverified.push(entry.item);
       }
     }
   }
-  return working;
+  if (!keepUnverifiedFallback) {
+    return working;
+  }
+  // Keep working streams sorted first, then preserve remaining regional channels (e.g. BD / PK)
+  const remainingSlots = Math.max(0, maxDesired - working.length);
+  return [...working, ...unverified.slice(0, remainingSlots)];
 }
 
 async function buildMotherlandLiveCatalog(): Promise<LiveTvChannelItem[]> {
@@ -7580,10 +7741,10 @@ async function buildMotherlandLiveCatalog(): Promise<LiveTvChannelItem[]> {
         banglaGlobalCandidates.push(toLiveItem(c));
       } else if (isCartoonChannel(c) && logo && chStreams.some((s) => s.url.startsWith('https://'))) {
         cartoonCandidates.push(toLiveItem(c));
-      } else if ((c.country === 'PK' || c.country === 'IN') && logo) {
-        const item = toLiveItem(c);
-        if (c.country === 'PK') pkCandidates.push(item);
-        else inCandidates.push(item);
+      } else if (c.country === 'PK') {
+        pkCandidates.push(toLiveItem(c, 'PK'));
+      } else if (c.country === 'IN' && logo) {
+        inCandidates.push(toLiveItem(c, 'IN'));
       }
     }
 
@@ -7596,32 +7757,42 @@ async function buildMotherlandLiveCatalog(): Promise<LiveTvChannelItem[]> {
       return a.name.localeCompare(b.name);
     });
 
-    // Probe streams in parallel so dead 403/404/502/timeout HLS streams are filtered out
-    const [bdWorking, banglaGlobalWorking, cartoonWorking, pkWorking, inWorking] = await Promise.all([
-      filterWorkingHlsChannels(bdCandidates, 50),
-      filterWorkingHlsChannels(banglaGlobalCandidates, 80),
-      filterWorkingHlsChannels(cartoonCandidates.slice(0, 180), 65),
-      filterWorkingHlsChannels(pkCandidates.slice(0, 140), 90),
-      filterWorkingHlsChannels(inCandidates.slice(0, 220), 160),
+    // Probe streams in parallel:
+    // - For BD & PK, prioritize playable streams first AND keep all regional channels (so geo-blocked/browser-playable channels are never deleted)
+    // - For Bangla, Cartoon, and IN, prioritize verified working streams and allow healthy counts
+    const [bdAll, banglaGlobalWorking, cartoonWorking, pkAll, inWorking] = await Promise.all([
+      probeAndRankHlsChannels(bdCandidates, 60, true),
+      probeAndRankHlsChannels(banglaGlobalCandidates, 90, true),
+      probeAndRankHlsChannels(cartoonCandidates.slice(0, 200), 90, false),
+      probeAndRankHlsChannels(pkCandidates, 120, true),
+      probeAndRankHlsChannels(inCandidates.slice(0, 240), 170, false),
     ]);
 
     // Merge BD HLS + verified 24/7 BD YouTube Live networks without duplicate station names
     const normalizeName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const seenBdNames = new Set(bdWorking.map((b) => normalizeName(b.name)));
+    const seenBdNames = new Set(bdAll.map((b) => normalizeName(b.name)));
     const extraBdLive = BD_YOUTUBE_LIVE_CHANNELS.filter((b) => !seenBdNames.has(normalizeName(b.name)));
 
-    const bdMerged = [...bdWorking, ...extraBdLive].sort((a, b) => a.name.localeCompare(b.name));
-    banglaGlobalWorking.sort((a, b) => a.name.localeCompare(b.name));
-    pkWorking.sort((a, b) => a.name.localeCompare(b.name));
-    inWorking.sort((a, b) => a.name.localeCompare(b.name));
+    const seenPkNames = new Set(pkAll.map((p) => normalizeName(p.name)));
+    const extraPkLive = PK_YOUTUBE_LIVE_CHANNELS.filter((p) => !seenPkNames.has(normalizeName(p.name)));
 
-    const merged = [
+    const bdMerged = [...bdAll, ...extraBdLive];
+    const pkMerged = [...pkAll, ...extraPkLive];
+
+    const deduped = new Map<string, LiveTvChannelItem>();
+    for (const item of [
       ...bdMerged,
       ...banglaGlobalWorking,
       ...cartoonWorking,
-      ...pkWorking,
+      ...pkMerged,
       ...inWorking,
-    ].slice(0, TARGET_LIVE_TV_CHANNEL_COUNT);
+    ]) {
+      if (!deduped.has(item.id)) {
+        deduped.set(item.id, item);
+      }
+    }
+
+    const merged = Array.from(deduped.values()).slice(0, TARGET_LIVE_TV_CHANNEL_COUNT);
 
     if (merged.length > 0) {
       cachedLiveTvChannels = { items: merged, cachedAt: Date.now() };
