@@ -145,12 +145,22 @@ export class MotherlandJsonAdapter implements DatabaseBackend {
     userId: string,
     userAgent?: string,
     meta?: { ipAddress?: string; authMethod?: Session['authMethod'] }
-  ): Promise<Session & { token: string }> {
+  ): Promise<Session & { token: string; refreshToken: string }> {
     return this.inner.createSession(userId, userAgent, meta);
   }
 
   public async findSessionByToken(rawToken: string): Promise<Session | undefined> {
     return this.inner.findSessionByToken(rawToken);
+  }
+
+  public async findSessionByRefreshToken(rawRefreshToken: string): Promise<Session | undefined> {
+    return this.inner.findSessionByRefreshToken(rawRefreshToken);
+  }
+
+  public async rotateSessionTokens(
+    sessionId: string
+  ): Promise<{ token: string; refreshToken: string; session: Session } | undefined> {
+    return this.inner.rotateSessionTokens(sessionId);
   }
 
   public async getUserSessions(userId: string, currentRawToken?: string): Promise<DeviceSessionInfo[]> {
@@ -772,7 +782,7 @@ export class MotherlandJsonAdapter implements DatabaseBackend {
     return this.inner.upsertWatchProgress(userId, payload);
   }
 
-  public async getSuppressedVideoIds(userId: string | undefined, suppressionDays = 7): Promise<Set<string>> {
+  public async getSuppressedVideoIds(userId: string | undefined, suppressionDays = 0): Promise<Set<string>> {
     return this.inner.getSuppressedVideoIds(userId, suppressionDays);
   }
 

@@ -46,6 +46,9 @@ import {
   PersistencePaths,
   resolvePersistencePaths,
   getPersistentAuthSecret,
+  setPersistentAuthSecret,
+  SESSION_ACCESS_TTL_MS,
+  SESSION_REFRESH_TTL_MS,
   hashSessionToken,
   parseDeviceName,
 } from './persistence.ts';
@@ -299,8 +302,37 @@ export class MotherlandPostgresDb implements DatabaseBackend {
       throw new Error(`Failed to connect to Supabase PostgreSQL: ${ping.error}`);
     }
     await runPostgresMigrations();
+    await this.ensurePersistentAuthSecretInPostgres();
     await this.ensureDefaultServerRegistryEntries();
     this.initialized = true;
+  }
+
+  private async ensurePersistentAuthSecretInPostgres(): Promise<void> {
+    const envSecret = (
+      process.env.AUTH_SECRET ||
+      process.env.SESSION_SECRET ||
+      process.env.MOTHERLAND_AUTH_SECRET ||
+      ''
+    ).trim();
+    if (envSecret.length >= 16) {
+      setPersistentAuthSecret(envSecret, this.paths);
+      return;
+    }
+
+    const fallbackLocal = getPersistentAuthSecret(this.paths);
+    await pgQuery(
+      `INSERT INTO app_secrets (key, value)
+       VALUES ('auth_hmac_secret', $1)
+       ON CONFLICT (key) DO NOTHING`,
+      [fallbackLocal]
+    );
+    const res = await pgQuery<{ value: string }>(
+      `SELECT value FROM app_secrets WHERE key = 'auth_hmac_secret' LIMIT 1`
+    );
+    const dbSecret = res.rows[0]?.value?.trim();
+    if (dbSecret && dbSecret.length >= 16) {
+      setPersistentAuthSecret(dbSecret, this.paths);
+    }
   }
 
   public async close(): Promise<void> {
@@ -847,14 +879,19 @@ export class MotherlandPostgresDb implements DatabaseBackend {
     userId: string,
     userAgent?: string,
     meta?: { ipAddress?: string; authMethod?: Session['authMethod'] }
-  ): Promise<Session & { token: string }> {
+  ): Promise<Session & { token: string; refreshToken: string }> {
     const rawToken = `ml_${crypto.randomBytes(32).toString('hex')}`;
+    const rawRefreshToken = `mlr_${crypto.randomBytes(40).toString('hex')}`;
     const tokenHash = hashSessionToken(rawToken);
-    const nowIso = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 90).toISOString();
+    const refreshTokenHash = hashSessionToken(rawRefreshToken);
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const expiresAt = new Date(nowMs + SESSION_ACCESS_TTL_MS).toISOString();
+    const refreshExpiresAt = new Date(nowMs + SESSION_REFRESH_TTL_MS).toISOString();
     const session: Session = {
-      id: `sess_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      id: `sess_${nowMs}_${crypto.randomBytes(4).toString('hex')}`,
       tokenHash,
+      refreshTokenHash,
       userId,
       deviceName: parseDeviceName(userAgent),
       ipAddress: meta?.ipAddress,
@@ -862,11 +899,14 @@ export class MotherlandPostgresDb implements DatabaseBackend {
       createdAt: nowIso,
       lastUsedAt: nowIso,
       expiresAt,
+      refreshExpiresAt,
       userAgent,
     };
 
     await withPgTransaction(async (client) => {
-      await client.query('DELETE FROM sessions WHERE expires_at <= NOW()');
+      await client.query(
+        'DELETE FROM sessions WHERE COALESCE(refresh_expires_at, expires_at) <= NOW()'
+      );
       await client.query(
         `DELETE FROM sessions
          WHERE id IN (
@@ -878,23 +918,25 @@ export class MotherlandPostgresDb implements DatabaseBackend {
         [userId]
       );
       await client.query(
-        `INSERT INTO sessions (id, user_id, token_hash, device_name, ip_address, auth_method, user_agent, created_at, last_used_at, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9)`,
+        `INSERT INTO sessions (id, user_id, token_hash, refresh_token_hash, device_name, ip_address, auth_method, user_agent, created_at, last_used_at, expires_at, refresh_expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11)`,
         [
           session.id,
           session.userId,
           session.tokenHash,
+          session.refreshTokenHash,
           session.deviceName || null,
           session.ipAddress || null,
           session.authMethod || 'password',
           session.userAgent || null,
           session.createdAt,
           session.expiresAt,
+          session.refreshExpiresAt,
         ]
       );
     });
 
-    return { ...session, token: rawToken };
+    return { ...session, token: rawToken, refreshToken: rawRefreshToken };
   }
 
   public async findSessionByToken(rawToken: string): Promise<Session | undefined> {
@@ -915,14 +957,14 @@ export class MotherlandPostgresDb implements DatabaseBackend {
 
     const needsHashUpgrade = !row.token_hash && Boolean(row.token);
     const needsLastUsedUpdate = !lastUsedMs || nowMs - lastUsedMs > 5 * 60 * 1000;
-    const needsRenewal = expMs - nowMs < 1000 * 60 * 60 * 24 * 75;
+    const needsRenewal = expMs - nowMs < 1000 * 60 * 60 * 24 * 20;
 
     let nextExpires = toIso(row.expires_at);
     let nextLastUsed = toIso(row.last_used_at || row.created_at);
 
     if (needsHashUpgrade || needsLastUsedUpdate || needsRenewal) {
       if (needsLastUsedUpdate) nextLastUsed = new Date(nowMs).toISOString();
-      if (needsRenewal) nextExpires = new Date(nowMs + 1000 * 60 * 60 * 24 * 90).toISOString();
+      if (needsRenewal) nextExpires = new Date(nowMs + SESSION_ACCESS_TTL_MS).toISOString();
       await pgQuery(
         `UPDATE sessions
          SET token_hash = $1, token = NULL, last_used_at = $2, expires_at = $3
@@ -935,6 +977,7 @@ export class MotherlandPostgresDb implements DatabaseBackend {
       id: row.id,
       userId: row.user_id,
       tokenHash: targetHash,
+      refreshTokenHash: row.refresh_token_hash || undefined,
       deviceName: row.device_name || undefined,
       ipAddress: row.ip_address || undefined,
       authMethod: row.auth_method || 'password',
@@ -942,6 +985,83 @@ export class MotherlandPostgresDb implements DatabaseBackend {
       createdAt: toIso(row.created_at),
       lastUsedAt: nextLastUsed,
       expiresAt: nextExpires,
+      refreshExpiresAt: row.refresh_expires_at ? toIso(row.refresh_expires_at) : undefined,
+    };
+  }
+
+  public async findSessionByRefreshToken(rawRefreshToken: string): Promise<Session | undefined> {
+    if (!rawRefreshToken) return undefined;
+    const targetHash = hashSessionToken(rawRefreshToken);
+    const res = await pgQuery(
+      `SELECT * FROM sessions
+       WHERE refresh_token_hash = $1
+         AND COALESCE(refresh_expires_at, expires_at) > NOW()
+       LIMIT 1`,
+      [targetHash]
+    );
+    const row = res.rows[0];
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      userId: row.user_id,
+      tokenHash: row.token_hash || undefined,
+      refreshTokenHash: row.refresh_token_hash || undefined,
+      deviceName: row.device_name || undefined,
+      ipAddress: row.ip_address || undefined,
+      authMethod: row.auth_method || 'password',
+      userAgent: row.user_agent || undefined,
+      createdAt: toIso(row.created_at),
+      lastUsedAt: toIso(row.last_used_at || row.created_at),
+      expiresAt: toIso(row.expires_at),
+      refreshExpiresAt: row.refresh_expires_at ? toIso(row.refresh_expires_at) : undefined,
+    };
+  }
+
+  public async rotateSessionTokens(
+    sessionId: string
+  ): Promise<{ token: string; refreshToken: string; session: Session } | undefined> {
+    const rawToken = `ml_${crypto.randomBytes(32).toString('hex')}`;
+    const rawRefreshToken = `mlr_${crypto.randomBytes(40).toString('hex')}`;
+    const nextTokenHash = hashSessionToken(rawToken);
+    const nextRefreshHash = hashSessionToken(rawRefreshToken);
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const nextExpires = new Date(nowMs + SESSION_ACCESS_TTL_MS).toISOString();
+    const nextRefreshExpires = new Date(nowMs + SESSION_REFRESH_TTL_MS).toISOString();
+
+    const res = await pgQuery(
+      `UPDATE sessions
+       SET token_hash = $1,
+           token = NULL,
+           refresh_token_hash = $2,
+           last_used_at = $3,
+           expires_at = $4,
+           refresh_expires_at = $5
+       WHERE id = $6
+         AND COALESCE(refresh_expires_at, expires_at) > NOW()
+       RETURNING *`,
+      [nextTokenHash, nextRefreshHash, nowIso, nextExpires, nextRefreshExpires, sessionId]
+    );
+    const row = res.rows[0];
+    if (!row) return undefined;
+
+    return {
+      token: rawToken,
+      refreshToken: rawRefreshToken,
+      session: {
+        id: row.id,
+        userId: row.user_id,
+        tokenHash: nextTokenHash,
+        refreshTokenHash: nextRefreshHash,
+        deviceName: row.device_name || undefined,
+        ipAddress: row.ip_address || undefined,
+        authMethod: row.auth_method || 'password',
+        userAgent: row.user_agent || undefined,
+        createdAt: toIso(row.created_at),
+        lastUsedAt: nowIso,
+        expiresAt: nextExpires,
+        refreshExpiresAt: nextRefreshExpires,
+      },
     };
   }
 
@@ -949,7 +1069,7 @@ export class MotherlandPostgresDb implements DatabaseBackend {
     const currentHash = currentRawToken ? hashSessionToken(currentRawToken) : '';
     const res = await pgQuery(
       `SELECT * FROM sessions
-       WHERE user_id = $1 AND expires_at > NOW()
+       WHERE user_id = $1 AND COALESCE(refresh_expires_at, expires_at) > NOW()
        ORDER BY last_used_at DESC, created_at DESC`,
       [userId]
     );
@@ -3626,7 +3746,7 @@ export class MotherlandPostgresDb implements DatabaseBackend {
     const maxWatch = Math.max(Number(existing?.watch_seconds || 0), watchSec);
     const maxDur = Math.max(Number(existing?.duration_seconds || 0), durSec);
     const completed = Boolean(existing?.completed || payload.completed || (maxDur > 0 && maxWatch / maxDur >= 0.85));
-    const minSecondsThreshold = payload.videoType === 'short' ? 5 : 8;
+    const minSecondsThreshold = 3;
     const meaningfulView = Boolean(
       existing?.meaningful_view ||
         completed ||
@@ -3685,15 +3805,21 @@ export class MotherlandPostgresDb implements DatabaseBackend {
     };
   }
 
-  public async getSuppressedVideoIds(userId: string | undefined, suppressionDays = 7): Promise<Set<string>> {
+  public async getSuppressedVideoIds(userId: string | undefined, suppressionDays = 0): Promise<Set<string>> {
     const suppressed = new Set<string>();
-    if (!userId || suppressionDays <= 0) return suppressed;
-    const cutoff = new Date(Date.now() - suppressionDays * 24 * 60 * 60 * 1000).toISOString();
-    const res = await pgQuery<{ video_id: string; youtube_id: string | null }>(
-      `SELECT video_id, youtube_id FROM watch_history
-       WHERE user_id = $1 AND meaningful_view = TRUE AND last_viewed_at >= $2`,
-      [userId, cutoff]
-    );
+    if (!userId) return suppressed;
+    const res =
+      suppressionDays > 0
+        ? await pgQuery<{ video_id: string; youtube_id: string | null }>(
+            `SELECT video_id, youtube_id FROM watch_history
+             WHERE user_id = $1 AND meaningful_view = TRUE AND last_viewed_at >= $2`,
+            [userId, new Date(Date.now() - suppressionDays * 24 * 60 * 60 * 1000).toISOString()]
+          )
+        : await pgQuery<{ video_id: string; youtube_id: string | null }>(
+            `SELECT video_id, youtube_id FROM watch_history
+             WHERE user_id = $1 AND meaningful_view = TRUE`,
+            [userId]
+          );
     for (const r of res.rows) {
       if (r.video_id) suppressed.add(r.video_id);
       if (r.youtube_id) suppressed.add(r.youtube_id);

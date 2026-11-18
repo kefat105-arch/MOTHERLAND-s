@@ -11,6 +11,9 @@ import {
   ensureDirExists,
   atomicWriteJsonSync,
   getPersistentAuthSecret,
+  setPersistentAuthSecret,
+  SESSION_ACCESS_TTL_MS,
+  SESSION_REFRESH_TTL_MS,
   hashSessionToken,
   createDatabaseBackup,
   listDatabaseBackups,
@@ -986,31 +989,37 @@ export class MotherlandDatabase {
     return { ok: true };
   }
 
-  // Persistent Multi-Device Sessions (HMAC-SHA256 Token Hashes + Sliding 90-day Persistence)
+  // Persistent Multi-Device Sessions (HMAC-SHA256 Token Hashes + Access/Refresh Token Rotation)
   public createSession(
     userId: string,
     userAgent?: string,
     meta?: { ipAddress?: string; authMethod?: Session['authMethod'] }
-  ): Session & { token: string } {
+  ): Session & { token: string; refreshToken: string } {
     const rawToken = `ml_${crypto.randomBytes(32).toString('hex')}`;
+    const rawRefreshToken = `mlr_${crypto.randomBytes(40).toString('hex')}`;
     const tokenHash = hashSessionToken(rawToken);
-    const nowIso = new Date().toISOString();
+    const refreshTokenHash = hashSessionToken(rawRefreshToken);
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
     const session: Session = {
-      id: `sess_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      id: `sess_${nowMs}_${crypto.randomBytes(4).toString('hex')}`,
       tokenHash,
+      refreshTokenHash,
       userId,
       deviceName: parseDeviceName(userAgent),
       ipAddress: meta?.ipAddress,
       authMethod: meta?.authMethod || 'password',
       createdAt: nowIso,
       lastUsedAt: nowIso,
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 90).toISOString(), // 90 days sliding
+      expiresAt: new Date(nowMs + SESSION_ACCESS_TTL_MS).toISOString(),
+      refreshExpiresAt: new Date(nowMs + SESSION_REFRESH_TTL_MS).toISOString(),
       userAgent,
     };
 
-    // Prune only genuinely expired sessions; keep up to 20 active device sessions per user
-    const nowMs = Date.now();
-    this.data.sessions = this.data.sessions.filter((s) => Date.parse(s.expiresAt) > nowMs);
+    // Prune only genuinely expired sessions (respecting refresh token lifetime); keep up to 20 active device sessions per user
+    this.data.sessions = this.data.sessions.filter(
+      (s) => Date.parse(s.refreshExpiresAt || s.expiresAt) > nowMs
+    );
     const userSessions = this.data.sessions.filter((s) => s.userId === userId);
     if (userSessions.length >= 20) {
       const oldest = userSessions.sort((a, b) => Date.parse(a.lastUsedAt || a.createdAt) - Date.parse(b.lastUsedAt || b.createdAt))[0];
@@ -1021,7 +1030,7 @@ export class MotherlandDatabase {
 
     this.data.sessions.push(session);
     this.save();
-    return { ...session, token: rawToken };
+    return { ...session, token: rawToken, refreshToken: rawRefreshToken };
   }
 
   public findSessionByToken(rawToken: string): Session | undefined {
@@ -1056,10 +1065,10 @@ export class MotherlandDatabase {
       dirty = true;
     }
 
-    // Sliding window renewal: if less than 75 days remain, automatically extend to 90 days
+    // Sliding window renewal: if less than 20 days remain on access token, automatically extend
     const expMs = Date.parse(found.expiresAt);
-    if (expMs - nowMs < 1000 * 60 * 60 * 24 * 75) {
-      found.expiresAt = new Date(nowMs + 1000 * 60 * 60 * 24 * 90).toISOString();
+    if (expMs - nowMs < 1000 * 60 * 60 * 24 * 20) {
+      found.expiresAt = new Date(nowMs + SESSION_ACCESS_TTL_MS).toISOString();
       dirty = true;
     }
 
@@ -1069,11 +1078,43 @@ export class MotherlandDatabase {
     return found;
   }
 
+  public findSessionByRefreshToken(rawRefreshToken: string): Session | undefined {
+    if (!rawRefreshToken) return undefined;
+    const nowMs = Date.now();
+    const targetHash = hashSessionToken(rawRefreshToken);
+    return this.data.sessions.find((s) => {
+      const refExpMs = Date.parse(s.refreshExpiresAt || s.expiresAt);
+      if (!Number.isFinite(refExpMs) || refExpMs <= nowMs) return false;
+      return Boolean(s.refreshTokenHash && s.refreshTokenHash === targetHash);
+    });
+  }
+
+  public rotateSessionTokens(
+    sessionId: string
+  ): { token: string; refreshToken: string; session: Session } | undefined {
+    const found = this.data.sessions.find((s) => s.id === sessionId);
+    if (!found) return undefined;
+    const nowMs = Date.now();
+    const refExpMs = Date.parse(found.refreshExpiresAt || found.expiresAt);
+    if (!Number.isFinite(refExpMs) || refExpMs <= nowMs) return undefined;
+
+    const rawToken = `ml_${crypto.randomBytes(32).toString('hex')}`;
+    const rawRefreshToken = `mlr_${crypto.randomBytes(40).toString('hex')}`;
+    found.tokenHash = hashSessionToken(rawToken);
+    delete found.token;
+    found.refreshTokenHash = hashSessionToken(rawRefreshToken);
+    found.lastUsedAt = new Date(nowMs).toISOString();
+    found.expiresAt = new Date(nowMs + SESSION_ACCESS_TTL_MS).toISOString();
+    found.refreshExpiresAt = new Date(nowMs + SESSION_REFRESH_TTL_MS).toISOString();
+    this.save();
+    return { token: rawToken, refreshToken: rawRefreshToken, session: found };
+  }
+
   public getUserSessions(userId: string, currentRawToken?: string): DeviceSessionInfo[] {
     const nowMs = Date.now();
     const currentHash = currentRawToken ? hashSessionToken(currentRawToken) : '';
     return this.data.sessions
-      .filter((s) => s.userId === userId && Date.parse(s.expiresAt) > nowMs)
+      .filter((s) => s.userId === userId && Date.parse(s.refreshExpiresAt || s.expiresAt) > nowMs)
       .sort((a, b) => Date.parse(b.lastUsedAt || b.createdAt) - Date.parse(a.lastUsedAt || a.createdAt))
       .map((s) => {
         const isCurrent = Boolean(
@@ -2967,7 +3008,7 @@ export class MotherlandDatabase {
   }
 
   // ==========================================
-  // WATCH TRACKING & 7-DAY FEED SUPPRESSION
+  // WATCH TRACKING & PERMANENT FEED SUPPRESSION
   // ==========================================
   public upsertWatchProgress(
     userId: string,
@@ -2999,8 +3040,8 @@ export class MotherlandDatabase {
     const maxWatch = Math.max(existing?.watchSeconds || 0, watchSec);
     const maxDur = Math.max(existing?.durationSeconds || 0, durSec);
     const completed = Boolean(existing?.completed || payload.completed || (maxDur > 0 && maxWatch / maxDur >= 0.85));
-    // Meaningful view threshold: >= 8 seconds watched, OR >= 25% of video, OR completed (prevents accidental 1-2s taps/preloads)
-    const minSecondsThreshold = payload.videoType === 'short' ? 5 : 8;
+    // Meaningful view threshold: >= 3 seconds watched, OR >= 25% of video, OR completed
+    const minSecondsThreshold = 3;
     const meaningfulView = Boolean(
       existing?.meaningfulView ||
         completed ||
@@ -3042,17 +3083,18 @@ export class MotherlandDatabase {
     return record;
   }
 
-  public getSuppressedVideoIds(userId: string | undefined, suppressionDays = 7): Set<string> {
+  public getSuppressedVideoIds(userId: string | undefined, suppressionDays = 0): Set<string> {
     const suppressed = new Set<string>();
-    if (!userId || suppressionDays <= 0) return suppressed;
-    const cutoffMs = Date.now() - suppressionDays * 24 * 60 * 60 * 1000;
+    if (!userId) return suppressed;
+    const cutoffMs = suppressionDays > 0 ? Date.now() - suppressionDays * 24 * 60 * 60 * 1000 : 0;
     for (const h of this.data.watchHistory || []) {
       if (h.userId !== userId || !h.meaningfulView) continue;
-      const viewedMs = new Date(h.lastViewedAt || h.firstViewedAt).getTime();
-      if (viewedMs >= cutoffMs) {
-        if (h.videoId) suppressed.add(h.videoId);
-        if (h.youtubeId) suppressed.add(h.youtubeId);
+      if (cutoffMs > 0) {
+        const viewedMs = new Date(h.lastViewedAt || h.firstViewedAt).getTime();
+        if (viewedMs < cutoffMs) continue;
       }
+      if (h.videoId) suppressed.add(h.videoId);
+      if (h.youtubeId) suppressed.add(h.youtubeId);
     }
     return suppressed;
   }

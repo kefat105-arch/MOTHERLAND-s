@@ -1,13 +1,13 @@
 /**
- * Client-side 7-day Watched Video & Short Suppression Registry (User-Scoped)
+ * Client-side Permanent Watched Video & Short Suppression Registry (User-Scoped)
  * Ensures watched videos/shorts do not reappear in MOTHERLAND or YouTube feeds
- * for 7 days (configurable), and tracks in-session recently shown IDs so
- * Home / Video clicks & pull-to-refresh always deliver fresh unseen videos.
+ * permanently (unless explicitly cleared from watch history), and tracks
+ * in-session recently shown IDs so Home / Video clicks & refreshes deliver fresh unseen videos.
  */
 
 export const WATCH_SUPPRESSION_BASE_KEY = 'motherland_watched_suppress_v2';
 export const WATCH_SUPPRESSION_LEGACY_KEY = 'motherland_watched_suppress_v1';
-export const WATCH_SUPPRESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+export const WATCH_SUPPRESSION_TTL_MS = 0; // 0 = permanent suppression
 export const WATCH_SUPPRESSED_EVENT = 'motherland:watch-suppressed';
 
 let activeWatchUserId: string | null = null;
@@ -59,12 +59,11 @@ function readRawMap(): SuppressedMap {
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return {};
-    const now = Date.now();
     const cleaned: SuppressedMap = {};
     let changed = false;
     for (const [k, ts] of Object.entries(parsed)) {
       const n = Number(ts);
-      if (k && Number.isFinite(n) && now - n <= WATCH_SUPPRESSION_TTL_MS) {
+      if (k && Number.isFinite(n) && n > 0) {
         cleaned[k] = n;
       } else {
         changed = true;
@@ -84,7 +83,7 @@ function writeRawMap(map: SuppressedMap): void {
   try {
     const entries = Object.entries(map)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 1500);
+      .slice(0, 5000);
     const trimmed: SuppressedMap = {};
     for (const [k, v] of entries) {
       trimmed[k] = v;
@@ -145,7 +144,7 @@ export function getSuppressedVideoIdsSet(): Set<string> {
   return set;
 }
 
-export function getSuppressedIdsHeaderValue(limit = 200): string {
+export function getSuppressedIdsHeaderValue(limit = 500): string {
   const map = readRawMap();
   return Object.entries(map)
     .sort((a, b) => b[1] - a[1])

@@ -143,12 +143,32 @@ export function atomicWriteJsonSync(targetPath: string, payload: any, writeCheck
   return sha256;
 }
 
+export const SESSION_ACCESS_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days sliding access token
+export const SESSION_REFRESH_TTL_MS = 1000 * 60 * 60 * 24 * 365; // 365 days sliding refresh token
+
 /**
  * Stable HMAC/token signing secret. Reads from ENV first; otherwise reads or
- * generates a persistent random key stored securely inside DATA_DIR/.auth_secret.
+ * generates a persistent random key stored securely inside DATA_DIR/.auth_secret
+ * (and synchronized from PostgreSQL app_secrets when running in Postgres mode).
  * Never regenerated on server restart so sessions survive updates/restarts.
  */
 let cachedAuthSecret: string | null = null;
+
+export function setPersistentAuthSecret(
+  secret: string,
+  paths = resolvePersistencePaths()
+): void {
+  const normalized = String(secret || '').trim();
+  if (normalized.length < 16) return;
+  cachedAuthSecret = normalized;
+  try {
+    ensureDirExists(paths.dataDir);
+    atomicWriteBufferSync(paths.authSecretPath, Buffer.from(normalized, 'utf-8'));
+  } catch {
+    // Best-effort local disk sync (Postgres app_secrets remains source of truth)
+  }
+}
+
 export function getPersistentAuthSecret(paths = resolvePersistencePaths()): string {
   if (cachedAuthSecret) return cachedAuthSecret;
 

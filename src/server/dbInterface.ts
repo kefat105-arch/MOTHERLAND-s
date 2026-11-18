@@ -73,8 +73,12 @@ export interface DatabaseBackend {
     userId: string,
     userAgent?: string,
     meta?: { ipAddress?: string; authMethod?: Session['authMethod'] }
-  ): Promise<Session & { token: string }>;
+  ): Promise<Session & { token: string; refreshToken: string }>;
   findSessionByToken(rawToken: string): Promise<Session | undefined>;
+  findSessionByRefreshToken(rawRefreshToken: string): Promise<Session | undefined>;
+  rotateSessionTokens(
+    sessionId: string
+  ): Promise<{ token: string; refreshToken: string; session: Session } | undefined>;
   getUserSessions(userId: string, currentRawToken?: string): Promise<DeviceSessionInfo[]>;
   revokeSessionById(userId: string, sessionId: string): Promise<{ ok: boolean; statusCode: number; error?: string }>;
   deleteSession(rawToken: string): Promise<boolean>;

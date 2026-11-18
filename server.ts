@@ -63,6 +63,7 @@ import {
   GLOBAL_VIDEO_CATEGORIES,
   YOUTUBE_CHART_CATEGORY_IDS,
   classifyVideoContent,
+  distributeMixedCategoryFeed,
 } from './src/shared/videoCategories.ts';
 import {
   buildDiscoveryQueryPlan,
@@ -89,7 +90,9 @@ app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT) || 3000;
 
 const AUTH_COOKIE_NAME = 'ml_session';
-const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 90; // 90 days sliding persistence
+const REFRESH_COOKIE_NAME = 'ml_refresh';
+const SESSION_MAX_AGE_SEC = 60 * 60 * 24 * 30; // 30 days sliding access token
+const REFRESH_MAX_AGE_SEC = 60 * 60 * 24 * 365; // 365 days sliding refresh token
 
 function parseCookies(cookieHeader?: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -129,20 +132,38 @@ function setAuthCookie(res: Response, req: Request, token: string): void {
   res.append('Set-Cookie', parts.join('; '));
 }
 
-function clearAuthCookie(res: Response, req: Request): void {
+function setRefreshCookie(res: Response, req: Request, refreshToken: string): void {
   const https = isHttpsRequest(req);
   const parts = [
-    `${AUTH_COOKIE_NAME}=`,
+    `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}`,
     'Path=/',
     'HttpOnly',
     https ? 'SameSite=None' : 'SameSite=Lax',
-    'Max-Age=0',
+    `Max-Age=${REFRESH_MAX_AGE_SEC}`,
   ];
   if (https) {
     parts.push('Secure');
     parts.push('Partitioned');
   }
   res.append('Set-Cookie', parts.join('; '));
+}
+
+function clearAuthCookie(res: Response, req: Request): void {
+  const https = isHttpsRequest(req);
+  for (const cookieName of [AUTH_COOKIE_NAME, REFRESH_COOKIE_NAME]) {
+    const parts = [
+      `${cookieName}=`,
+      'Path=/',
+      'HttpOnly',
+      https ? 'SameSite=None' : 'SameSite=Lax',
+      'Max-Age=0',
+    ];
+    if (https) {
+      parts.push('Secure');
+      parts.push('Partitioned');
+    }
+    res.append('Set-Cookie', parts.join('; '));
+  }
 }
 
 function sanitizeSafeUrl(raw: unknown): string | undefined {
@@ -255,7 +276,7 @@ async function notifyUserFriendsPresence(userId: string, isOnline: boolean): Pro
   }
 }
 
-const WATCH_SUPPRESSION_DAYS = Math.max(1, Number(process.env.WATCH_SUPPRESSION_DAYS || 7));
+const WATCH_SUPPRESSION_DAYS = Math.max(0, Number(process.env.WATCH_SUPPRESSION_DAYS || 0));
 
 function normalizeSuppressToken(id: string): string {
   return id.trim().replace(/^yt_feed_/, '').replace(/^yt_/, '');
@@ -346,36 +367,41 @@ function prioritizeFreshItems<T extends { id?: string; youtubeId?: string; exter
   return [...seededShuffle(fresh, seed), ...seededShuffle(recentlyShown, `${seed}_old`)];
 }
 
-// Auth Extraction Middleware (Multi-User Token + HttpOnly Cookie Isolation - ZERO Shared Fallback)
+// Auth Extraction Middleware (Multi-User Token + HttpOnly Cookie Fallback & Account Integrity Guard)
 app.use(async (req: Request, _res: Response, next) => {
   try {
+    const cookies = req.headers.cookie ? parseCookies(req.headers.cookie) : {};
+    (req as any).cookies = cookies;
+    (req as any).hadRefreshCookie = Boolean(cookies[REFRESH_COOKIE_NAME]);
+
     const authHeader = req.headers.authorization || (req.headers['x-auth-token'] as string);
-    let token = '';
+    let headerToken = '';
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7).trim();
+      headerToken = authHeader.substring(7).trim();
     } else if (authHeader) {
-      token = authHeader.trim();
+      headerToken = authHeader.trim();
     }
 
-    if (!token && req.headers.cookie) {
-      const cookies = parseCookies(req.headers.cookie);
-      if (cookies[AUTH_COOKIE_NAME]) {
-        token = cookies[AUTH_COOKIE_NAME].trim();
-      }
-    }
+    const cookieToken = cookies[AUTH_COOKIE_NAME]?.trim() || '';
+    const candidateTokens = Array.from(new Set([headerToken, cookieToken].filter(Boolean)));
 
-    if (token) {
+    if (candidateTokens.length > 0) {
       (req as any).hadAuthToken = true;
-      const session = await db.findSessionByToken(token);
-      if (session) {
+      for (const candidate of candidateTokens) {
+        const session = await db.findSessionByToken(candidate);
+        if (!session) continue;
         const user = await db.findUserById(session.userId);
-        if (user) {
-          void db.touchUserLastActive(user.id).catch(() => {});
-          (req as any).user = user;
-          (req as any).userId = user.id;
-          (req as any).sessionToken = token;
-          (req as any).sessionId = session.id;
+        if (!user) continue;
+        if (user.deactivated) {
+          (req as any).accountDeactivated = true;
+          continue;
         }
+        void db.touchUserLastActive(user.id).catch(() => {});
+        (req as any).user = user;
+        (req as any).userId = user.id;
+        (req as any).sessionToken = candidate;
+        (req as any).sessionId = session.id;
+        break;
       }
     }
     next();
@@ -861,33 +887,37 @@ function decodeFeedCursor(raw: string): FeedCursor | null {
   }
 }
 
-const POPULAR_REGION_CODES = ['BD', 'IN', 'US', 'GB', 'CA', 'SG', 'MY', 'AU'];
+const POPULAR_REGION_CODES = ['BD', 'IN', 'US', 'GB', 'JP', 'KR', 'DE', 'FR', 'BR', 'CA', 'SG', 'MY', 'AU', 'ID'];
 
 const SHORTS_DISCOVERY_QUERIES = [
-  'Bangladesh shorts travel #shorts',
-  'trending #shorts',
-  'Bangla street food #shorts',
-  'cricket highlights #shorts',
-  'nature 4k #shorts',
+  'Bangladesh travel nature #shorts',
   'science experiment amazing #shorts',
-  'music acoustic guitar #shorts',
-  'creative art drawing #shorts',
-  'technology coding #shorts',
-  'wildlife ocean #shorts',
-  'Dhaka city view #shorts',
-  'Bangladesh village nature #shorts',
-  'football skills #shorts',
-  'cooking recipe quick #shorts',
-  'space universe facts #shorts',
-  'mountain sunrise timelapse #shorts',
-  'funny pet animals #shorts',
-  'photography tips #shorts',
-  'diy craft idea #shorts',
+  'technology AI gadgets #shorts',
+  'space universe astronomy #shorts',
+  'wildlife ocean animals #shorts',
+  'world street food cooking #shorts',
+  'cricket football highlights #shorts',
+  'music acoustic guitar live #shorts',
+  'creative art drawing painting #shorts',
+  '3d animation blender #shorts',
+  'diy craft engineering #shorts',
+  'history ancient mystery #shorts',
+  'supercars automotive review #shorts',
+  'cute pet animals wildlife #shorts',
+  'health fitness workout #shorts',
+  'business startup finance #shorts',
+  'modern agriculture farming #shorts',
+  'architecture interior design #shorts',
+  'comedy funny moment #shorts',
+  'cinema filmmaking breakdown #shorts',
+  'education study facts #shorts',
+  'nature documentary earth #shorts',
+  'podcast wisdom clips #shorts',
   'motivation cinematic #shorts',
-  'fitness workout #shorts',
-  'history facts #shorts',
-  'gadgets review #shorts',
-  'travel adventure #shorts',
+  'photography camera tips #shorts',
+  'Dhaka village Bangladesh #shorts',
+  'gaming esports clips #shorts',
+  'robotics engineering #shorts',
 ];
 
 const CATEGORY_DISCOVERY_QUERIES: Record<string, string[]> = {
@@ -1417,10 +1447,13 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
   const queryList = await buildPersonalizedDiscoveryQueries(baseQueryList, currentUserId, `${seed}_${category}_${type}`, type === 'shorts');
 
   try {
+    const startChartIdx = Math.abs(hashSeedNumber(`${seed}_${category}_${type}_chart`)) % YOUTUBE_CHART_CATEGORY_IDS.length;
+    const startRegionIdx = Math.abs(hashSeedNumber(`${seed}_${category}_${type}_reg`)) % POPULAR_REGION_CODES.length;
     let cursor: FeedCursor = decodeFeedCursor(rawToken) || {
-      mode: 'api_search',
+      mode: category === 'all' && type !== 'shorts' ? 'api_chart' : 'api_search',
       qIdx: 0,
-      rIdx: 0,
+      rIdx: startRegionIdx,
+      chartIdx: startChartIdx,
       stepsDone: 0,
       pageToken: '',
       offset: 0,
@@ -1442,7 +1475,9 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     let nextCursor: FeedCursor | null = null;
     let quotaExceeded = false;
     let exhaustedReason: string | undefined;
-    const maxAttempts = type === 'shorts' ? 8 : 5;
+    const shouldMixGlobalCategories = category === 'all' || category === 'trending' || type === 'shorts';
+    const targetPoolSize = shouldMixGlobalCategories ? Math.max(pageSize * 2, 20) : pageSize;
+    const maxAttempts = type === 'shorts' ? 8 : 6;
     let attempts = 0;
 
     const regionOrder = category === 'bangla' ? ['BD', 'IN', 'GB', 'US', 'SG', 'MY'] : POPULAR_REGION_CODES;
@@ -1456,29 +1491,111 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
         const dur = Number(mapped.durationSeconds || 0);
         if (!Number.isFinite(dur) || dur <= 0 || dur > 180) return;
       }
+      const cls = classifyVideoContent({
+        title: mapped.title,
+        description: mapped.description,
+        tags: Array.isArray(rawItem?.snippet?.tags) ? rawItem.snippet.tags : [],
+        youtubeCategoryId: rawItem?.snippet?.categoryId ? String(rawItem.snippet.categoryId) : undefined,
+        channelTitle: mapped.channel?.title,
+      });
+      const enrichedItem = {
+        ...mapped,
+        categoryId: cls.categoryId,
+        categoryLabel: cls.categoryLabel,
+      };
       if (excludeIds.has(mapped.id) || excludeIds.has(mapped.youtubeId)) {
         if (!deferredVideoIds.has(mapped.id)) {
           deferredVideoIds.add(mapped.id);
-          deferredItems.push(mapped);
+          deferredItems.push(enrichedItem);
         }
         return;
       }
       seenVideoIds.add(mapped.id);
-      items.push(mapped);
+      items.push(enrichedItem);
     };
 
-    while (items.length < pageSize && attempts < maxAttempts) {
+    while (items.length < targetPoolSize && attempts < maxAttempts) {
       attempts++;
       const prevCount = items.length;
+      const step = cursor.stepsDone || 0;
 
-      // 1. Try YouTube Data API search.list across expanded query pool
-      if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
+      // 0. Multi-category YouTube mostPopular charts (1 quota unit per batch, great for broad category mixing)
+      if (cursor.mode === 'api_chart') {
+        const cIdx = Math.max(0, Number(cursor.chartIdx || 0)) % YOUTUBE_CHART_CATEGORY_IDS.length;
+        const rIdx = Math.max(0, Number(cursor.rIdx || 0)) % regionOrder.length;
+        const ytCatId = YOUTUBE_CHART_CATEGORY_IDS[cIdx];
+        const activeRegion = regionOrder[rIdx] || 'US';
+        try {
+          const popParams: Record<string, string> = {
+            part: 'snippet,contentDetails,statistics',
+            chart: 'mostPopular',
+            videoCategoryId: ytCatId,
+            maxResults: '15',
+            regionCode: activeRegion,
+          };
+          if (cursor.pageToken) popParams.pageToken = cursor.pageToken;
+
+          const popData = await fetchFromYouTubeApi('videos', popParams);
+          for (const rawItem of popData?.items || []) {
+            pushEligibleItem(rawItem);
+          }
+
+          const nextChartIdx = (cIdx + 1) % YOUTUBE_CHART_CATEGORY_IDS.length;
+          const nextRegIdx = (rIdx + 1) % regionOrder.length;
+          if (step % 2 === 1 && queryList.length > 0) {
+            nextCursor = {
+              mode: 'api_search',
+              qIdx: (cursor.qIdx + 1) % queryList.length,
+              rIdx: nextRegIdx,
+              chartIdx: nextChartIdx,
+              stepsDone: step + 1,
+              pageToken: '',
+              offset: 0,
+            };
+          } else if (step < YOUTUBE_CHART_CATEGORY_IDS.length * 2) {
+            nextCursor = {
+              mode: 'api_chart',
+              qIdx: cursor.qIdx,
+              rIdx: nextRegIdx,
+              chartIdx: nextChartIdx,
+              stepsDone: step + 1,
+              pageToken: '',
+              offset: 0,
+            };
+          } else {
+            nextCursor = {
+              mode: 'api_popular',
+              qIdx: cursor.qIdx,
+              rIdx: nextRegIdx,
+              chartIdx: nextChartIdx,
+              stepsDone: step + 1,
+              pageToken: '',
+              offset: 0,
+            };
+          }
+        } catch (chartErr: any) {
+          if (chartErr?.reason === 'quotaExceeded' || chartErr?.reason === 'dailyLimitExceeded') {
+            quotaExceeded = true;
+            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
+          } else {
+            nextCursor = {
+              mode: queryList.length > 0 ? 'api_search' : 'api_popular',
+              qIdx: cursor.qIdx % Math.max(1, queryList.length),
+              rIdx: (rIdx + 1) % regionOrder.length,
+              chartIdx: (cIdx + 1) % YOUTUBE_CHART_CATEGORY_IDS.length,
+              stepsDone: step + 1,
+              pageToken: '',
+              offset: 0,
+            };
+          }
+        }
+      } else if (cursor.mode === 'api_search' && cursor.qIdx < queryList.length) {
         try {
           const searchParams: Record<string, string> = {
             part: 'snippet',
             type: 'video',
             q: queryList[cursor.qIdx],
-            maxResults: String(Math.min(25, fetchSize + (type === 'shorts' ? 10 : 0))),
+            maxResults: String(shouldMixGlobalCategories ? 10 : Math.min(25, fetchSize + (type === 'shorts' ? 10 : 0))),
           };
           if (type === 'shorts') searchParams.videoDuration = 'short';
           if (cursor.pageToken) searchParams.pageToken = cursor.pageToken;
@@ -1498,12 +1615,33 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
             }
           }
 
-          if (searchData.nextPageToken) {
+          if (shouldMixGlobalCategories && type !== 'shorts' && category === 'all') {
+            nextCursor = {
+              mode: 'api_chart',
+              qIdx: (cursor.qIdx + 1) % queryList.length,
+              rIdx: ((cursor.rIdx || 0) + 1) % regionOrder.length,
+              chartIdx: ((cursor.chartIdx || 0) + 1) % YOUTUBE_CHART_CATEGORY_IDS.length,
+              stepsDone: step + 1,
+              pageToken: '',
+              offset: 0,
+            };
+          } else if (shouldMixGlobalCategories && cursor.qIdx + 1 < queryList.length) {
+            nextCursor = {
+              mode: 'api_search',
+              qIdx: cursor.qIdx + 1,
+              rIdx: ((cursor.rIdx || 0) + 1) % regionOrder.length,
+              chartIdx: cursor.chartIdx || 0,
+              stepsDone: step + 1,
+              pageToken: '',
+              offset: 0,
+            };
+          } else if (searchData.nextPageToken) {
             nextCursor = {
               mode: 'api_search',
               qIdx: cursor.qIdx,
-              rIdx: 0,
-              stepsDone: (cursor.stepsDone || 0) + 1,
+              rIdx: cursor.rIdx || 0,
+              chartIdx: cursor.chartIdx || 0,
+              stepsDone: step + 1,
               pageToken: searchData.nextPageToken,
               offset: 0,
             };
@@ -1512,23 +1650,24 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
               mode: 'api_search',
               qIdx: cursor.qIdx + 1,
               rIdx: 0,
-              stepsDone: (cursor.stepsDone || 0) + 1,
+              chartIdx: cursor.chartIdx || 0,
+              stepsDone: step + 1,
               pageToken: '',
               offset: 0,
             };
           } else {
-            nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+            nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
           }
         } catch (searchErr: any) {
           if (searchErr?.reason === 'quotaExceeded' || searchErr?.reason === 'dailyLimitExceeded' || searchErr?.status === 403) {
             quotaExceeded = true;
             exhaustedReason = 'YouTube Data API search quota reached; switching to YouTube charts & verified discovery.';
           }
-          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
         }
       } else if (cursor.mode === 'api_popular') {
-        // 2. Multi-region chart=mostPopular pagination (BD first for regional relevance, cycling global regions)
-        const rIdx = Math.max(0, Number(cursor.rIdx) || 0);
+        // 2. Multi-region chart=mostPopular pagination across global regions
+        const rIdx = Math.max(0, Number(cursor.rIdx) || 0) % regionOrder.length;
         const activeRegion = regionOrder[rIdx] || 'US';
         try {
           const popParams: Record<string, string> = {
@@ -1545,11 +1684,12 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
               pushEligibleItem(rawItem);
             }
           }
-          if (popData?.nextPageToken) {
+          if (popData?.nextPageToken && !shouldMixGlobalCategories) {
             nextCursor = {
               mode: 'api_popular',
               qIdx: 0,
               rIdx,
+              stepsDone: step + 1,
               pageToken: popData.nextPageToken,
               offset: 0,
             };
@@ -1558,25 +1698,26 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
               mode: 'api_popular',
               qIdx: 0,
               rIdx: rIdx + 1,
+              stepsDone: step + 1,
               pageToken: '',
               offset: 0,
             };
           } else {
-            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
           }
         } catch (popErr: any) {
           if (popErr?.reason === 'quotaExceeded' || popErr?.reason === 'dailyLimitExceeded' || popErr?.status === 403) {
             quotaExceeded = true;
             exhaustedReason = 'YouTube Data API quota limit reached.';
-            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
           } else if (rIdx + 1 < regionOrder.length) {
-            nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, pageToken: '', offset: 0 };
+            nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, stepsDone: step + 1, pageToken: '', offset: 0 };
           } else {
-            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
+            nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, stepsDone: step + 1, pageToken: '', offset: 0 };
           }
         }
       } else if (cursor.mode === 'catalog') {
-        // 3. Verified backup catalog slice (rotated cleanly by seed + excludeIds + 7-day suppression)
+        // 3. Verified backup catalog slice (rotated cleanly by seed + excludeIds + permanent suppression)
         const poolKey = type === 'shorts' ? 'shorts' : category;
         const poolPageNum = Math.floor(cursor.offset / pageSize) + 1;
         const basePool = seededShuffle(
@@ -1617,6 +1758,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
             mode: 'catalog',
             qIdx: 0,
             rIdx: 0,
+            stepsDone: step + 1,
             pageToken: '',
             offset: cursor.offset + pageSize,
           };
@@ -1634,6 +1776,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
         nextCursor.mode === cursor.mode &&
         nextCursor.qIdx === cursor.qIdx &&
         (nextCursor.rIdx || 0) === (cursor.rIdx || 0) &&
+        (nextCursor.chartIdx || 0) === (cursor.chartIdx || 0) &&
         nextCursor.offset === cursor.offset &&
         !nextCursor.pageToken
       ) {
@@ -1645,6 +1788,7 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
     if (items.length === 0 && deferredItems.length > 0 && (!rawToken || page === 1)) {
       for (const fallbackItem of deferredItems) {
         if (items.length >= pageSize) break;
+        if (suppressedIds.has(fallbackItem.id) || suppressedIds.has(fallbackItem.youtubeId)) continue;
         if (!seenVideoIds.has(fallbackItem.id)) {
           seenVideoIds.add(fallbackItem.id);
           items.push(fallbackItem);
@@ -1652,7 +1796,20 @@ app.get('/api/youtube/feed', async (req: Request, res: Response) => {
       }
     }
 
-    const rotatedItems = prioritizeFreshItems(items, excludeIds, `${seed}_${page}`).slice(0, pageSize);
+    const prioritizedItems = prioritizeFreshItems(items, excludeIds, `${seed}_${page}`);
+    const rotatedItems = shouldMixGlobalCategories
+      ? distributeMixedCategoryFeed(
+          prioritizedItems.map((it, idx) => ({
+            id: String(it.id),
+            categoryId: String(it.categoryId || 'knowledge_facts'),
+            creatorId: String(it.channel?.id || ''),
+            score: Math.max(1, 100 - idx),
+            isExplore: idx % 3 === 2,
+            item: it,
+          })),
+          { limit: pageSize, minCreatorGap: 2, exploreRatio: 0.3, seed: `${seed}_${page}` }
+        )
+      : prioritizedItems.slice(0, pageSize);
     const finalItems = await enrichVideoItemsWithChannelMeta(rotatedItems);
     const nextPageToken = nextCursor ? encodeFeedCursor(nextCursor) : null;
     res.json({
@@ -3809,10 +3966,12 @@ app.post('/api/auth/register', registerRateLimiter, ah(async (req: Request, res:
     authMethod: 'register',
   });
   setAuthCookie(res, req, session.token);
+  setRefreshCookie(res, req, session.refreshToken);
   const publicProfile = await db.toPublicProfile(newUserAccount, newId, await getOnlineUserIds());
 
   res.status(201).json({
     token: session.token,
+    refreshToken: session.refreshToken,
     sessionId: session.id,
     user: publicProfile,
     message: 'Account created successfully',
@@ -3828,6 +3987,9 @@ app.post('/api/auth/login', loginRateLimiter, ah(async (req: Request, res: Respo
   const user = await db.findUserByEmailOrUsername(identifier);
   if (!user) {
     return res.status(401).json({ error: 'Invalid credentials. User not found.' });
+  }
+  if (user.deactivated) {
+    return res.status(403).json({ error: 'This account has been deactivated.' });
   }
 
   const isValid = verifyPassword(password, user.passwordHash, user.passwordSalt, user.passwordIterations);
@@ -3850,13 +4012,57 @@ app.post('/api/auth/login', loginRateLimiter, ah(async (req: Request, res: Respo
     authMethod: 'password',
   });
   setAuthCookie(res, req, session.token);
+  setRefreshCookie(res, req, session.refreshToken);
   const publicProfile = await db.toPublicProfile(user, user.id, await getOnlineUserIds());
 
   res.json({
     token: session.token,
+    refreshToken: session.refreshToken,
     sessionId: session.id,
     user: publicProfile,
     message: 'Login successful',
+  });
+}));
+
+app.post('/api/auth/refresh', ah(async (req: Request, res: Response) => {
+  const cookies = ((req as any).cookies || (req.headers.cookie ? parseCookies(req.headers.cookie) : {})) as Record<string, string>;
+  const rawRefresh = String(
+    req.body?.refreshToken || req.headers['x-refresh-token'] || cookies[REFRESH_COOKIE_NAME] || ''
+  ).trim();
+
+  if (!rawRefresh) {
+    return res.status(401).json({ error: 'REFRESH_TOKEN_MISSING', sessionExpired: true });
+  }
+
+  const session = await db.findSessionByRefreshToken(rawRefresh);
+  if (!session || !session.id) {
+    clearAuthCookie(res, req);
+    return res.status(401).json({ error: 'SESSION_REVOKED', sessionExpired: true });
+  }
+
+  const user = await db.findUserById(session.userId);
+  if (!user || user.deactivated) {
+    await db.revokeSessionById(session.userId, session.id).catch(() => {});
+    clearAuthCookie(res, req);
+    return res.status(401).json({ error: 'ACCOUNT_UNAVAILABLE', sessionExpired: true });
+  }
+
+  const rotated = await db.rotateSessionTokens(session.id);
+  if (!rotated) {
+    clearAuthCookie(res, req);
+    return res.status(401).json({ error: 'SESSION_ROTATION_FAILED', sessionExpired: true });
+  }
+
+  setAuthCookie(res, req, rotated.token);
+  setRefreshCookie(res, req, rotated.refreshToken);
+  void db.touchUserLastActive(user.id).catch(() => {});
+  const publicProfile = await db.toPublicProfile(user, user.id, await getOnlineUserIds());
+
+  res.json({
+    token: rotated.token,
+    refreshToken: rotated.refreshToken,
+    sessionId: rotated.session.id,
+    user: publicProfile,
   });
 }));
 
@@ -3864,6 +4070,17 @@ app.post('/api/auth/logout', ah(async (req: Request, res: Response) => {
   const token = (req as any).sessionToken;
   if (token) {
     await db.deleteSession(token);
+  } else {
+    const cookies = ((req as any).cookies || (req.headers.cookie ? parseCookies(req.headers.cookie) : {})) as Record<string, string>;
+    const rawRefresh = String(
+      req.body?.refreshToken || req.headers['x-refresh-token'] || cookies[REFRESH_COOKIE_NAME] || ''
+    ).trim();
+    if (rawRefresh) {
+      const sess = await db.findSessionByRefreshToken(rawRefresh);
+      if (sess?.id) {
+        await db.revokeSessionById(sess.userId, sess.id);
+      }
+    }
   }
   clearAuthCookie(res, req);
   res.json({ success: true, message: 'Logged out successfully' });
@@ -3912,12 +4129,17 @@ app.get('/api/auth/me', ah(async (req: Request, res: Response) => {
       sessionId: (req as any).sessionId,
       isGuest: false,
       sessionExpired: false,
+      canRefresh: false,
     });
   }
+  const canRefresh = Boolean((req as any).hadRefreshCookie);
+  const accountDeactivated = Boolean((req as any).accountDeactivated);
   res.json({
     user: null,
     isGuest: true,
-    sessionExpired: Boolean((req as any).hadAuthToken),
+    sessionExpired: accountDeactivated || Boolean((req as any).hadAuthToken && !canRefresh),
+    canRefresh,
+    accountDeactivated,
   });
 }));
 
@@ -4036,10 +4258,12 @@ app.post('/api/auth/google', sensitiveAuthRateLimiter, ah(async (req: Request, r
       authMethod: 'google',
     });
     setAuthCookie(res, req, session.token);
+    setRefreshCookie(res, req, session.refreshToken);
     const publicProfile = await db.toPublicProfile(user, user.id, await getOnlineUserIds());
 
     res.json({
       token: session.token,
+      refreshToken: session.refreshToken,
       sessionId: session.id,
       user: publicProfile,
       hasYouTubeChannel: Boolean(linkedChannel),
@@ -4169,10 +4393,12 @@ app.post('/api/auth/claim-owner', sensitiveAuthRateLimiter, ah(async (req: Reque
     authMethod: 'password',
   });
   setAuthCookie(res, req, session.token);
+  setRefreshCookie(res, req, session.refreshToken);
 
   res.json({
     success: true,
     token: session.token,
+    refreshToken: session.refreshToken,
     sessionId: session.id,
     user: await db.toPublicProfile(updatedUser, user.id, await getOnlineUserIds()),
     message: 'Official FOUNDER & OWNER privileges activated successfully!',
@@ -4185,7 +4411,7 @@ app.post('/api/auth/switch-account', sensitiveAuthRateLimiter, ah(async (req: Re
     return res.status(400).json({ error: 'Target userId and password are required to switch accounts' });
   }
   const targetUser = await db.findUserById(userId);
-  if (!targetUser) {
+  if (!targetUser || targetUser.deactivated) {
     return res.status(404).json({ error: 'Target user account not found' });
   }
   if (!verifyPassword(String(password), targetUser.passwordHash, targetUser.passwordSalt, targetUser.passwordIterations)) {
@@ -4204,8 +4430,10 @@ app.post('/api/auth/switch-account', sensitiveAuthRateLimiter, ah(async (req: Re
     authMethod: 'switch',
   });
   setAuthCookie(res, req, session.token);
+  setRefreshCookie(res, req, session.refreshToken);
   res.json({
     token: session.token,
+    refreshToken: session.refreshToken,
     sessionId: session.id,
     user: await db.toPublicProfile(targetUser, targetUser.id, await getOnlineUserIds()),
     message: `Switched account to ${targetUser.displayName}`,
@@ -4759,17 +4987,20 @@ async function getUnifiedFeedYouTubePosts(
     }
   };
 
-  // On refresh or page 1, first check fresh unseen items already in our live multi-category pool (0 quota cost!)
+  // On refresh or page 1, take up to half batch from warm pool ONLY if pool spans multiple categories; still fetch fresh global categories
   const poolItems = getFreshPoolRawItems();
   if (poolItems.length > 0 && (refreshGen > 0 || !rawYtCursor)) {
     const shuffledPool = seededShuffle(poolItems, `${seed}_${refreshGen}_pool_${page}`);
+    const poolCap = Math.min(pageSize, Math.max(4, Math.floor(pageSize / 2)));
     for (const raw of shuffledPool) {
-      if (collectedPosts.length >= pageSize) break;
+      if (collectedPosts.length >= poolCap) break;
       pushRawItems([raw]);
     }
   }
 
-  while (collectedPosts.length < targetPoolSize && attempts < maxAttempts) {
+  const countDistinctCollectedCats = () => new Set(collectedPosts.map((p) => p.categoryId || 'knowledge_facts')).size;
+
+  while ((collectedPosts.length < targetPoolSize || countDistinctCollectedCats() < 4) && attempts < maxAttempts) {
     attempts++;
     const prevCount = collectedPosts.length;
     const step = (cursor.stepsDone || 0);
@@ -5046,7 +5277,7 @@ async function getUnifiedFeedYouTubePosts(
     for (const dp of deferredPosts) {
       if (collectedPosts.length >= pageSize) break;
       const vid = String(dp.externalId || dp.id);
-      if (!vid || seenIds.has(vid)) continue;
+      if (!vid || seenIds.has(vid) || suppressedIds.has(vid) || suppressedIds.has(dp.id)) continue;
       seenIds.add(vid);
       collectedPosts.push(dp);
     }
@@ -5831,19 +6062,29 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
     }
   }
 
-  const ytShorts: ShortVideo[] = [];
-  const deferredYtShorts: ShortVideo[] = [];
+  const ytShorts: (ShortVideo & { categoryId?: string })[] = [];
+  const deferredYtShorts: (ShortVideo & { categoryId?: string })[] = [];
   const seenYtIds = new Set<string>(localSlice.map((s) => s.youtubeId || s.id));
   const deferredYtIds = new Set<string>(seenYtIds);
   let nextCursor: FeedCursor | null = null;
   let quotaExceeded = false;
   let exhaustedReason: string | undefined;
-  const maxAttempts = 6;
+  const targetShortsPool = Math.max(pageSize * 2, 20);
+  const maxAttempts = 8;
   let attempts = 0;
 
-  const mapRawShort = (item: any, dur: number, channelMetaMap: Map<string, CachedChannelMeta>): ShortVideo => {
+  const mapRawShort = (item: any, dur: number, channelMetaMap: Map<string, CachedChannelMeta>): ShortVideo & { categoryId?: string } => {
     const channelId = item.snippet?.channelId || '';
     const chMeta = channelId ? channelMetaMap.get(channelId) : undefined;
+    const title = item.snippet?.title || 'Unavailable';
+    const description = item.snippet?.description || '';
+    const cls = classifyVideoContent({
+      title,
+      description,
+      tags: Array.isArray(item.snippet?.tags) ? item.snippet.tags : [],
+      youtubeCategoryId: item.snippet?.categoryId ? String(item.snippet.categoryId) : undefined,
+      channelTitle: item.snippet?.channelTitle || '',
+    });
     return {
       id: item.id,
       source: 'youtube' as const,
@@ -5855,9 +6096,10 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
         item.snippet?.thumbnails?.high?.url ||
         item.snippet?.thumbnails?.medium?.url ||
         `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-      title: item.snippet?.title || 'Unavailable',
-      caption: item.snippet?.description || item.snippet?.title || '',
-      hashtags: ['Shorts'],
+      title,
+      caption: description || title || '',
+      hashtags: ['Shorts', cls.categoryLabel.split(' ')[0]],
+      categoryId: cls.categoryId,
       creator: {
         id: channelId,
         name: item.snippet?.channelTitle || chMeta?.title || 'Unavailable',
@@ -5875,7 +6117,7 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
     };
   };
 
-  while (ytShorts.length < pageSize && attempts < maxAttempts) {
+  while (ytShorts.length < targetShortsPool && attempts < maxAttempts) {
     attempts++;
     const prevCount = ytShorts.length;
 
@@ -5886,7 +6128,7 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
           type: 'video',
           q: shortsQueryPool[cursor.qIdx],
           videoDuration: 'short',
-          maxResults: '25',
+          maxResults: '12',
           ...(cursor.pageToken ? { pageToken: cursor.pageToken } : {}),
         });
         const allCandidateIds = (searchData.items || [])
@@ -5921,10 +6163,11 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
           }
         }
 
-        if (searchData.nextPageToken) {
-          nextCursor = { mode: 'api_search', qIdx: cursor.qIdx, rIdx: 0, pageToken: searchData.nextPageToken, offset: 0 };
-        } else if (cursor.qIdx + 1 < shortsQueryPool.length) {
+        // Advance across queries each step so every Shorts batch blends multiple categories & countries
+        if (cursor.qIdx + 1 < shortsQueryPool.length) {
           nextCursor = { mode: 'api_search', qIdx: cursor.qIdx + 1, rIdx: 0, pageToken: '', offset: 0 };
+        } else if (searchData.nextPageToken) {
+          nextCursor = { mode: 'api_search', qIdx: cursor.qIdx, rIdx: 0, pageToken: searchData.nextPageToken, offset: 0 };
         } else {
           nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
         }
@@ -5964,10 +6207,10 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
           seenYtIds.add(item.id);
           ytShorts.push(mappedShort);
         }
-        if (popData.nextPageToken) {
-          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx, pageToken: popData.nextPageToken, offset: 0 };
-        } else if (rIdx + 1 < POPULAR_REGION_CODES.length) {
+        if (rIdx + 1 < POPULAR_REGION_CODES.length) {
           nextCursor = { mode: 'api_popular', qIdx: 0, rIdx: rIdx + 1, pageToken: '', offset: 0 };
+        } else if (popData.nextPageToken) {
+          nextCursor = { mode: 'api_popular', qIdx: 0, rIdx, pageToken: popData.nextPageToken, offset: 0 };
         } else {
           nextCursor = { mode: 'catalog', qIdx: 0, rIdx: 0, pageToken: '', offset: 0 };
         }
@@ -6046,6 +6289,7 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
   if (localSlice.length + ytShorts.length < pageSize && deferredYtShorts.length > 0 && (!rawToken || page === 1 || localSlice.length + ytShorts.length === 0)) {
     for (const s of deferredYtShorts) {
       if (localSlice.length + ytShorts.length >= pageSize) break;
+      if (suppressed.has(s.id) || (s.youtubeId && suppressed.has(s.youtubeId))) continue;
       if (!seenYtIds.has(s.id)) {
         seenYtIds.add(s.id);
         ytShorts.push(s);
@@ -6053,8 +6297,20 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
     }
   }
 
+  const distributedYtShorts = distributeMixedCategoryFeed(
+    ytShorts.map((s, idx) => ({
+      id: s.id,
+      categoryId: s.categoryId || 'entertainment_comedy',
+      creatorId: s.creator?.id || '',
+      score: Math.max(1, 100 - idx),
+      isExplore: idx % 3 === 2,
+      item: s,
+    })),
+    { limit: Math.max(0, pageSize - localSlice.length), minCreatorGap: 2, exploreRatio: 0.35, seed: `${seed}_shorts_${page}` }
+  );
+
   const seen = new Set(localSlice.map((s) => s.youtubeId || s.id));
-  const merged = [...localSlice, ...ytShorts.filter((s) => !seen.has(s.id))];
+  const merged = [...localSlice, ...distributedYtShorts.filter((s) => !seen.has(s.id))];
   const nextPageToken = nextCursor ? encodeFeedCursor(nextCursor) : null;
   const hasMore = localStart + localSlice.length < filteredLocal.length || Boolean(nextPageToken);
   res.json({
