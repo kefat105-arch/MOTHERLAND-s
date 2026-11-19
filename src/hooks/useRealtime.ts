@@ -19,7 +19,16 @@ export interface RealtimeEvent {
     | 'spy:chat'
     | 'spy:webrtc_signal'
     | 'spy:left'
-    | 'spy:error';
+    | 'spy:error'
+    | 'world:joined'
+    | 'world:state'
+    | 'world:player_moved'
+    | 'world:player_left'
+    | 'world:chat'
+    | 'world:action'
+    | 'world:voice_state'
+    | 'world:voice_signal'
+    | 'world:error';
   [key: string]: any;
 }
 

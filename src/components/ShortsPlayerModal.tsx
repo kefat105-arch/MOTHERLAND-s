@@ -19,7 +19,18 @@ import {
   ExternalLink,
   Copy,
   Gauge,
+  Download,
+  CheckCircle2,
+  WifiOff,
 } from 'lucide-react';
+import {
+  saveShortOffline,
+  removeOfflineVideo,
+  useOfflineVaultState,
+  useOfflineConnectivity,
+  useOfflineMediaSrc,
+  resolveOfflineMediaUrl,
+} from '../services/offlineVideoEngine';
 import type { ShortVideo } from '../types';
 import { api } from '../api';
 import {
@@ -92,6 +103,9 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [actionNotice, setActionNotice] = useState<{ text: string; url?: string } | null>(null);
+  const offlineVault = useOfflineVaultState();
+  const { isOnline } = useOfflineConnectivity();
+  const [slotNativeSrcs, setSlotNativeSrcs] = useState<[string, string]>(['', '']);
 
   // Playback progress & instant-switch zero-black-screen state
   const [currentTime, setCurrentTime] = useState(0);
@@ -248,10 +262,67 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const activeSlot = (currentIndex % 2) as 0 | 1;
   const preloadSlot = ((currentIndex + 1) % 2) as 0 | 1;
   const isYouTube = Boolean(currentShort?.source === 'youtube' && currentShort?.youtubeId);
+  const resolvedCurrentThumb = useOfflineMediaSrc(currentShort?.thumbnailUrl, false);
+
+  // Resolve cached IndexedDB Blob URLs for native MOTHERLAND Shorts slots
+  useEffect(() => {
+    if (!isOpen) {
+      setSlotNativeSrcs(['', '']);
+      return;
+    }
+    let cancelled = false;
+    const resolveSlot = async (slotIdx: 0 | 1, item: ShortVideo | null | undefined) => {
+      if (!item || item.source === 'youtube' || !item.videoUrl) {
+        if (!cancelled) {
+          setSlotNativeSrcs((prev) => {
+            if (prev[slotIdx] === '') return prev;
+            const next: [string, string] = [...prev] as [string, string];
+            next[slotIdx] = '';
+            return next;
+          });
+        }
+        return;
+      }
+      const nextUrl = isOnline
+        ? item.videoUrl
+        : await resolveOfflineMediaUrl(item.videoUrl, true);
+      if (!cancelled) {
+        setSlotNativeSrcs((prev) => {
+          const val = nextUrl || item.videoUrl || '';
+          if (prev[slotIdx] === val) return prev;
+          const copy: [string, string] = [...prev] as [string, string];
+          copy[slotIdx] = val;
+          return copy;
+        });
+      }
+    };
+    void resolveSlot(activeSlot, currentShort);
+    void resolveSlot(preloadSlot, nextShortItem);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isOpen,
+    isOnline,
+    activeSlot,
+    preloadSlot,
+    currentShort?.id,
+    currentShort?.videoUrl,
+    currentShort?.source,
+    nextShortItem?.id,
+    nextShortItem?.videoUrl,
+    nextShortItem?.source,
+  ]);
 
   // Manage 2-Slot Pooled Playback & Background Pre-Cueing (Eliminates ~2-3s IFrame tear-down delay!)
   useEffect(() => {
     if (!isOpen || !currentShort) return;
+
+    if (isYouTube && !isOnline) {
+      setFrameReady(true);
+      setIsBuffering(false);
+      return;
+    }
 
     const alreadyCued = isYouTube
       ? Boolean(currentShort.youtubeId && ytSlotReadyIdRef.current[activeSlot] === currentShort.youtubeId)
@@ -261,7 +332,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     setIsBuffering(!alreadyCued);
 
     // 1) Activate current Short on activeSlot
-    if (isYouTube && currentShort.youtubeId) {
+    if (isYouTube && currentShort.youtubeId && isOnline) {
       const targetYtId = currentShort.youtubeId;
       const existingSrc = ytSlotInitialSrcRef.current[activeSlot];
       if (!existingSrc) {
@@ -314,7 +385,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     // 2) After short settle delay (220ms) so active video gets full startup bandwidth, pre-cue nextShort!
     const preloadTimer = window.setTimeout(() => {
       if (!nextShortItem) return;
-      if (nextShortItem.source === 'youtube' && nextShortItem.youtubeId) {
+      if (nextShortItem.source === 'youtube' && nextShortItem.youtubeId && isOnline) {
         const nextYtId = nextShortItem.youtubeId;
         if (!ytSlotInitialSrcRef.current[preloadSlot]) {
           const url = buildYouTubeEmbedUrl(nextYtId, {
@@ -336,7 +407,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           sendYTCommand(ytSlotRefs.current[preloadSlot], 'mute');
           sendYTCommand(ytSlotRefs.current[preloadSlot], 'cueVideoById', [{ videoId: nextYtId, startSeconds: 0 }]);
         }
-      } else if (nextShortItem.videoUrl && videoSlotRefs.current[preloadSlot]) {
+      } else if (nextShortItem.source !== 'youtube' && nextShortItem.videoUrl && videoSlotRefs.current[preloadSlot]) {
         videoSlotRefs.current[preloadSlot]!.load();
       }
     }, 220);
@@ -954,7 +1025,27 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                   isActive ? 'z-[2] opacity-100' : 'z-0 opacity-0 pointer-events-none'
                 }`}
               >
-                {hasYtSlotUrl && ytSlotUrls[slot] && (slotIsYt || ytSlotUrls[slot]) && (
+                {!isOnline && slotShort && slotIsYt && isActive && (
+                  <div className="relative w-full h-full flex flex-col items-center justify-center bg-black px-6 text-center">
+                    {(resolvedCurrentThumb || slotShort.thumbnailUrl) && (
+                      <img
+                        src={resolvedCurrentThumb || slotShort.thumbnailUrl}
+                        alt={slotShort.title}
+                        className="absolute inset-0 w-full h-full object-cover opacity-35"
+                      />
+                    )}
+                    <div className="relative z-10 max-w-xs space-y-2 p-4 rounded-2xl bg-black/75 border border-white/15 backdrop-blur-md">
+                      <div className="w-11 h-11 mx-auto rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center">
+                        <WifiOff className="w-5 h-5" />
+                      </div>
+                      <p className="text-xs font-bold text-white line-clamp-2">{slotShort.title}</p>
+                      <p className="text-[11px] text-slate-200 leading-relaxed">
+                        অফলাইন মোড · YouTube শর্টস চালাতে ইন্টারনেট সংযোগ প্রয়োজন। উপরে/নিচে সোয়াইপ করে সেভ করা MOTHERLAND শর্টস সরাসরি দেখুন।
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {isOnline && hasYtSlotUrl && ytSlotUrls[slot] && (slotIsYt || ytSlotUrls[slot]) && (
                   <iframe
                     ref={(el) => {
                       ytSlotRefs.current[slot] = el;
@@ -988,12 +1079,25 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
                     ref={(el) => {
                       videoSlotRefs.current[slot] = el;
                     }}
-                    src={slotShort.videoUrl}
-                    poster={slotShort.thumbnailUrl || undefined}
+                    src={slotNativeSrcs[slot] || slotShort.videoUrl}
+                    poster={(isActive ? resolvedCurrentThumb : slotShort.thumbnailUrl) || undefined}
                     preload="auto"
                     loop
                     playsInline
                     muted={!isActive || isMuted}
+                    onError={() => {
+                      if (slotShort.videoUrl) {
+                        void resolveOfflineMediaUrl(slotShort.videoUrl, true).then((blobUrl) => {
+                          if (blobUrl && blobUrl !== (slotNativeSrcs[slot] || slotShort.videoUrl)) {
+                            setSlotNativeSrcs((prev) => {
+                              const next: [string, string] = [...prev] as [string, string];
+                              next[slot] = blobUrl;
+                              return next;
+                            });
+                          }
+                        });
+                      }
+                    }}
                     onCanPlay={() => {
                       nativeSlotReadyIdRef.current[slot] = slotShort.id;
                       if (isActive) {
@@ -1035,9 +1139,9 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           })}
 
           {/* Instant Thumbnail Backdrop until Active Video Confirms Ready First Frame */}
-          {currentShort.thumbnailUrl && (
+          {(resolvedCurrentThumb || currentShort.thumbnailUrl) && (
             <img
-              src={currentShort.thumbnailUrl}
+              src={resolvedCurrentThumb || currentShort.thumbnailUrl}
               alt=""
               aria-hidden="true"
               className={`absolute inset-0 z-[5] w-full h-full object-cover pointer-events-none transition-opacity duration-200 ${
@@ -1065,7 +1169,10 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
           {/* MOTHERLAND Branded Paused (Rotating Original Logo) vs Genuine Buffering Indicator */}
           <VideoBrandOverlay
             mode={isPlaying && isBuffering ? 'buffering' : 'paused'}
-            visible={!isPlaying || (isPlaying && isBuffering && !frameReady) || playPulseIcon === 'pause'}
+            visible={
+              !(isYouTube && !isOnline) &&
+              (!isPlaying || (isPlaying && isBuffering && !frameReady) || playPulseIcon === 'pause')
+            }
           />
 
           {/* Double-Tap Heart Burst */}
@@ -1403,6 +1510,39 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
 
             {moreMenuOpen && (
               <div className="absolute right-12 bottom-0 w-48 rounded-2xl ml-glass-elevated py-1.5 text-xs text-[var(--text-primary)] z-40">
+                <button
+                  type="button"
+                  data-testid={`short-offline-save-${currentShort.id}`}
+                  onClick={async () => {
+                    const saved =
+                      offlineVault.downloadedIds.has(currentShort.id) ||
+                      (currentShort.youtubeId
+                        ? offlineVault.downloadedIds.has(currentShort.youtubeId)
+                        : false);
+                    if (saved) {
+                      await removeOfflineVideo(currentShort.id);
+                    } else {
+                      await saveShortOffline(currentShort);
+                    }
+                    setMoreMenuOpen(false);
+                  }}
+                  className="w-full px-3.5 py-2.5 text-left hover:bg-[var(--bg-surface-alt)] flex items-center gap-2.5 font-semibold text-[var(--accent-primary)]"
+                >
+                  {offlineVault.downloadedIds.has(currentShort.id) ||
+                  (currentShort.youtubeId &&
+                    offlineVault.downloadedIds.has(currentShort.youtubeId)) ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>অফলাইনে সেভ ✓</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5 shrink-0" />
+                      <span>অফলাইনে ডাউনলোড</span>
+                    </>
+                  )}
+                </button>
+
                 <button
                   type="button"
                   onClick={() => {

@@ -59,6 +59,7 @@ import {
   GAME_CATALOG,
   LiveSpyEngine,
 } from './src/server/liveSpyEngine.ts';
+import { RobloxWorldServerEngine } from './src/server/robloxWorldServer.ts';
 import {
   GLOBAL_VIDEO_CATEGORIES,
   YOUTUBE_CHART_CATEGORY_IDS,
@@ -260,6 +261,10 @@ function sendWsToUser(userId: string, event: string, payload: any) {
 }
 
 const liveSpyEngine = new LiveSpyEngine((uid, event, payload) => {
+  sendWsToUser(uid, event, payload);
+});
+
+const robloxWorldServer = new RobloxWorldServerEngine((uid, event, payload) => {
   sendWsToUser(uid, event, payload);
 });
 
@@ -9119,6 +9124,10 @@ app.get('/api/games/catalog', (_req: Request, res: Response) => {
   res.json({ games: GAME_CATALOG });
 });
 
+app.get('/api/games/worlds/servers', (_req: Request, res: Response) => {
+  res.json({ servers: robloxWorldServer.getServerStatsSummary() });
+});
+
 app.get('/api/games/live-spy/state', (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
@@ -9212,6 +9221,46 @@ async function startServer() {
 
         if (ev === 'ping') {
           ws.send(JSON.stringify({ event: 'pong', payload: { ts: Date.now() } }));
+          return;
+        }
+
+        const isGuestWorldOnly = Boolean((ws as any).__guestWorldOnly);
+
+        if (typeof ev === 'string' && ev.startsWith('world:')) {
+          const acc = isGuestWorldOnly ? null : await db.findUserById(userId);
+          const playerDisplayName =
+            acc?.displayName ||
+            (typeof payload.displayName === 'string' && payload.displayName.trim()
+              ? payload.displayName.trim().slice(0, 24)
+              : `Player-${userId.slice(-4).toUpperCase()}`);
+
+          if (ev === 'world:join') {
+            robloxWorldServer.joinWorld(
+              { id: userId, displayName: playerDisplayName },
+              String(payload.worldId || 'squid_game'),
+              payload.avatarConfig
+            );
+          } else if (ev === 'world:leave') {
+            robloxWorldServer.leaveWorld(userId);
+          } else if (ev === 'world:move') {
+            robloxWorldServer.updatePlayerState(userId, payload);
+          } else if (ev === 'world:action') {
+            robloxWorldServer.handleWorldAction(userId, String(payload.actionType || ''), payload.data || {});
+          } else if (ev === 'world:chat') {
+            robloxWorldServer.sendRoomChat(userId, String(payload.text || ''));
+          } else if (ev === 'world:voice_state') {
+            robloxWorldServer.updateVoiceState(userId, Boolean(payload.speaking));
+          } else if (ev === 'world:voice_signal') {
+            robloxWorldServer.relayVoiceSignal(
+              userId,
+              String(payload.targetUserId || ''),
+              payload.signal && typeof payload.signal === 'object' ? payload.signal : {}
+            );
+          }
+          return;
+        }
+
+        if (isGuestWorldOnly) {
           return;
         }
 
@@ -9446,6 +9495,9 @@ async function startServer() {
         }
       }
       liveSpyEngine.handleSocketDisconnected(userId, remaining);
+      if (!remaining) {
+        robloxWorldServer.leaveWorld(userId);
+      }
     });
   });
 
@@ -9462,6 +9514,17 @@ async function startServer() {
         tokenParam || (authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '') || cookieToken.trim();
       const session = rawToken ? await db.findSessionByToken(rawToken) : undefined;
       if (!session) {
+        // Allow isolated guest world sockets strictly for 25-player public game rooms
+        if (reqUrl.searchParams.get('worldGuest') === '1') {
+          const rawGuestId = (reqUrl.searchParams.get('guestId') || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24);
+          const guestUserId = rawGuestId ? `wg_${rawGuestId}` : `wg_${crypto.randomBytes(5).toString('hex')}`;
+          if (socket.destroyed) return;
+          wss.handleUpgrade(request, socket, head, (ws) => {
+            (ws as any).__guestWorldOnly = true;
+            wss.emit('connection', ws, request, guestUserId);
+          });
+          return;
+        }
         if (!socket.destroyed) {
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
           socket.destroy();

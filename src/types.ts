@@ -698,6 +698,12 @@ export interface BangladeshServiceItem {
 export type GameCategoryFilter =
   | 'all'
   | 'multiplayer'
+  | 'survival'
+  | 'obby'
+  | 'roleplay'
+  | 'horror'
+  | 'action'
+  | 'tycoon'
   | 'social'
   | 'casual'
   | 'coming_soon';
@@ -705,12 +711,69 @@ export type GameCategoryFilter =
 export interface GameCatalogEntry {
   id: string;
   name: string;
+  subtitle?: string;
   tagline: string;
   description: string;
-  category: 'multiplayer' | 'social' | 'casual' | 'coming_soon';
+  category:
+    | 'multiplayer'
+    | 'survival'
+    | 'obby'
+    | 'roleplay'
+    | 'horror'
+    | 'action'
+    | 'tycoon'
+    | 'social'
+    | 'casual'
+    | 'coming_soon';
   badge: string;
   status: 'playable' | 'coming_soon';
   supportedCapacities?: number[];
+  maxPlayersPerRoom?: number;
+  playersLabel?: string;
+  difficulty?: string;
+  estimatedSession?: string;
+  seasonsSummary?: string[];
+  controlsSummary?: string;
+  features?: string[];
+}
+
+export interface RobloxAvatarConfig {
+  skinHex: number;
+  shirtHex: number;
+  pantsHex: number;
+  hairHex: number;
+  hatStyle: 'hair_swept' | 'hair_spiky' | 'cap' | 'sheriff_hat' | 'bandana' | 'crown' | 'none';
+  faceMood: 'smile' | 'confident' | 'focused' | 'cool_shades';
+  accessory: 'none' | 'cape' | 'back_sword' | 'aura';
+  jerseyNumber?: string;
+}
+
+export interface WorldRoomPlayerSnapshot {
+  userId: string;
+  displayName: string;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  speed: number;
+  grounded: boolean;
+  actionActive: boolean;
+  inCar: boolean;
+  score: number;
+  speaking?: boolean;
+  avatarConfig: RobloxAvatarConfig;
+}
+
+export interface WorldRoomPublicState {
+  roomId: string;
+  serverNumber: number;
+  worldId: string;
+  maxPlayers: number;
+  playerCount: number;
+  phase: string;
+  phaseTimer: number;
+  phaseData: Record<string, any>;
+  players: WorldRoomPlayerSnapshot[];
 }
 
 export type LiveSpyCapacity = 6 | 8;
