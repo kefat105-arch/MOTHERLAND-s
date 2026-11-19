@@ -46,6 +46,8 @@ import {
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'motherland_auth_token';
+const REFRESH_TOKEN_KEY = 'motherland_refresh_token';
+const CACHED_USER_KEY = 'motherland_cached_user_profile';
 const SAVED_ACCOUNTS_KEY = 'motherland_saved_accounts';
 const GOOGLE_AUTH_STORAGE_KEY = 'motherland_google_youtube_auth_v3';
 
@@ -56,6 +58,7 @@ export interface SavedAccountItem {
   avatar: string;
   role?: string;
   token: string;
+  refreshToken?: string;
 }
 
 export function getStoredAuthToken(): string {
@@ -78,6 +81,55 @@ export function setStoredAuthToken(token: string): void {
   }
 }
 
+export function getStoredRefreshToken(): string {
+  try {
+    return localStorage.getItem(REFRESH_TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setStoredRefreshToken(refreshToken: string): void {
+  try {
+    if (refreshToken) {
+      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+    } else {
+      localStorage.removeItem(REFRESH_TOKEN_KEY);
+    }
+  } catch (err) {
+    console.error('Storage error:', err);
+  }
+}
+
+export function getCachedUserProfile(): UserProfile | null {
+  try {
+    const raw = localStorage.getItem(CACHED_USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && parsed.id ? (parsed as UserProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedUserProfile(user: UserProfile | null): void {
+  try {
+    if (user && user.id) {
+      localStorage.setItem(CACHED_USER_KEY, JSON.stringify(user));
+    } else {
+      localStorage.removeItem(CACHED_USER_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function clearAllAuthStorage(): void {
+  setStoredAuthToken('');
+  setStoredRefreshToken('');
+  setCachedUserProfile(null);
+}
+
 export function getSavedAccounts(): SavedAccountItem[] {
   try {
     const raw = localStorage.getItem(SAVED_ACCOUNTS_KEY);
@@ -87,8 +139,9 @@ export function getSavedAccounts(): SavedAccountItem[] {
   }
 }
 
-export function saveAccount(user: UserProfile, token: string): void {
+export function saveAccount(user: UserProfile, token: string, refreshToken?: string): void {
   try {
+    const existing = getSavedAccounts().find((a) => a.id === user.id);
     const accounts = getSavedAccounts().filter((a) => a.id !== user.id);
     accounts.unshift({
       id: user.id,
@@ -97,6 +150,7 @@ export function saveAccount(user: UserProfile, token: string): void {
       avatar: user.avatar,
       role: user.role,
       token,
+      refreshToken: refreshToken || existing?.refreshToken || getStoredRefreshToken() || undefined,
     });
     localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(accounts.slice(0, 5)));
   } catch (err) {
@@ -127,8 +181,91 @@ function getStoredGoogleAccessToken(): string {
   }
 }
 
-async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const token = getStoredAuthToken();
+interface RefreshAttemptResult {
+  ok: boolean;
+  user?: UserProfile | null;
+  token?: string;
+  transientError?: boolean;
+  sessionExpired?: boolean;
+}
+
+let refreshInFlightPromise: Promise<RefreshAttemptResult> | null = null;
+
+export async function refreshAccessSession(explicitRefreshToken?: string): Promise<RefreshAttemptResult> {
+  if (refreshInFlightPromise && !explicitRefreshToken) {
+    return refreshInFlightPromise;
+  }
+
+  const run = async (): Promise<RefreshAttemptResult> => {
+    const refreshToken = (explicitRefreshToken || getStoredRefreshToken() || '').trim();
+    try {
+      const headers = new Headers({ 'Content-Type': 'application/json' });
+      if (refreshToken) {
+        headers.set('x-refresh-token', refreshToken);
+      }
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: JSON.stringify(refreshToken ? { refreshToken } : {}),
+      });
+
+      if (res.status >= 500) {
+        return { ok: false, transientError: true, sessionExpired: false };
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const explicitlyRevoked =
+          res.status === 401 &&
+          (errData?.sessionExpired === true ||
+            errData?.error === 'SESSION_REVOKED' ||
+            errData?.error === 'REFRESH_TOKEN_MISSING' ||
+            errData?.error === 'ACCOUNT_UNAVAILABLE');
+        return {
+          ok: false,
+          transientError: !explicitlyRevoked,
+          sessionExpired: explicitlyRevoked,
+        };
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (data?.token) {
+        setStoredAuthToken(data.token);
+        if (data.refreshToken) {
+          setStoredRefreshToken(data.refreshToken);
+        }
+        if (data.user) {
+          setCachedUserProfile(data.user);
+          saveAccount(data.user, data.token, data.refreshToken);
+        }
+        return {
+          ok: true,
+          user: data.user || getCachedUserProfile(),
+          token: data.token,
+          transientError: false,
+          sessionExpired: false,
+        };
+      }
+
+      return { ok: false, transientError: true, sessionExpired: false };
+    } catch {
+      return { ok: false, transientError: true, sessionExpired: false };
+    }
+  };
+
+  if (explicitRefreshToken) {
+    return run();
+  }
+
+  refreshInFlightPromise = run().finally(() => {
+    refreshInFlightPromise = null;
+  });
+  return refreshInFlightPromise;
+}
+
+function buildAuthHeaders(url: string, options: RequestInit, tokenOverride?: string): Headers {
+  const token = tokenOverride !== undefined ? tokenOverride : getStoredAuthToken();
   const headers = new Headers(options.headers || {});
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
@@ -159,11 +296,36 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
       headers.set('x-feed-seed', getSessionSeed());
     }
   }
-  return fetch(url, {
+  return headers;
+}
+
+async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const headers = buildAuthHeaders(url, options);
+  const res = await fetch(url, {
     credentials: options.credentials || 'same-origin',
     ...options,
     headers,
   });
+
+  const isAuthEndpoint =
+    url.includes('/auth/login') ||
+    url.includes('/auth/register') ||
+    url.includes('/auth/refresh') ||
+    url.includes('/auth/logout');
+
+  if (res.status === 401 && !isAuthEndpoint) {
+    const refreshed = await refreshAccessSession();
+    if (refreshed.ok && refreshed.token) {
+      const retryHeaders = buildAuthHeaders(url, options, refreshed.token);
+      return fetch(url, {
+        credentials: options.credentials || 'same-origin',
+        ...options,
+        headers: retryHeaders,
+      });
+    }
+  }
+
+  return res;
 }
 
 async function parseJsonOrThrow<T = any>(res: Response): Promise<T> {
@@ -182,6 +344,10 @@ export const api = {
   // Token & Saved Accounts Helpers
   getToken: getStoredAuthToken,
   setToken: setStoredAuthToken,
+  getRefreshToken: getStoredRefreshToken,
+  setRefreshToken: setStoredRefreshToken,
+  getCachedUser: getCachedUserProfile,
+  refreshSession: refreshAccessSession,
   getSavedAccounts,
   saveAccount,
   removeSavedAccount,
@@ -608,8 +774,12 @@ export const api = {
     const result = await parseJsonOrThrow<AuthResult>(res);
     if (result.token) {
       setStoredAuthToken(result.token);
+      if (result.refreshToken) {
+        setStoredRefreshToken(result.refreshToken);
+      }
       if (result.user) {
-        saveAccount(result.user, result.token);
+        setCachedUserProfile(result.user);
+        saveAccount(result.user, result.token, result.refreshToken);
       }
     }
     return result;
@@ -624,8 +794,12 @@ export const api = {
     const result = await parseJsonOrThrow<AuthResult>(res);
     if (result.token) {
       setStoredAuthToken(result.token);
+      if (result.refreshToken) {
+        setStoredRefreshToken(result.refreshToken);
+      }
       if (result.user) {
-        saveAccount(result.user, result.token);
+        setCachedUserProfile(result.user);
+        saveAccount(result.user, result.token, result.refreshToken);
       }
     }
     return result;
@@ -634,9 +808,9 @@ export const api = {
   async logout(): Promise<{ success: boolean }> {
     const res = await authFetch(`${API_BASE}/auth/logout`, {
       method: 'POST',
-    });
-    setStoredAuthToken('');
-    return res.json().catch(() => ({ success: true }));
+    }).catch(() => null);
+    clearAllAuthStorage();
+    return res ? res.json().catch(() => ({ success: true })) : { success: true };
   },
 
   async getCurrentUser(): Promise<{
@@ -646,26 +820,87 @@ export const api = {
     transientError?: boolean;
     error?: string;
   }> {
+    const cachedUser = getCachedUserProfile();
     try {
       const res = await authFetch(`${API_BASE}/auth/me`);
       if (res.status >= 500) {
-        return { user: null, isGuest: false, sessionExpired: false, transientError: true, error: `Server error (${res.status})` };
+        return {
+          user: cachedUser,
+          isGuest: !cachedUser,
+          sessionExpired: false,
+          transientError: true,
+          error: `Server error (${res.status})`,
+        };
       }
       if (!res.ok) {
+        // authFetch already attempted refresh on 401; verify if refresh token is genuinely revoked
+        const refreshAttempt = await refreshAccessSession();
+        if (refreshAttempt.ok && refreshAttempt.user) {
+          return {
+            user: refreshAttempt.user,
+            isGuest: false,
+            sessionExpired: false,
+            transientError: false,
+          };
+        }
+        if (refreshAttempt.transientError) {
+          return {
+            user: cachedUser,
+            isGuest: !cachedUser,
+            sessionExpired: false,
+            transientError: true,
+            error: 'Temporary connection issue',
+          };
+        }
+        const hadToken = Boolean(getStoredAuthToken() || getStoredRefreshToken() || cachedUser);
         return {
           user: null,
           isGuest: true,
-          sessionExpired: res.status === 401 || res.status === 403,
+          sessionExpired: hadToken && (res.status === 401 || res.status === 403),
           transientError: false,
           error: 'Unauthorized',
         };
       }
       const data = await res.json();
+      if (data?.user) {
+        setCachedUserProfile(data.user);
+        if (getStoredAuthToken()) {
+          saveAccount(data.user, getStoredAuthToken(), getStoredRefreshToken());
+        }
+      } else if (data?.isGuest) {
+        // Check if we can silently restore via refresh token / cookie
+        if (getStoredRefreshToken() || data?.canRefresh || getStoredAuthToken() || cachedUser) {
+          const refreshAttempt = await refreshAccessSession();
+          if (refreshAttempt.ok && refreshAttempt.user) {
+            return {
+              user: refreshAttempt.user,
+              isGuest: false,
+              sessionExpired: false,
+              transientError: false,
+            };
+          }
+          if (refreshAttempt.transientError) {
+            return {
+              user: cachedUser,
+              isGuest: !cachedUser,
+              sessionExpired: false,
+              transientError: true,
+              error: 'Temporary connection issue',
+            };
+          }
+          return {
+            user: null,
+            isGuest: true,
+            sessionExpired: Boolean(data?.sessionExpired || refreshAttempt.sessionExpired),
+            transientError: false,
+          };
+        }
+      }
       return { ...data, transientError: false };
     } catch (err: any) {
       return {
-        user: null,
-        isGuest: false,
+        user: cachedUser,
+        isGuest: !cachedUser,
         sessionExpired: false,
         transientError: true,
         error: err?.message || 'Network unavailable',
@@ -684,7 +919,7 @@ export const api = {
     });
     const data = await parseJsonOrThrow<{ success: boolean; revokedCurrent?: boolean }>(res);
     if (data.revokedCurrent) {
-      setStoredAuthToken('');
+      clearAllAuthStorage();
     }
     return data;
   },
@@ -697,7 +932,7 @@ export const api = {
     });
     const data = await parseJsonOrThrow<{ success: boolean; removedCount: number; keptCurrent: boolean }>(res);
     if (!keepCurrent) {
-      setStoredAuthToken('');
+      clearAllAuthStorage();
     }
     return data;
   },
@@ -712,7 +947,7 @@ export const api = {
     if (data.deletedUserId) {
       removeSavedAccount(data.deletedUserId);
     }
-    setStoredAuthToken('');
+    clearAllAuthStorage();
     return data;
   },
 

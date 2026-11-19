@@ -128,13 +128,31 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   // Register global edge-swipe / Android back handler
   useBackHandler('shorts-player-modal', isOpen, onClose, 70);
 
-  useEffect(() => {
-    setItems(filterStrictShorts(shorts));
-  }, [shorts]);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (isOpen) {
-      const clamped = Math.max(0, Math.min(initialIndex, Math.max(0, shorts.length - 1)));
+    const strictIncoming = filterStrictShorts(shorts);
+    if (!isOpen) {
+      setItems(strictIncoming);
+      return;
+    }
+    // While modal is open, NEVER remove or shift currently active / earlier items (prevents mid-watch skipping on suppression)
+    setItems((prev) => {
+      if (prev.length === 0) return strictIncoming;
+      const existingIds = new Set(prev.map((s) => s.youtubeId || s.id));
+      const appended = strictIncoming.filter((s) => !existingIds.has(s.youtubeId || s.id));
+      return appended.length > 0 ? [...prev, ...appended] : prev;
+    });
+  }, [shorts, isOpen]);
+
+  useEffect(() => {
+    const justOpened = isOpen && !wasOpenRef.current;
+    wasOpenRef.current = isOpen;
+
+    if (justOpened) {
+      const initialList = filterStrictShorts(shorts);
+      setItems(initialList);
+      const clamped = Math.max(0, Math.min(initialIndex, Math.max(0, initialList.length - 1)));
       setCurrentIndex(clamped);
       setIsPlaying(true);
       setDragOffsetY(0);
@@ -143,7 +161,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
       setCurrentTime(0);
       setDuration(0);
       setMoreMenuOpen(false);
-    } else {
+    } else if (!isOpen) {
       // Release iframe slots cleanly on modal close so background audio never lingers
       ytSlotInitialSrcRef.current = ['', ''];
       ytSlotBoundVideoIdRef.current = ['', ''];

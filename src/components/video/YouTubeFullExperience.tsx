@@ -548,7 +548,14 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
         }
 
         if (uniqueVideos.length > 0 || !opts.silent) {
-          setVideos(uniqueVideos);
+          setVideos((prev) => {
+            const currentActive = activeVideoRef.current;
+            if (!currentActive) return uniqueVideos;
+            const hasActive = uniqueVideos.some((v) => v.videoId === currentActive.videoId);
+            if (hasActive) return uniqueVideos;
+            const existingActive = prev.find((v) => v.videoId === currentActive.videoId) || currentActive;
+            return [existingActive, ...uniqueVideos];
+          });
         }
         setNextPageToken(nextToken);
         setFeedPage(1);
@@ -715,12 +722,13 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     }
   };
 
-  // Home Button & YouTube Logo Feed Refresh (returns to Browse Grid without autoplaying)
+  // Home Button & YouTube Logo Feed Refresh (refreshes recommendations WITHOUT interrupting active playback)
   const handleRefreshFeed = useCallback(async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
-    setActiveVideo(null);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (!activeVideoRef.current) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 
     const cat =
       activeNav === 'trending' ||
@@ -734,7 +742,12 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     setActiveCategory(cat);
 
     try {
-      await loadCategoryOrSearchFeed({ mode: 'category', category: cat, refresh: true });
+      await loadCategoryOrSearchFeed({
+        mode: 'category',
+        category: cat,
+        refresh: true,
+        silent: Boolean(activeVideoRef.current),
+      });
       setStudioNotice('YouTube feed refreshed with fresh videos!');
       setTimeout(() => setStudioNotice(null), 2600);
     } finally {
@@ -742,14 +755,23 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     }
   }, [isRefreshing, activeNav, loadCategoryOrSearchFeed]);
 
-  // Respond to parent refreshSignal (when user clicks YouTube icon in MOTHERLAND -> clean Browse Grid)
+  // Respond to parent refreshSignal (quietly refresh unseen feed without stopping active playing video)
   useEffect(() => {
     if (refreshSignal > 0) {
-      setActiveVideo(null);
       if (activeNav === 'shorts') {
-        setYtSubRefreshSignal((s) => s + 1);
-      } else {
+        if (!activeVideoRef.current) {
+          setYtSubRefreshSignal((s) => s + 1);
+        }
+      } else if (!activeVideoRef.current) {
         void handleRefreshFeed();
+      } else {
+        void loadCategoryOrSearchFeed({
+          mode: feedMode,
+          category: activeCategory,
+          query: activeQuery,
+          refresh: true,
+          silent: true,
+        });
       }
     }
   }, [refreshSignal]);
@@ -1508,16 +1530,28 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
             {/* Continuous Video Discovery Browse Grid */}
             <div className="space-y-3 px-2 sm:px-0">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <h3 className="font-bold text-sm sm:text-base text-white flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-red-500" />
                   <span>
                     {activeVideo ? 'Up Next & Related Discovery' : 'Browse YouTube Discovery'} ({videos.length} Loaded)
                   </span>
                 </h3>
-                <span className="text-[11px] font-mono text-slate-400">
-                  {activeVideo ? 'Tap any video to switch' : 'Tap any video to watch'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRefreshFeed}
+                    disabled={isRefreshing}
+                    className="px-2.5 py-1 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-bold text-slate-200 flex items-center gap-1.5 transition-all disabled:opacity-50"
+                    title="Refresh Feed"
+                  >
+                    <RefreshCw className={`w-3 h-3 text-red-400 ${isRefreshing ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
+                  <span className="hidden sm:inline text-[11px] font-mono text-slate-400">
+                    {activeVideo ? 'Tap any video to switch' : 'Tap any video to watch'}
+                  </span>
+                </div>
               </div>
 
               {isLoadingInitial && videos.length === 0 ? (

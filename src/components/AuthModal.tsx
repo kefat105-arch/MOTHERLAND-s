@@ -454,27 +454,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <button
                       key={acc.id}
                       type="button"
-                      onClick={() => {
+                      onClick={async () => {
                         setLoginError('');
                         api.setToken(acc.token);
-                        api
-                          .getCurrentUser()
-                          .then((res) => {
-                            if (res.user) {
-                              onAuthSuccess(res.user);
-                              onClose();
-                            } else {
-                              api.setToken('');
-                              setLoginError(
-                                `Saved session for ${acc.displayName} expired. Please enter your password.`
-                              );
-                              setLoginIdentifier(acc.username || '');
+                        if (acc.refreshToken) {
+                          api.setRefreshToken(acc.refreshToken);
+                        }
+                        try {
+                          let res = await api.getCurrentUser();
+                          if (!res.user && !res.transientError && acc.refreshToken) {
+                            const refreshed = await api.refreshSession(acc.refreshToken);
+                            if (refreshed.ok && refreshed.user) {
+                              res = { user: refreshed.user, isGuest: false, transientError: false };
                             }
-                          })
-                          .catch(() => {
+                          }
+                          if (res.user) {
+                            onAuthSuccess(res.user);
+                            onClose();
+                          } else if (res.transientError) {
+                            setLoginError('Network unavailable. Please try again in a moment.');
+                          } else {
                             api.setToken('');
-                            setLoginError('Could not restore saved session. Please sign in.');
-                          });
+                            api.setRefreshToken('');
+                            setLoginError(
+                              `Saved session for ${acc.displayName} expired. Please enter your password.`
+                            );
+                            setLoginIdentifier(acc.username || '');
+                          }
+                        } catch {
+                          setLoginError('Network unavailable. Could not verify saved session.');
+                        }
                       }}
                       className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] hover:border-[var(--accent-primary-border)] text-[11px] text-[var(--text-primary)] transition-colors"
                     >

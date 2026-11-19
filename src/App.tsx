@@ -81,6 +81,7 @@ import { setTranslationPrefs } from './services/translationService';
 import { TranslatableText } from './components/common/ExpandableTranslatableText';
 import { playNotificationChime, playMessageChime } from './utils/motherlandSoundEngine';
 import { parseMotherlandDeepLink } from './utils/videoShareLinks';
+import { isInlineVideoActive, getActiveInlineVideoIds } from './utils/youtubePlayerBridge';
 
 const LEGACY_FEED_CACHE_KEY = 'motherland_instant_cache_v1';
 const LAST_USER_HINT_KEY = 'motherland_last_user_hint';
@@ -119,8 +120,8 @@ export default function App() {
 
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
 
-  // Core Data (always fetched fresh on app launch — never restored from stale feed cache)
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  // Core Data (user session restored optimistically from durable local profile, feeds fetched fresh)
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => api.getCachedUser());
   const [authToken, setAuthToken] = useState<string>(() => api.getToken() || '');
   const [posts, setPosts] = useState<Post[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
@@ -507,23 +508,35 @@ export default function App() {
     setWatchSuppressionUserId(currentUser?.id || null);
   }, [currentUser?.id]);
 
-  // Live 7-day watched suppression pruning across all feeds & shorts list
+  // Live permanent watched suppression pruning across feeds while protecting any currently playing video
   useEffect(() => {
     const onSuppressed = () => {
       setPosts((prev) => {
-        const next = filterUnsuppressed(prev, true);
+        const next = prev.filter(
+          (p) => isInlineVideoActive(p.id, p.externalId) || filterUnsuppressed([p], true).length > 0
+        );
         homeFeedCacheRef.current[feedFilterRef.current] = {
           ...homeFeedCacheRef.current[feedFilterRef.current],
           posts: next,
         };
         return next;
       });
-      setShorts((prev) => filterUnsuppressed(prev).filter(isEligibleShortVideo));
-      setLongVideos((prev) => filterUnsuppressed(prev));
+      setShorts((prev) =>
+        shortsPlayerState.isOpen ? prev : filterUnsuppressed(prev).filter(isEligibleShortVideo)
+      );
+      setLongVideos((prev) =>
+        prev.filter(
+          (v) =>
+            (activeWatchVideo &&
+              (v.id === activeWatchVideo.id ||
+                (v.youtubeId && v.youtubeId === activeWatchVideo.youtubeId))) ||
+            filterUnsuppressed([v]).length > 0
+        )
+      );
     };
     window.addEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
     return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
-  }, []);
+  }, [shortsPlayerState.isOpen, activeWatchVideo]);
 
   const refreshPeopleDiscovery = useCallback(async (userOverride?: UserProfile | null) => {
     const activeUser = userOverride !== undefined ? userOverride : currentUserRef.current;
@@ -586,17 +599,39 @@ export default function App() {
     const preserveExisting = options?.preserveExisting !== false;
 
     if (nextPosts.length > 0) {
+      // Protect any inline video post currently playing/paused by the user so refresh never kills playback
+      const activeIds = getActiveInlineVideoIds();
+      let finalPosts = nextPosts;
+      if (activeIds.size > 0 && currentVisible.length > 0) {
+        const activeVisible = currentVisible.filter((p) =>
+          isInlineVideoActive(p.id, p.externalId)
+        );
+        if (activeVisible.length > 0) {
+          const nextKeySet = new Set<string>();
+          nextPosts.forEach((p) => {
+            nextKeySet.add(p.id);
+            if (p.externalId) nextKeySet.add(p.externalId);
+          });
+          const missingActive = activeVisible.filter(
+            (p) => !nextKeySet.has(p.id) && (!p.externalId || !nextKeySet.has(p.externalId))
+          );
+          if (missingActive.length > 0) {
+            finalPosts = [...missingActive, ...nextPosts];
+          }
+        }
+      }
+
       homeFeedCacheRef.current[targetFilter] = {
-        posts: nextPosts,
+        posts: finalPosts,
         page: 1,
         hasMore: nextHasMore,
         ytCursor: nextYtCursor,
         loadedOnce: true,
       };
-      recordShownFeedIds('home', nextPosts.map((p) => p.externalId || p.id));
+      recordShownFeedIds('home', finalPosts.map((p) => p.externalId || p.id));
       if (feedFilterRef.current === targetFilter) {
         homeYtCursorRef.current = nextYtCursor;
-        setPosts(nextPosts);
+        setPosts(finalPosts);
         setHomeFeedPage(1);
         setHasMorePosts(nextHasMore);
         setHomeFeedError('');
@@ -762,12 +797,19 @@ export default function App() {
         setHomeFeedError('');
       }
       const userData = await api.getCurrentUser().catch(() => ({
-        user: null,
+        user: api.getCachedUser(),
         sessionExpired: false,
         transientError: true,
       }));
-      const resolvedUser = userData.user || null;
+      let resolvedUser = userData.user || null;
+
+      if (!resolvedUser && userData.transientError) {
+        // Never log out on temporary network/server error: keep cached user logged in
+        resolvedUser = api.getCachedUser() || currentUserRef.current || null;
+      }
+
       setWatchSuppressionUserId(resolvedUser?.id || null);
+      setAuthToken(api.getToken() || '');
 
       if (resolvedUser) {
         if (resolvedUser.translationPrefs) {
@@ -787,8 +829,9 @@ export default function App() {
         } catch {
           // ignore
         }
-      } else if (userData.sessionExpired && !(userData as any).transientError) {
+      } else if (userData.sessionExpired && !userData.transientError) {
         api.setToken('');
+        api.setRefreshToken('');
         setAuthToken('');
         let hint: { displayName?: string; username?: string; avatar?: string } | null = null;
         try {
@@ -816,11 +859,11 @@ export default function App() {
       ] = await Promise.allSettled([
         api.getYouTubeStatus(),
         api.getPlatformAdapters(),
-        api.getToken() ? api.getNotifications() : Promise.resolve({ notifications: [] }),
+        resolvedUser || api.getToken() ? api.getNotifications() : Promise.resolve({ notifications: [] }),
         api.getStories(postsController.signal),
         api.getShorts(false, 1, 12, '', shortsController.signal),
         api.getLongVideos(false, longController.signal),
-        api.getToken() ? api.getConversations() : Promise.resolve({ totalUnread: 0 }),
+        resolvedUser || api.getToken() ? api.getConversations() : Promise.resolve({ totalUnread: 0 }),
         api.getPosts(activeFilterAtStart, 'all', 1, 10, '', postsController.signal),
       ]);
 
@@ -1178,7 +1221,10 @@ export default function App() {
       if (document.visibilityState !== 'visible') return;
       if (shortsPlayerState.isOpen || (activeWatchVideo && !isWatchMinimized)) return;
       lastAutoRefreshRef.current = Date.now();
-      void loadPosts(feedFilterRef.current, true, { preserveExisting: true, silent: true });
+      // Skip disturbing Home feed when an inline video is actively playing in Home
+      if (getActiveInlineVideoIds().size === 0) {
+        void loadPosts(feedFilterRef.current, true, { preserveExisting: true, silent: true });
+      }
       api
         .getStories()
         .then((s) => {
@@ -1197,12 +1243,13 @@ export default function App() {
 
     const onFocusOrVisibility = () => {
       if (document.visibilityState === 'visible') {
-        if (!currentUserRef.current && api.getToken()) {
+        if (!currentUserRef.current && (api.getToken() || api.getRefreshToken() || api.getCachedUser())) {
           api
             .getCurrentUser()
             .then((res) => {
               if (res.user) {
                 setCurrentUser(res.user);
+                setAuthToken(api.getToken() || '');
                 if (res.user.translationPrefs) setTranslationPrefs(res.user.translationPrefs);
               }
             })

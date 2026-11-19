@@ -198,7 +198,16 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     }
   }, []);
 
+  const currentIndexRef = useRef(currentIndex);
+  currentIndexRef.current = currentIndex;
+  const shortsLengthRef = useRef(0);
+  shortsLengthRef.current = shorts.length;
+
   useEffect(() => {
+    // Only run full reset on initial mount or when list is empty; never destroy active playing Short on background refreshSignal
+    if (refreshSignal > 0 && shortsLengthRef.current > 0) {
+      return;
+    }
     seenIdsRef.current.clear();
     loadInitialShorts();
     return () => {
@@ -206,16 +215,21 @@ export const YouTubeShortsFeed: React.FC<YouTubeShortsFeedProps> = ({
     };
   }, [refreshSignal, loadInitialShorts]);
 
-  // Listen for live watch suppression events
+  // Listen for live watch suppression events without removing the active or already-viewed Shorts
   useEffect(() => {
     const onSuppressed = () => {
-      setShorts((prev) => filterUnsuppressed(prev));
+      setShorts((prev) =>
+        prev.filter((item, idx) => {
+          if (idx <= currentIndexRef.current) return true;
+          return filterUnsuppressed([item]).length > 0;
+        })
+      );
     };
     window.addEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
     return () => window.removeEventListener(WATCH_SUPPRESSED_EVENT, onSuppressed);
   }, []);
 
-  // Track 4s genuine Short watch for 7-day suppression + preload next 3 Short thumbnails
+  // Track 4s genuine Short watch for permanent suppression + preload next 3 Short thumbnails
   const activeShortForTrack = shorts[currentIndex];
   const nextShortForPreload = shorts[currentIndex + 1];
   const activeYtSlot = (currentIndex % 2) as 0 | 1;

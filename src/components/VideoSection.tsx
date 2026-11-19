@@ -259,17 +259,17 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
     }
   }, [watchingVideo?.id]);
 
-  // Smart Staleness Auto-Refresh: quietly updates unseen recommendations without disturbing active player
-  useEffect(() => {
-    if (refreshSignal <= 0) return;
-    let active = true;
-    Promise.all([
-      api.getLongVideos(false).catch(() => ({ videos: initialLongVideos })),
-      api.getYouTubeFeed({ type: 'long', category: selectedCategory, page: 1, pageSize: 16 }).catch(() => ({ items: [] })),
-      api.getYouTubeFeed({ type: 'shorts', category: 'shorts', page: 1, pageSize: 12 }).catch(() => ({ items: [] })),
-    ]).then(([localLong, ytLong, ytShorts]) => {
-      if (!active) return;
-      const merged = [...(localLong.videos || [])];
+  const [isRefreshingFeed, setIsRefreshingFeed] = useState(false);
+
+  const refreshRecommendationsOnly = useCallback(async () => {
+    setIsRefreshingFeed(true);
+    try {
+      const [localLong, ytLong, ytShorts] = await Promise.all([
+        api.getLongVideos(false).catch(() => ({ videos: initialLongVideos })),
+        api.getYouTubeFeed({ type: 'long', category: selectedCategory, page: 1, pageSize: 16 }).catch(() => ({ items: [] })),
+        api.getYouTubeFeed({ type: 'shorts', category: 'shorts', page: 1, pageSize: 12 }).catch(() => ({ items: [] })),
+      ]);
+      const merged: LongVideo[] = [...(localLong.videos || [])];
       const seen = new Set(merged.map((v) => v.youtubeId || v.id));
       for (const item of ytLong.items || []) {
         const key = item.youtubeId || item.id;
@@ -280,6 +280,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
       }
       if (merged.length > 0) {
         const cleaned = filterUnsuppressed(merged);
+        if (watchingVideo && !cleaned.some((v) => v.id === watchingVideo.id || (watchingVideo.youtubeId && v.youtubeId === watchingVideo.youtubeId))) {
+          cleaned.unshift(watchingVideo);
+        }
         setLongVideosList(cleaned);
         setNextPageToken((ytLong as any).nextPageToken || null);
         setHasMoreVideos(Boolean((ytLong as any).nextPageToken) || (ytLong as any).hasMore !== false);
@@ -320,10 +323,15 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           return [...localOnly, ...filterEligibleShorts(nextYtShorts).filter((s) => !sSeen.has(s.youtubeId || s.id))];
         });
       }
-    });
-    return () => {
-      active = false;
-    };
+    } finally {
+      setIsRefreshingFeed(false);
+    }
+  }, [initialLongVideos, selectedCategory, watchingVideo]);
+
+  // Smart Staleness Auto-Refresh: quietly updates unseen recommendations without disturbing active player
+  useEffect(() => {
+    if (refreshSignal <= 0) return;
+    void refreshRecommendationsOnly();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSignal]);
 
@@ -1573,6 +1581,18 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               </div>
             )}
           </div>
+
+          <button
+            type="button"
+            onClick={() => void refreshRecommendationsOnly()}
+            disabled={isRefreshingFeed}
+            className="h-11 px-3 rounded-xl ml-glass hover:border-[var(--accent-primary)] text-[var(--text-primary)] text-xs font-bold flex items-center gap-1.5 flex-shrink-0 disabled:opacity-50"
+            title="Refresh Video Feed"
+            aria-label="Refresh Video Feed"
+          >
+            <RefreshCw className={`w-4 h-4 text-[var(--accent-primary)] ${isRefreshingFeed ? 'animate-spin' : ''}`} />
+            <span className="hidden md:inline">Refresh</span>
+          </button>
 
           {onOpenWatchHistory && (
             <button

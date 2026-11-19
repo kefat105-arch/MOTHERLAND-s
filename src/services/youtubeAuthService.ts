@@ -24,7 +24,12 @@ export interface GoogleAuthUser {
   description?: string;
 }
 
-import { setStoredAuthToken, saveAccount } from '../api';
+import {
+  setStoredAuthToken,
+  setStoredRefreshToken,
+  setCachedUserProfile,
+  saveAccount,
+} from '../api';
 
 const GOOGLE_AUTH_STORAGE_KEY = 'motherland_google_youtube_auth_v3';
 const RUNTIME_CLIENT_ID_KEY = 'motherland_google_client_id_runtime_v1';
@@ -318,8 +323,12 @@ export async function syncGoogleUserWithBackend(
       const json = await res.json();
       if (json.token) {
         setStoredAuthToken(json.token);
+        if (json.refreshToken) {
+          setStoredRefreshToken(json.refreshToken);
+        }
         if (json.user) {
-          saveAccount(json.user, json.token);
+          setCachedUserProfile(json.user);
+          saveAccount(json.user, json.token, json.refreshToken);
         }
       }
       return json.user;

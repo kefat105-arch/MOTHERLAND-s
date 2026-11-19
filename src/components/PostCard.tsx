@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Share2,
   Bookmark,
@@ -34,6 +34,15 @@ import {
 } from './common/ExpandableTranslatableText';
 import { VideoBrandOverlay } from './common/VideoBrandOverlay';
 import { buildMotherlandPostShareUrl } from '../utils/videoShareLinks';
+import {
+  buildYouTubeEmbedUrl,
+  registerYTListeningHandshake,
+  parseYTInfoMessage,
+  markInlineVideoActive,
+  markInlineVideoInactive,
+} from '../utils/youtubePlayerBridge';
+import { recordWatchedSuppression } from '../services/watchSuppression';
+import { api } from '../api';
 
 interface PostCardProps {
   post: Post;
@@ -83,8 +92,22 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [isVideoBuffering, setIsVideoBuffering] = useState(false);
 
   const inlineVideoRef = useRef<HTMLVideoElement | null>(null);
+  const inlineYtIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const inlineYtPlayingRef = useRef(false);
+  const inlineWatchedSecRef = useRef(0);
+  const inlineSuppressedRef = useRef(false);
   const carouselStartXRef = useRef<number | null>(null);
   const lightboxStartYRef = useRef<number | null>(null);
+  const ytEmbedUrl =
+    post.source === 'youtube' && post.externalId
+      ? buildYouTubeEmbedUrl(post.externalId, {
+          autoplay: false,
+          controls: true,
+          loop: false,
+          mute: false,
+          nocookie: false,
+        })
+      : '';
 
   useBackHandler(
     `post-lightbox-${post.id}`,
@@ -92,6 +115,102 @@ export const PostCard: React.FC<PostCardProps> = ({
     () => setLightboxIndex(null),
     75
   );
+
+  // Clean up active inline video registration on unmount
+  useEffect(() => {
+    return () => {
+      markInlineVideoInactive(post.id);
+    };
+  }, [post.id]);
+
+  // Listen to YouTube inline iframe playback state for active-video protection & permanent watch suppression
+  useEffect(() => {
+    if (post.source !== 'youtube' || !post.externalId) return;
+    const ytId = post.externalId;
+
+    const onMessage = (event: MessageEvent) => {
+      const parsed = parseYTInfoMessage(event, inlineYtIframeRef.current);
+      if (!parsed) return;
+      if (typeof parsed.playerState === 'number') {
+        if (parsed.playerState === 1 || parsed.playerState === 3) {
+          inlineYtPlayingRef.current = parsed.playerState === 1;
+          markInlineVideoActive(post.id, ytId);
+        } else if (parsed.playerState === 2) {
+          inlineYtPlayingRef.current = false;
+          // Keep paused video protected so user can resume without feed refresh removing it
+          markInlineVideoActive(post.id, ytId);
+        } else if (parsed.playerState === 0) {
+          inlineYtPlayingRef.current = false;
+          markInlineVideoInactive(post.id);
+        }
+      }
+    };
+
+    const tick = window.setInterval(() => {
+      if (inlineYtPlayingRef.current && !inlineSuppressedRef.current) {
+        inlineWatchedSecRef.current += 1;
+        if (inlineWatchedSecRef.current >= 5) {
+          inlineSuppressedRef.current = true;
+          recordWatchedSuppression(post.id, ytId);
+          if (api.getToken()) {
+            api
+              .recordWatchProgress({
+                videoId: post.id,
+                youtubeId: ytId,
+                videoType: 'long',
+                source: 'youtube',
+                title: post.content || 'YouTube Video',
+                thumbnailUrl: post.thumbnailUrl,
+                channelTitle: post.author.displayName,
+                watchSeconds: inlineWatchedSecRef.current,
+                durationSeconds: 60,
+                completed: false,
+              })
+              .catch(() => {});
+          }
+        }
+      }
+    }, 1000);
+
+    window.addEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      window.clearInterval(tick);
+    };
+  }, [post.id, post.source, post.externalId, post.content, post.thumbnailUrl, post.author.displayName]);
+
+  // Track native inline video watch progress for permanent suppression
+  useEffect(() => {
+    if (post.source === 'youtube' || post.mediaType !== 'video' || !post.mediaUrl) return;
+    const tick = window.setInterval(() => {
+      if (isVideoPlaying && !inlineSuppressedRef.current) {
+        inlineWatchedSecRef.current += 1;
+        const vid = inlineVideoRef.current;
+        const dur = vid?.duration && Number.isFinite(vid.duration) ? vid.duration : 0;
+        const pos = vid?.currentTime && Number.isFinite(vid.currentTime) ? vid.currentTime : 0;
+        if (inlineWatchedSecRef.current >= 5 || (dur > 0 && pos / dur >= 0.25)) {
+          inlineSuppressedRef.current = true;
+          recordWatchedSuppression(post.id);
+          if (api.getToken()) {
+            api
+              .recordWatchProgress({
+                videoId: post.id,
+                videoType: 'long',
+                source: 'motherland',
+                title: post.content || 'MOTHERLAND Video',
+                thumbnailUrl: post.thumbnailUrl,
+                channelTitle: post.author.displayName,
+                watchSeconds: Math.round(Math.max(inlineWatchedSecRef.current, pos)),
+                durationSeconds: Math.round(dur),
+                completed: dur > 0 ? pos / dur >= 0.85 : false,
+              })
+              .catch(() => {});
+          }
+        }
+      }
+    }, 1000);
+    return () => window.clearInterval(tick);
+  }, [isVideoPlaying, post.id, post.source, post.mediaType, post.mediaUrl, post.content, post.thumbnailUrl, post.author.displayName]);
 
   const isLiked = post.userInteractions?.isLiked;
   const currentReaction = post.userInteractions?.reaction || 'like';
@@ -465,9 +584,14 @@ export const PostCard: React.FC<PostCardProps> = ({
 
         {/* Media Display: YouTube / Video / Multi-Image Swipe Carousel */}
         {post.source === 'youtube' && post.externalId ? (
-          <div className="relative aspect-video w-full bg-black overflow-hidden">
+          <div
+            className="relative aspect-video w-full bg-black overflow-hidden"
+            onPointerDown={() => markInlineVideoActive(post.id, post.externalId)}
+          >
             <iframe
-              src={`https://www.youtube.com/embed/${post.externalId}?modestbranding=1&rel=0&playsinline=1`}
+              ref={inlineYtIframeRef}
+              src={ytEmbedUrl}
+              onLoad={() => registerYTListeningHandshake(inlineYtIframeRef.current, 101)}
               title={post.content || 'YouTube Video'}
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               allowFullScreen
@@ -488,15 +612,21 @@ export const PostCard: React.FC<PostCardProps> = ({
               onPlay={() => {
                 setHasVideoStarted(true);
                 setIsVideoPlaying(true);
+                markInlineVideoActive(post.id, post.id);
               }}
               onPlaying={() => {
                 setHasVideoStarted(true);
                 setIsVideoPlaying(true);
                 setIsVideoBuffering(false);
+                markInlineVideoActive(post.id, post.id);
               }}
               onPause={() => {
                 setIsVideoPlaying(false);
                 setIsVideoBuffering(false);
+              }}
+              onEnded={() => {
+                setIsVideoPlaying(false);
+                markInlineVideoInactive(post.id);
               }}
               onWaiting={() => setIsVideoBuffering(true)}
               onCanPlay={() => setIsVideoBuffering(false)}

@@ -156,3 +156,37 @@ export function recordVideoSwitchMetric(entry: {
     w.__MOTHERLAND_VIDEO_METRICS__.shift();
   }
 }
+
+// Registry of inline feed videos currently playing/active so background or manual
+// feed refreshes and watch-suppression events never interrupt active playback.
+const activeInlineVideos = new Map<string, { postId: string; videoId?: string; updatedAt: number }>();
+
+export function markInlineVideoActive(postId: string, videoId?: string): void {
+  if (!postId) return;
+  activeInlineVideos.set(postId, { postId, videoId, updatedAt: Date.now() });
+}
+
+export function markInlineVideoInactive(postId: string): void {
+  if (!postId) return;
+  activeInlineVideos.delete(postId);
+}
+
+export function isInlineVideoActive(postId?: string, videoId?: string): boolean {
+  if (postId && activeInlineVideos.has(postId)) return true;
+  if (videoId) {
+    for (const entry of activeInlineVideos.values()) {
+      if (entry.videoId === videoId) return true;
+    }
+  }
+  return false;
+}
+
+export function getActiveInlineVideoIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of activeInlineVideos.values()) {
+    ids.add(entry.postId);
+    if (entry.videoId) ids.add(entry.videoId);
+  }
+  return ids;
+}
+
