@@ -64,19 +64,26 @@ self.addEventListener('fetch', (event) => {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
   if (url.pathname.startsWith('/ws') || url.searchParams.has('t') && url.pathname.includes('@vite')) return;
 
-  // 1. Uploaded Media & Video Files (/uploads/, /api/media/file/)
-  if (url.pathname.startsWith('/uploads/') || url.pathname.startsWith('/api/media/')) {
+  // 1. Uploaded & Offline Media Video Files (/uploads/, /api/media/file/, /api/helper-bd/stream)
+  if (
+    url.pathname.startsWith('/uploads/') ||
+    url.pathname.startsWith('/api/media/') ||
+    url.pathname.startsWith('/api/helper-bd/stream')
+  ) {
     event.respondWith(
       (async () => {
         const mediaCache = await caches.open(MEDIA_CACHE);
-        // Check exact path match (ignoring query differences when needed)
-        const cached = (await mediaCache.match(url.pathname)) || (await mediaCache.match(req));
+        const cacheKey = url.pathname + url.search;
+        const cached =
+          (await mediaCache.match(cacheKey)) ||
+          (await mediaCache.match(url.pathname)) ||
+          (await mediaCache.match(req));
 
         try {
           const networkRes = await fetch(req);
           // Cache full 200 OK responses automatically (skip 206 partial streams unless full fetch done)
           if (networkRes && networkRes.status === 200 && !req.headers.get('range')) {
-            mediaCache.put(url.pathname, networkRes.clone()).catch(() => {});
+            mediaCache.put(cacheKey, networkRes.clone()).catch(() => {});
           }
           return networkRes;
         } catch {

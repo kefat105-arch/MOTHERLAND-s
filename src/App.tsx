@@ -25,6 +25,10 @@ import {
 import {
   useOfflineConnectivity,
   useOfflineVaultState,
+  getOfflinePosts,
+  getOfflineShorts,
+  getOfflineLongVideos,
+  getOfflineStories,
 } from './services/offlineVideoEngine';
 import { api } from './api';
 import type {
@@ -1284,10 +1288,21 @@ export default function App() {
     };
   }, [activeNav, shortsPlayerState.isOpen, activeWatchVideo, isWatchMinimized]);
 
-  // Automatically switch back from Offline Mode to Online Mode on reconnect without interrupting playback
+  // Automatically switch feeds to offline playable MP4s when data turns off, and restore online feeds on reconnect
   useEffect(() => {
     if (!isOnline) {
       wasOfflineRef.current = true;
+      void Promise.all([
+        getOfflinePosts(),
+        getOfflineShorts(),
+        getOfflineLongVideos(),
+        getOfflineStories(),
+      ]).then(([offPosts, offShorts, offLong, offStories]) => {
+        if (offPosts.length > 0) setPosts(offPosts);
+        if (offShorts.length > 0) setShorts(offShorts);
+        if (offLong.length > 0) setLongVideos(offLong);
+        if (offStories.length > 0) setStories(offStories);
+      });
       return;
     }
     if (wasOfflineRef.current) {
