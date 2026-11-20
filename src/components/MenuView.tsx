@@ -41,7 +41,6 @@ import type { LongVideo, Post, ShortVideo, UserProfile, YouTubeOAuthStatus } fro
 import { PWAInstallButton } from './PWAInstallButton';
 import { WaveLogo } from './wave/WaveLogo';
 import { MotherlandLiveIcon } from './live/MotherlandLiveIcon';
-import { HelperBdDownloader } from './HelperBdDownloader';
 import {
   SUPPORTED_TRANSLATION_LANGUAGES,
   setTranslationPrefs,
@@ -536,11 +535,11 @@ export const MenuView: React.FC<MenuViewProps> = ({
         {offlineVault.isSyncing && offlineVault.syncProgress && (
           <div className="space-y-1.5 p-2.5 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)]">
             <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--text-primary)]">
-              <span className="flex items-center gap-1.5 min-w-0">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--accent-primary)] shrink-0" />
-                <span className="truncate">{offlineVault.statusMessage || 'ডাউনলোড হচ্ছে...'}</span>
+              <span className="flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--accent-primary)]" />
+                <span>ডাউনলোড হচ্ছে...</span>
               </span>
-              <span className="font-mono tabular-nums shrink-0">
+              <span className="font-mono tabular-nums">
                 {offlineVault.syncProgress.done}/{offlineVault.syncProgress.total}
               </span>
             </div>
@@ -868,9 +867,6 @@ export const MenuView: React.FC<MenuViewProps> = ({
           <span>Log Out</span>
         </button>
       )}
-
-      {/* 7. Helper BD — Universal Social Media Video Search & Watermark-Free Downloader (Very Bottom) */}
-      <HelperBdDownloader />
     </div>
   );
 };

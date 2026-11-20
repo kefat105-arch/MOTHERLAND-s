@@ -273,26 +273,12 @@ async function idbClearAllStores(): Promise<void> {
 
 function isCacheableMediaUrl(url?: string): url is string {
   if (!url || typeof url !== 'string') return false;
-  if (
-    url.startsWith('/uploads/') ||
-    url.startsWith('/api/media/') ||
-    url.startsWith('/api/helper-bd/stream')
-  ) {
-    return true;
-  }
-  if (
-    url.startsWith('https://i.ytimg.com/') ||
-    url.startsWith('https://yt3.ggpht.com/') ||
-    url.startsWith('https://archive.org/services/img/') ||
-    url.includes('tiktokcdn')
-  ) {
-    return true;
-  }
+  if (url.startsWith('/uploads/') || url.startsWith('/api/media/')) return true;
+  if (url.startsWith('https://i.ytimg.com/') || url.startsWith('https://yt3.ggpht.com/')) return true;
   if (
     typeof window !== 'undefined' &&
     (url.startsWith(window.location.origin + '/uploads/') ||
-      url.startsWith(window.location.origin + '/api/media/') ||
-      url.startsWith(window.location.origin + '/api/helper-bd/stream'))
+      url.startsWith(window.location.origin + '/api/media/'))
   ) {
     return true;
   }
@@ -301,20 +287,17 @@ function isCacheableMediaUrl(url?: string): url is string {
 
 function isSameOriginVideoFile(url: string): boolean {
   const norm = normalizeMediaKey(url);
-  return (
-    norm.startsWith('/uploads/') ||
-    norm.startsWith('/api/media/') ||
-    norm.startsWith('/api/helper-bd/stream')
-  );
+  return norm.startsWith('/uploads/') || norm.startsWith('/api/media/');
 }
 
-async function cacheSingleAsset(rawUrl: string): Promise<{ ok: boolean; bytes: number }> {
+async function cacheSingleAsset(rawUrl: string): Promise<boolean> {
   const normKey = normalizeMediaKey(rawUrl);
-  if (!normKey || !isCacheableMediaUrl(rawUrl)) return { ok: false, bytes: 0 };
+  if (!normKey || !isCacheableMediaUrl(rawUrl)) return false;
 
+  // Already in IndexedDB blob store?
   const existingBlob = await idbGetByKey<OfflineBlobRecord>(STORE_BLOBS, normKey);
   if (existingBlob && existingBlob.size > 0) {
-    return { ok: true, bytes: existingBlob.size };
+    return true;
   }
 
   const sameOrigin = isSameOriginVideoFile(rawUrl);
@@ -327,97 +310,75 @@ async function cacheSingleAsset(rawUrl: string): Promise<{ ok: boolean; bytes: n
       throw new Error('non-ok');
     }
 
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (sameOrigin && (ct.includes('application/json') || ct.includes('text/html'))) {
-      throw new Error('unexpected-text-payload');
-    }
-
-    const rawBlob = await res.blob();
-    if (rawBlob.size <= 0) {
-      throw new Error('empty-blob');
-    }
-    if (sameOrigin && rawBlob.size < 2048) {
-      throw new Error('truncated-media');
-    }
-
-    const mime =
-      rawBlob.type && !rawBlob.type.includes('octet-stream')
-        ? rawBlob.type
-        : sameOrigin
-        ? /\.(webm)(\?|$)/i.test(normKey)
-          ? 'video/webm'
-          : 'video/mp4'
-        : 'image/jpeg';
-    const typedBlob = new Blob([rawBlob], { type: mime });
-
+    // Store in CacheStorage (for Service Worker Range 206 requests)
     if (typeof caches !== 'undefined') {
       try {
         const cache = await caches.open(MEDIA_CACHE_NAME);
-        await cache.put(
-          normKey,
-          new Response(typedBlob, {
-            status: 200,
-            headers: {
-              'Content-Type': mime,
-              'Content-Length': String(typedBlob.size),
-            },
-          })
-        );
+        await cache.put(normKey, res.clone());
       } catch {
         // ignore cacheStorage quota errors
       }
     }
 
-    await idbPutBatch(STORE_BLOBS, [
-      {
-        key: normKey,
-        blob: typedBlob,
-        mimeType: mime,
-        size: typedBlob.size,
-        cachedAt: Date.now(),
-      } satisfies OfflineBlobRecord,
-    ]);
-    return { ok: true, bytes: typedBlob.size };
+    // Store real binary Blob directly inside IndexedDB so playback works even without SW!
+    const rawBlob = await res.blob();
+    if (rawBlob.size > 0) {
+      const mime =
+        rawBlob.type ||
+        (/\.(mp4|m4v)(\?|$)/i.test(normKey)
+          ? 'video/mp4'
+          : /\.(webm)(\?|$)/i.test(normKey)
+          ? 'video/webm'
+          : 'image/jpeg');
+      const typedBlob = rawBlob.type ? rawBlob : new Blob([rawBlob], { type: mime });
+      await idbPutBatch(STORE_BLOBS, [
+        {
+          key: normKey,
+          blob: typedBlob,
+          mimeType: mime,
+          size: typedBlob.size,
+          cachedAt: Date.now(),
+        } satisfies OfflineBlobRecord,
+      ]);
+      return true;
+    }
   } catch {
+    // Fallback for cross-origin images with no-cors into Cache Storage only
     if (!sameOrigin && typeof caches !== 'undefined') {
       try {
         const cache = await caches.open(MEDIA_CACHE_NAME);
         const res = await fetch(rawUrl, { mode: 'no-cors' });
         if (res && (res.ok || res.type === 'opaque')) {
           await cache.put(normKey, res.clone());
-          return { ok: true, bytes: 0 };
+          return true;
         }
       } catch {
         // ignore
       }
     }
   }
-  return { ok: false, bytes: 0 };
+  return false;
 }
 
-async function cacheAssetUrls(
-  urls: Array<string | undefined>,
-  onAssetDone?: (completed: number, total: number, bytesAdded: number) => void
-): Promise<Set<string>> {
+async function cacheAssetUrls(urls: Array<string | undefined>): Promise<Set<string>> {
   const unique = Array.from(new Set(urls.filter(isCacheableMediaUrl)));
   const succeeded = new Set<string>();
   if (unique.length === 0) return succeeded;
 
+  // Put same-origin MP4 video/media files FIRST so they are always downloaded completely!
   const prioritized = [
-    ...unique.filter((u) => isSameOriginVideoFile(u)),
+    ...unique.filter((u) => isSameOriginVideoFile(u) && /\.(mp4|webm|mov|m4v)(\?|$)/i.test(u)),
+    ...unique.filter((u) => isSameOriginVideoFile(u) && !/\.(mp4|webm|mov|m4v)(\?|$)/i.test(u)),
     ...unique.filter((u) => !isSameOriginVideoFile(u)),
   ];
 
-  let doneCount = 0;
   const chunkSize = 3;
   for (let i = 0; i < prioritized.length; i += chunkSize) {
     const slice = prioritized.slice(i, i + chunkSize);
     await Promise.all(
       slice.map(async (url) => {
-        const res = await cacheSingleAsset(url);
-        if (res.ok) succeeded.add(normalizeMediaKey(url));
-        doneCount += 1;
-        onAssetDone?.(doneCount, prioritized.length, res.bytes);
+        const ok = await cacheSingleAsset(url);
+        if (ok) succeeded.add(normalizeMediaKey(url));
       })
     );
   }
@@ -554,10 +515,11 @@ export async function getOfflineVaultSnapshot(): Promise<OfflineVaultSnapshot> {
 
   for (const r of records) {
     const videoKey = normalizeMediaKey(r.videoUrl);
-    const hasBlob = Boolean(videoKey && playableBlobKeys.has(videoKey));
-    if (!hasBlob) continue;
+    const hasBlob = Boolean(
+      r.hasFullVideoBlob || (videoKey && playableBlobKeys.has(videoKey))
+    );
+    if (hasBlob) playableFullCount += 1;
 
-    playableFullCount += 1;
     if (r.manualDownload) {
       manualCount += 1;
       downloadedIds.add(r.id);
@@ -566,10 +528,6 @@ export async function getOfflineVaultSnapshot(): Promise<OfflineVaultSnapshot> {
     }
 
     if (r.payload) {
-      const safePayload =
-        r.kind === 'post'
-          ? { ...r.payload, source: 'motherland', mediaType: 'video', mediaUrl: r.videoUrl }
-          : { ...r.payload, source: 'motherland', videoUrl: r.videoUrl };
       playableItems.push({
         id: r.id,
         kind: r.kind,
@@ -580,25 +538,27 @@ export async function getOfflineVaultSnapshot(): Promise<OfflineVaultSnapshot> {
           r.payload?.author?.displayName ||
           'MOTHERLAND',
         thumbnailUrl: r.thumbnailUrl,
-        hasFullVideoBlob: true,
+        hasFullVideoBlob: hasBlob,
         manualDownload: r.manualDownload,
-        source: 'motherland',
-        payload: safePayload,
+        source: r.source,
+        payload: r.payload,
       });
     }
   }
 
-  // Sort: manual downloads first, then newest
+  // Sort: full playable MP4 videos first, then manual downloads, then newest
   playableItems.sort(
-    (a, b) => Number(b.manualDownload) - Number(a.manualDownload)
+    (a, b) =>
+      Number(b.hasFullVideoBlob) - Number(a.hasFullVideoBlob) ||
+      Number(b.manualDownload) - Number(a.manualDownload)
   );
 
   return {
     targetPackCount: fastMeta.targetPackCount,
-    syncedCount: playableFullCount,
+    syncedCount: fastMeta.syncedCount || records.length,
     manualCount,
     playableFullCount,
-    totalVideosCount: playableFullCount,
+    totalVideosCount: records.length,
     lastSyncedAt: fastMeta.lastSyncedAt,
     downloadedIds,
     playableBlobKeys,
@@ -646,58 +606,11 @@ export function useOfflineVaultState(): OfflineVaultSnapshot {
   return snap;
 }
 
-async function tryResolvePlayableStreamUrl(sourceUrl?: string): Promise<string | undefined> {
-  if (!sourceUrl) return undefined;
-  try {
-    const r = await fetch('/api/helper-bd/resolve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: sourceUrl }),
-    });
-    if (!r.ok) return undefined;
-    const j = await r.json();
-    const item = j?.item;
-    const fmt = item?.formats?.find(
-      (f: any) => f.ext === 'mp4' && f.proxyVerified && f.proxyStreamUrl
-    );
-    return fmt?.proxyStreamUrl || (item?.playUrl?.startsWith('/api/helper-bd/stream') ? item.playUrl : undefined);
-  } catch {
-    return undefined;
-  }
-}
-
 export async function saveVideoOffline(video: LongVideo): Promise<boolean> {
   if (!video?.id) return false;
-  let targetVideoUrl = video.videoUrl;
-  let effectivePayload: LongVideo = video;
-
-  if (!targetVideoUrl && video.youtubeId) {
-    const resolvedStream = await tryResolvePlayableStreamUrl(
-      `https://www.youtube.com/watch?v=${encodeURIComponent(video.youtubeId)}`
-    );
-    if (resolvedStream) {
-      targetVideoUrl = resolvedStream;
-      effectivePayload = {
-        ...video,
-        source: 'motherland',
-        videoUrl: resolvedStream,
-      };
-    }
-  }
-
-  const cachedKeys = await cacheAssetUrls([
-    targetVideoUrl,
-    video.thumbnailUrl,
-    video.channel?.avatar,
-  ]);
-  const videoKey = normalizeMediaKey(targetVideoUrl);
+  const cachedKeys = await cacheAssetUrls([video.videoUrl, video.thumbnailUrl, video.channel?.avatar]);
+  const videoKey = normalizeMediaKey(video.videoUrl);
   const hasFullVideoBlob = Boolean(videoKey && cachedKeys.has(videoKey));
-
-  if (!hasFullVideoBlob) {
-    inMemoryStatus = `এই ভিডিওটি সরাসরি MP4 ডাউনলোড করা যায়নি — অফলাইন প্যাকের (40/80/120) ভিডিওগুলো সম্পূর্ণ অফলাইনে চলবে`;
-    notifyVaultUpdated();
-    return false;
-  }
 
   const rec: OfflineStoredVideoRecord = {
     id: video.id,
@@ -706,18 +619,19 @@ export async function saveVideoOffline(video: LongVideo): Promise<boolean> {
     cachedAt: Date.now(),
     title: video.title,
     thumbnailUrl: video.thumbnailUrl,
-    videoUrl: targetVideoUrl,
+    videoUrl: video.videoUrl,
     youtubeId: video.youtubeId,
-    source: effectivePayload.source,
-    hasFullVideoBlob: true,
-    payload: effectivePayload,
+    source: video.source,
+    hasFullVideoBlob,
+    payload: video,
   };
   await idbPutBatch(STORE_VIDEOS, [rec]);
   const all = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
-  const playableOnly = all.filter((r) => r.hasFullVideoBlob);
   const meta = readFastMeta();
-  writeFastMeta({ ...meta, syncedCount: playableOnly.length, lastSyncedAt: Date.now() });
-  inMemoryStatus = `"${video.title}" পূর্ণ ভিডিও অফলাইনের জন্য ডাউনলোড সম্পন্ন হয়েছে ✓`;
+  writeFastMeta({ ...meta, syncedCount: all.length, lastSyncedAt: Date.now() });
+  inMemoryStatus = hasFullVideoBlob
+    ? `"${video.title}" পূর্ণ ভিডিও অফলাইনের জন্য ডাউনলোড সম্পন্ন হয়েছে ✓`
+    : `"${video.title}" প্রিভিউ অফলাইনে সেভ হয়েছে (YouTube ভিডিও প্লে করতে নেট প্রয়োজন)`;
   notifyVaultUpdated();
   return true;
 }
@@ -744,36 +658,9 @@ export async function saveUnifiedVideoOffline(vid: UnifiedVideo): Promise<boolea
 
 export async function saveShortOffline(short: ShortVideo): Promise<boolean> {
   if (!short?.id) return false;
-  let targetVideoUrl = short.videoUrl;
-  let effectivePayload: ShortVideo = short;
-
-  if (!targetVideoUrl && short.youtubeId) {
-    const resolvedStream = await tryResolvePlayableStreamUrl(
-      `https://www.youtube.com/shorts/${encodeURIComponent(short.youtubeId)}`
-    );
-    if (resolvedStream) {
-      targetVideoUrl = resolvedStream;
-      effectivePayload = {
-        ...short,
-        source: 'motherland',
-        videoUrl: resolvedStream,
-      };
-    }
-  }
-
-  const cachedKeys = await cacheAssetUrls([
-    targetVideoUrl,
-    short.thumbnailUrl,
-    short.creator?.avatar,
-  ]);
-  const videoKey = normalizeMediaKey(targetVideoUrl);
+  const cachedKeys = await cacheAssetUrls([short.videoUrl, short.thumbnailUrl, short.creator?.avatar]);
+  const videoKey = normalizeMediaKey(short.videoUrl);
   const hasFullVideoBlob = Boolean(videoKey && cachedKeys.has(videoKey));
-
-  if (!hasFullVideoBlob) {
-    inMemoryStatus = `এই শর্টস ভিডিওটি সরাসরি ডাউনলোড করা যায়নি`;
-    notifyVaultUpdated();
-    return false;
-  }
 
   const rec: OfflineStoredVideoRecord = {
     id: short.id,
@@ -782,21 +669,19 @@ export async function saveShortOffline(short: ShortVideo): Promise<boolean> {
     cachedAt: Date.now(),
     title: short.title,
     thumbnailUrl: short.thumbnailUrl,
-    videoUrl: targetVideoUrl,
+    videoUrl: short.videoUrl,
     youtubeId: short.youtubeId,
-    source: effectivePayload.source,
-    hasFullVideoBlob: true,
-    payload: effectivePayload,
+    source: short.source,
+    hasFullVideoBlob,
+    payload: short,
   };
   await idbPutBatch(STORE_VIDEOS, [rec]);
   const all = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
   const meta = readFastMeta();
-  writeFastMeta({
-    ...meta,
-    syncedCount: all.filter((r) => r.hasFullVideoBlob).length,
-    lastSyncedAt: Date.now(),
-  });
-  inMemoryStatus = `"${short.title}" শর্টস পূর্ণ ভিডিও ডাউনলোড সম্পন্ন ✓`;
+  writeFastMeta({ ...meta, syncedCount: all.length, lastSyncedAt: Date.now() });
+  inMemoryStatus = hasFullVideoBlob
+    ? `"${short.title}" শর্টস পূর্ণ ভিডিও ডাউনলোড সম্পন্ন ✓`
+    : `"${short.title}" শর্টস প্রিভিউ সেভ হয়েছে`;
   notifyVaultUpdated();
   return true;
 }
@@ -812,12 +697,6 @@ export async function savePostVideoOffline(post: Post): Promise<boolean> {
   ]);
   const videoKey = normalizeMediaKey(post.mediaUrl);
   const hasFullVideoBlob = Boolean(videoKey && cachedKeys.has(videoKey));
-
-  if (post.mediaType === 'video' && !hasFullVideoBlob) {
-    inMemoryStatus = `পোস্টের ভিডিওটি অফলাইনে ডাউনলোড করা যায়নি`;
-    notifyVaultUpdated();
-    return false;
-  }
 
   const rec: OfflineStoredVideoRecord = {
     id: post.id,
@@ -835,14 +714,10 @@ export async function savePostVideoOffline(post: Post): Promise<boolean> {
   await idbPutBatch(STORE_VIDEOS, [rec]);
   const all = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
   const meta = readFastMeta();
-  writeFastMeta({
-    ...meta,
-    syncedCount: all.filter((r) => r.hasFullVideoBlob).length,
-    lastSyncedAt: Date.now(),
-  });
+  writeFastMeta({ ...meta, syncedCount: all.length, lastSyncedAt: Date.now() });
   inMemoryStatus = hasFullVideoBlob
     ? `ভিডিও পোস্ট পূর্ণ ফাইলসহ অফলাইনে সেভ হয়েছে ✓`
-    : `পোস্ট অফলাইনে সেভ হয়েছে ✓`;
+    : `পোস্ট প্রিভিউ অফলাইনে সেভ হয়েছে`;
   notifyVaultUpdated();
   return true;
 }
@@ -852,7 +727,7 @@ export async function removeOfflineVideo(videoId: string): Promise<void> {
   await idbDeleteKey(STORE_VIDEOS, videoId);
   const all = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
   const meta = readFastMeta();
-  writeFastMeta({ ...meta, syncedCount: all.filter((r) => r.hasFullVideoBlob).length });
+  writeFastMeta({ ...meta, syncedCount: all.length });
   notifyVaultUpdated();
 }
 
@@ -881,9 +756,8 @@ export async function clearAllOfflineCache(): Promise<void> {
 }
 
 /**
- * Prepares & downloads REAL playable MP4 binary Blobs up to `targetCount` (40 / 80 / 120 / 240 / 480).
- * Every item stored in the Offline Vault from this pack is verified with a real video Blob in IndexedDB
- * so turning off mobile data / Wi-Fi plays every single downloaded video cleanly offline!
+ * Prepares & caches a complete offline video + post library up to `targetCount` (40 / 80 / 120 / 240 / 480).
+ * Prioritizes full MP4 downloads for ALL native MOTHERLAND videos, Shorts & posts FIRST so they play offline 100%.
  */
 export async function prepareOfflinePack(targetCount: OfflinePackTier): Promise<number> {
   if (inMemorySyncing) {
@@ -897,150 +771,222 @@ export async function prepareOfflinePack(targetCount: OfflinePackTier): Promise<
 
   inMemorySyncing = true;
   inMemoryProgress = { done: 0, total: targetCount };
-  inMemoryStatus = `${targetCount}টি আসল ভিডিও প্যাক খোঁজা হচ্ছে...`;
+  inMemoryStatus = `${targetCount}টি ভিডিও ও হোম ফিড ডাউনলোড হচ্ছে...`;
   writeFastMeta({ ...readFastMeta(), targetPackCount: targetCount });
   notifyVaultUpdated();
 
   const existingRecords = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
   const byId = new Map<string, OfflineStoredVideoRecord>();
   for (const r of existingRecords) {
-    if (r.manualDownload && r.hasFullVideoBlob) byId.set(r.id, r);
+    if (r.manualDownload) byId.set(r.id, r);
   }
 
   const collectedPosts: Post[] = [];
-  const candidateRecords: OfflineStoredVideoRecord[] = [];
+  const nativeVideoUrls: Array<string | undefined> = [];
   const thumbUrls: Array<string | undefined> = [];
 
   try {
-    // 1. Fetch Home Feed posts & Stories (native MOTHERLAND videos + photos for offline Home feed)
-    await Promise.all([
-      (async () => {
-        try {
-          for (let pPage = 1; pPage <= 3; pPage++) {
-            const r = await fetch(`/api/posts?feedType=all&source=motherland&page=${pPage}&pageSize=15`);
-            if (!r.ok) break;
-            const data = await r.json();
-            const list: Post[] = data?.posts || [];
-            if (list.length === 0) break;
-            for (const p of list) {
-              collectedPosts.push(p);
-              thumbUrls.push(p.thumbnailUrl, p.author?.avatar, ...(p.images || []));
-            }
-          }
-        } catch {
-          // ignore
+    // 1. Fetch ALL native MOTHERLAND long videos FIRST (playable 100% offline!)
+    try {
+      const r = await fetch('/api/videos/long?includeWatched=1');
+      if (r.ok) {
+        const data = await r.json();
+        for (const v of (data?.videos || []) as LongVideo[]) {
+          if (byId.size >= targetCount) break;
+          byId.set(v.id, {
+            id: v.id,
+            kind: 'long',
+            manualDownload: byId.get(v.id)?.manualDownload || false,
+            cachedAt: Date.now(),
+            title: v.title,
+            thumbnailUrl: v.thumbnailUrl,
+            videoUrl: v.videoUrl,
+            youtubeId: v.youtubeId,
+            source: v.source,
+            hasFullVideoBlob: Boolean(v.videoUrl),
+            payload: v,
+          });
+          if (v.videoUrl) nativeVideoUrls.push(v.videoUrl);
+          thumbUrls.push(v.thumbnailUrl, v.channel?.avatar);
         }
-      })(),
-      (async () => {
-        try {
-          const sr = await fetch('/api/stories');
-          if (sr.ok) {
-            const sData = await sr.json();
-            if (Array.isArray(sData?.stories) && sData.stories.length > 0) {
-              await idbPutBatch(STORE_STORIES, sData.stories.slice(0, 30));
-              for (const st of sData.stories) {
-                if (st.mediaType !== 'video') thumbUrls.push(st.mediaUrl);
-                thumbUrls.push(st.author?.avatar);
-              }
-            }
-          }
-        } catch {
-          // ignore
-        }
-      })(),
-    ]);
-
-    // 2. Fetch FULL Playable MP4 Pack Catalog from server (/api/offline/pack-catalog)
-    // Includes ALL native MOTHERLAND MP4s + verified TikWM / Archive MP4 clips up to targetCount!
-    const catRes = await fetch(`/api/offline/pack-catalog?count=${targetCount}`);
-    if (catRes.ok) {
-      const catJson = await catRes.json();
-      const entries: any[] = Array.isArray(catJson?.items) ? catJson.items : [];
-      for (const entry of entries) {
-        if (!entry?.id || !entry?.videoUrl) continue;
-        if (byId.has(entry.id)) continue;
-        const rec: OfflineStoredVideoRecord = {
-          id: entry.id,
-          kind: entry.kind === 'short' ? 'short' : 'long',
-          manualDownload: false,
-          cachedAt: Date.now(),
-          title: entry.title || 'Offline Video',
-          thumbnailUrl: entry.thumbnailUrl,
-          videoUrl: entry.videoUrl,
-          source: 'motherland',
-          hasFullVideoBlob: false,
-          payload: entry.payload,
-        };
-        candidateRecords.push(rec);
-        thumbUrls.push(entry.thumbnailUrl, entry.authorAvatar);
       }
+    } catch {
+      // ignore
     }
 
-    // 3. Download REAL binary MP4 Blobs sequentially in batches of 3 until we fill `targetCount`!
-    const needed = Math.max(0, targetCount - byId.size);
-    let downloadedNow = 0;
-    let totalBytes = 0;
-    inMemoryProgress = { done: byId.size, total: Math.max(1, Math.min(targetCount, byId.size + candidateRecords.length)) };
-    inMemoryStatus = `ভিডিও ফাইল ডাউনলোড হচ্ছে (0/${targetCount})...`;
+    // 2. Fetch Home Feed posts (includes native MOTHERLAND video posts + photos!)
+    try {
+      for (let pPage = 1; pPage <= 5; pPage++) {
+        const r = await fetch(`/api/posts?feedType=all&source=all&page=${pPage}&pageSize=15`);
+        if (!r.ok) break;
+        const data = await r.json();
+        const list: Post[] = data?.posts || [];
+        if (list.length === 0) break;
+        for (const p of list) {
+          collectedPosts.push(p);
+          if (p.source === 'motherland' && p.mediaType === 'video' && p.mediaUrl) {
+            nativeVideoUrls.push(p.mediaUrl);
+            if (!byId.has(p.id) && byId.size < targetCount) {
+              byId.set(p.id, {
+                id: p.id,
+                kind: 'post',
+                manualDownload: false,
+                cachedAt: Date.now(),
+                title: p.content || p.author.displayName,
+                thumbnailUrl: p.thumbnailUrl,
+                videoUrl: p.mediaUrl,
+                source: p.source,
+                hasFullVideoBlob: true,
+                payload: p,
+              });
+            }
+          }
+          thumbUrls.push(p.thumbnailUrl, p.author?.avatar, ...(p.images || []));
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // 3. Fetch Shorts (prioritize native MOTHERLAND Shorts MP4s so vertical swipe plays offline!)
+    try {
+      const shortsBudget = Math.max(12, Math.round(targetCount * 0.25));
+      let sPage = 1;
+      let sToken = '';
+      let sCount = 0;
+      while (sCount < shortsBudget && sPage <= 8) {
+        const qs = new URLSearchParams({
+          includeWatched: '1',
+          page: String(sPage),
+          pageSize: '20',
+        });
+        if (sToken) qs.set('pageToken', sToken);
+        const r = await fetch(`/api/videos/shorts?${qs.toString()}`);
+        if (!r.ok) break;
+        const data = await r.json();
+        const list: ShortVideo[] = data?.shorts || [];
+        if (list.length === 0) break;
+        for (const s of list) {
+          if (sCount >= shortsBudget) break;
+          byId.set(s.id, {
+            id: s.id,
+            kind: 'short',
+            manualDownload: byId.get(s.id)?.manualDownload || false,
+            cachedAt: Date.now(),
+            title: s.title,
+            thumbnailUrl: s.thumbnailUrl,
+            videoUrl: s.videoUrl,
+            youtubeId: s.youtubeId,
+            source: s.source,
+            hasFullVideoBlob: Boolean(s.videoUrl),
+            payload: s,
+          });
+          if (s.videoUrl) nativeVideoUrls.push(s.videoUrl);
+          thumbUrls.push(s.thumbnailUrl, s.creator?.avatar);
+          sCount += 1;
+        }
+        sToken = data?.nextPageToken || '';
+        sPage += 1;
+        if (!sToken && list.length < 8) break;
+      }
+    } catch {
+      // ignore
+    }
+
+    // 4. Fetch Stories for offline Home carousel
+    try {
+      const sr = await fetch('/api/stories');
+      if (sr.ok) {
+        const sData = await sr.json();
+        if (Array.isArray(sData?.stories) && sData.stories.length > 0) {
+          await idbPutBatch(STORE_STORIES, sData.stories.slice(0, 30));
+          for (const st of sData.stories) {
+            if (st.mediaType === 'video' && st.mediaUrl) nativeVideoUrls.push(st.mediaUrl);
+            else thumbUrls.push(st.mediaUrl);
+            thumbUrls.push(st.author?.avatar);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    inMemoryProgress = { done: Math.min(targetCount, byId.size), total: targetCount };
     notifyVaultUpdated();
 
-    const batchSize = 3;
-    for (let i = 0; i < candidateRecords.length && downloadedNow < needed; i += batchSize) {
-      const slice = candidateRecords.slice(i, i + batchSize);
-      await Promise.all(
-        slice.map(async (rec) => {
-          if (!rec.videoUrl) return;
-          const res = await cacheSingleAsset(rec.videoUrl);
-          if (res.ok) {
-            rec.hasFullVideoBlob = true;
-            rec.cachedAt = Date.now();
-            byId.set(rec.id, rec);
-            downloadedNow += 1;
-            totalBytes += res.bytes;
+    // 5. Fill remaining slots up to targetCount from paginated Long feed
+    let page = 1;
+    let pageToken = '';
+    while (byId.size < targetCount && page <= 16) {
+      try {
+        const qs = new URLSearchParams({
+          type: 'long',
+          category: 'all',
+          page: String(page),
+          pageSize: '30',
+        });
+        if (pageToken) qs.set('pageToken', pageToken);
+        const r = await fetch(`/api/youtube/feed?${qs.toString()}`);
+        if (!r.ok) break;
+        const data = await r.json();
+        const items: LongVideo[] = data?.items || [];
+        if (items.length === 0) break;
+        for (const v of items) {
+          if (byId.size >= targetCount) break;
+          if (!byId.has(v.id)) {
+            byId.set(v.id, {
+              id: v.id,
+              kind: 'long',
+              manualDownload: false,
+              cachedAt: Date.now(),
+              title: v.title,
+              thumbnailUrl: v.thumbnailUrl,
+              videoUrl: v.videoUrl,
+              youtubeId: v.youtubeId,
+              source: v.source,
+              hasFullVideoBlob: Boolean(v.videoUrl),
+              payload: v,
+            });
+            if (v.videoUrl) nativeVideoUrls.push(v.videoUrl);
+            thumbUrls.push(v.thumbnailUrl, v.channel?.avatar);
           }
-        })
-      );
+        }
+        inMemoryProgress = { done: Math.min(targetCount, byId.size), total: targetCount };
+        notifyVaultUpdated();
 
-      // Persist progressively so even interrupting mid-pack keeps everything already downloaded!
-      const confirmedSlice = slice.filter((r) => r.hasFullVideoBlob);
-      if (confirmedSlice.length > 0) {
-        await idbPutBatch(STORE_VIDEOS, confirmedSlice);
+        pageToken = data?.nextPageToken || '';
+        page += 1;
+        if (!pageToken && items.length < 10) break;
+      } catch {
+        break;
       }
-
-      const mbText = (totalBytes / (1024 * 1024)).toFixed(1);
-      inMemoryProgress = {
-        done: Math.min(targetCount, byId.size),
-        total: targetCount,
-      };
-      inMemoryStatus = `${Math.min(targetCount, byId.size)}/${targetCount}টি আসল ভিডিও ডাউনলোড হচ্ছে (${mbText} MB)...`;
-      notifyVaultUpdated();
     }
 
-    // Cache thumbnails & feed posts in background without slowing MP4 downloads
+    // 6. Download & verify ALL native video MP4 blobs FIRST, then thumbnails!
+    const cachedVideoKeys = await cacheAssetUrls(nativeVideoUrls);
     void cacheAssetUrls(thumbUrls.slice(0, targetCount * 2));
+
+    // Update exact `hasFullVideoBlob` flags based on confirmed binary blobs
+    const allRecords = Array.from(byId.values()).map((r) => {
+      const k = normalizeMediaKey(r.videoUrl);
+      const confirmed = Boolean(k && cachedVideoKeys.has(k));
+      return { ...r, hasFullVideoBlob: confirmed };
+    });
+
+    await idbPutBatch(STORE_VIDEOS, allRecords);
     if (collectedPosts.length > 0) {
-      const downloadablePosts = collectedPosts.filter(
-        (p) => p.mediaType !== 'video' || (p.source === 'motherland' && Boolean(p.mediaUrl))
-      );
-      if (downloadablePosts.length > 0) {
-        await idbPutBatch(STORE_POSTS, downloadablePosts);
-      }
+      await idbPutBatch(STORE_POSTS, collectedPosts);
     }
 
-    const finalRecords = Array.from(byId.values()).filter((r) => r.hasFullVideoBlob);
-    const totalPlayable = finalRecords.length;
-    const totalMb = (totalBytes / (1024 * 1024)).toFixed(1);
-
+    const totalSaved = allRecords.length;
+    const fullCount = allRecords.filter((r) => r.hasFullVideoBlob).length;
     writeFastMeta({
       targetPackCount: targetCount,
-      syncedCount: totalPlayable,
+      syncedCount: totalSaved,
       lastSyncedAt: Date.now(),
     });
-    inMemoryStatus =
-      totalPlayable > 0
-        ? `${totalPlayable}টি আসল ভিডিও (${totalMb} MB) ডাউনলোড সম্পন্ন — এখন নেট বন্ধ করলেও প্লে হবে ✓`
-        : 'ভিডিও ডাউনলোড করা যায়নি — দয়া করে পুনরায় চেষ্টা করুন';
-    return totalPlayable;
+    inMemoryStatus = `${totalSaved}টি আইটেম ক্যাশড (পূর্ণ MP4 ভিডিও: ${fullCount}টি অফলাইনে চলবে ✓)`;
+    return totalSaved;
   } finally {
     inMemorySyncing = false;
     inMemoryProgress = null;
@@ -1048,76 +994,65 @@ export async function prepareOfflinePack(targetCount: OfflinePackTier): Promise<
   }
 }
 
-// Passive online mirroring (ONLY caches real native MOTHERLAND playable video posts/videos)
+// Passive online mirroring
 export async function mirrorOnlinePosts(posts: Post[]): Promise<void> {
   if (!posts || posts.length === 0) return;
   const meta = readFastMeta();
   const limit = meta.targetPackCount || 40;
-  const nativeOnly = posts
-    .filter((p) => p.source === 'motherland' || p.mediaType !== 'video')
-    .slice(0, limit);
-  if (nativeOnly.length > 0) {
-    await idbPutBatch(STORE_POSTS, nativeOnly);
-    const nativeUrls = nativeOnly
-      .filter((p) => p.source === 'motherland' && p.mediaType === 'video' && p.mediaUrl)
-      .map((p) => p.mediaUrl);
-    void cacheAssetUrls([...nativeUrls, ...nativeOnly.slice(0, 12).flatMap((p) => [p.thumbnailUrl, p.author?.avatar])]);
-  }
+  const slice = posts.slice(0, limit);
+  await idbPutBatch(STORE_POSTS, slice);
+  const nativeUrls = slice
+    .filter((p) => p.source === 'motherland' && p.mediaType === 'video' && p.mediaUrl)
+    .map((p) => p.mediaUrl);
+  void cacheAssetUrls([...nativeUrls, ...slice.slice(0, 12).flatMap((p) => [p.thumbnailUrl, p.author?.avatar])]);
 }
 
 export async function mirrorOnlineLongVideos(videos: LongVideo[]): Promise<void> {
   if (!videos || videos.length === 0) return;
-  const nativeVideos = videos.filter((v) => v.source === 'motherland' && v.videoUrl).slice(0, 20);
-  if (nativeVideos.length === 0) return;
-  for (const v of nativeVideos) {
-    if (!v.videoUrl) continue;
-    const existing = await idbGetByKey<OfflineStoredVideoRecord>(STORE_VIDEOS, v.id);
-    if (existing?.hasFullVideoBlob) continue;
-    const ok = await cacheSingleAsset(v.videoUrl);
-    if (ok.ok) {
-      await idbPutBatch(STORE_VIDEOS, [
-        {
-          id: v.id,
-          kind: 'long',
-          manualDownload: false,
-          cachedAt: Date.now(),
-          title: v.title,
-          thumbnailUrl: v.thumbnailUrl,
-          videoUrl: v.videoUrl,
-          source: 'motherland',
-          hasFullVideoBlob: true,
-          payload: v,
-        } satisfies OfflineStoredVideoRecord,
-      ]);
-    }
-  }
+  const meta = readFastMeta();
+  const limit = meta.targetPackCount || 40;
+  const existing = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
+  if (existing.length >= limit) return;
+  const records: OfflineStoredVideoRecord[] = videos.slice(0, 30).map((v) => ({
+    id: v.id,
+    kind: 'long',
+    manualDownload: false,
+    cachedAt: Date.now(),
+    title: v.title,
+    thumbnailUrl: v.thumbnailUrl,
+    videoUrl: v.videoUrl,
+    youtubeId: v.youtubeId,
+    source: v.source,
+    hasFullVideoBlob: false,
+    payload: v,
+  }));
+  await idbPutBatch(STORE_VIDEOS, records);
+  const nativeUrls = videos.filter((v) => v.source === 'motherland' && v.videoUrl).map((v) => v.videoUrl);
+  void cacheAssetUrls([...nativeUrls, ...videos.slice(0, 10).map((v) => v.thumbnailUrl)]);
 }
 
 export async function mirrorOnlineShorts(shorts: ShortVideo[]): Promise<void> {
   if (!shorts || shorts.length === 0) return;
-  const nativeShorts = shorts.filter((s) => s.source === 'motherland' && s.videoUrl).slice(0, 20);
-  for (const s of nativeShorts) {
-    if (!s.videoUrl) continue;
-    const existing = await idbGetByKey<OfflineStoredVideoRecord>(STORE_VIDEOS, s.id);
-    if (existing?.hasFullVideoBlob) continue;
-    const ok = await cacheSingleAsset(s.videoUrl);
-    if (ok.ok) {
-      await idbPutBatch(STORE_VIDEOS, [
-        {
-          id: s.id,
-          kind: 'short',
-          manualDownload: false,
-          cachedAt: Date.now(),
-          title: s.title,
-          thumbnailUrl: s.thumbnailUrl,
-          videoUrl: s.videoUrl,
-          source: 'motherland',
-          hasFullVideoBlob: true,
-          payload: s,
-        } satisfies OfflineStoredVideoRecord,
-      ]);
-    }
-  }
+  const meta = readFastMeta();
+  const limit = meta.targetPackCount || 40;
+  const existing = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
+  if (existing.length >= limit) return;
+  const records: OfflineStoredVideoRecord[] = shorts.slice(0, 20).map((s) => ({
+    id: s.id,
+    kind: 'short',
+    manualDownload: false,
+    cachedAt: Date.now(),
+    title: s.title,
+    thumbnailUrl: s.thumbnailUrl,
+    videoUrl: s.videoUrl,
+    youtubeId: s.youtubeId,
+    source: s.source,
+    hasFullVideoBlob: false,
+    payload: s,
+  }));
+  await idbPutBatch(STORE_VIDEOS, records);
+  const nativeUrls = shorts.filter((s) => s.source === 'motherland' && s.videoUrl).map((s) => s.videoUrl);
+  void cacheAssetUrls(nativeUrls);
 }
 
 export async function mirrorOnlineStories(stories: Story[]): Promise<void> {
@@ -1135,49 +1070,15 @@ export async function getOfflineLongVideos(): Promise<LongVideo[]> {
   for (const r of all) {
     if (!r.payload) continue;
     const isPlayable = Boolean(
-      r.videoUrl && (blobKeys.has(normalizeMediaKey(r.videoUrl)) || r.hasFullVideoBlob)
+      r.hasFullVideoBlob || (r.videoUrl && blobKeys.has(normalizeMediaKey(r.videoUrl)))
     );
-    // Strict guarantee: NEVER return unplayable online-only placeholders offline!
-    if (!isPlayable) continue;
-
     if (r.kind === 'long') {
       items.push({
-        score: 10 + (r.manualDownload ? 2 : 0),
+        score: (isPlayable ? 10 : 0) + (r.manualDownload ? 2 : 0),
         cachedAt: r.cachedAt,
-        video: {
-          ...(r.payload as LongVideo),
-          source: 'motherland',
-          videoUrl: r.videoUrl || (r.payload as LongVideo).videoUrl,
-        },
+        video: r.payload as LongVideo,
       });
-    } else if (r.kind === 'short') {
-      const s = r.payload as ShortVideo;
-      items.push({
-        score: 8 + (r.manualDownload ? 2 : 0),
-        cachedAt: r.cachedAt,
-        video: {
-          id: s.id,
-          source: 'motherland',
-          videoUrl: r.videoUrl || s.videoUrl,
-          thumbnailUrl: s.thumbnailUrl || '',
-          title: s.title,
-          description: s.caption || '',
-          duration: formatDurationShort(s.durationSeconds),
-          channel: {
-            id: s.creator?.id || 'motherland',
-            title: s.creator?.name || 'MOTHERLAND',
-            avatar: s.creator?.avatar || '',
-            isVerified: s.creator?.isVerified,
-          },
-          stats: {
-            views: s.stats?.views || 0,
-            likes: s.stats?.likes || 0,
-            comments: s.stats?.comments || 0,
-          },
-          publishedAt: 'অফলাইন ✓',
-        },
-      });
-    } else if (r.kind === 'post' && r.payload.mediaUrl) {
+    } else if (r.kind === 'post' && isPlayable && r.payload.mediaUrl) {
       const p = r.payload as Post;
       items.push({
         score: 9 + (r.manualDownload ? 2 : 0),
@@ -1209,29 +1110,21 @@ export async function getOfflineLongVideos(): Promise<LongVideo[]> {
     .map((i) => i.video);
 }
 
-function formatDurationShort(sec?: number): string {
-  const s = Math.max(1, Math.round(sec || 30));
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return `${m}:${rem < 10 ? '0' : ''}${rem}`;
-}
-
 export async function getOfflineShorts(): Promise<ShortVideo[]> {
   const all = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
   const blobKeys = new Set(await idbGetAllKeys(STORE_BLOBS));
   return all
-    .filter((r) => {
-      if (r.kind !== 'short' || !r.payload) return false;
-      return Boolean(
-        r.videoUrl && (blobKeys.has(normalizeMediaKey(r.videoUrl)) || r.hasFullVideoBlob)
+    .filter((r) => r.kind === 'short' && r.payload)
+    .sort((a, b) => {
+      const aFull = Boolean(a.hasFullVideoBlob || (a.videoUrl && blobKeys.has(normalizeMediaKey(a.videoUrl))));
+      const bFull = Boolean(b.hasFullVideoBlob || (b.videoUrl && blobKeys.has(normalizeMediaKey(b.videoUrl))));
+      return (
+        Number(bFull) - Number(aFull) ||
+        Number(b.manualDownload) - Number(a.manualDownload) ||
+        b.cachedAt - a.cachedAt
       );
     })
-    .sort((a, b) => Number(b.manualDownload) - Number(a.manualDownload) || b.cachedAt - a.cachedAt)
-    .map((r) => ({
-      ...(r.payload as ShortVideo),
-      source: 'motherland',
-      videoUrl: r.videoUrl || (r.payload as ShortVideo).videoUrl,
-    }));
+    .map((r) => r.payload as ShortVideo);
 }
 
 export async function getOfflinePosts(): Promise<Post[]> {
@@ -1239,65 +1132,24 @@ export async function getOfflinePosts(): Promise<Post[]> {
   const videoRecs = await idbGetAll<OfflineStoredVideoRecord>(STORE_VIDEOS);
   const blobKeys = new Set(await idbGetAllKeys(STORE_BLOBS));
   const byId = new Map<string, Post>();
-
   for (const r of videoRecs) {
-    if (!r.hasFullVideoBlob || !r.videoUrl) continue;
-    const isCached = blobKeys.has(normalizeMediaKey(r.videoUrl));
-    if (!isCached) continue;
-
     if (r.kind === 'post' && r.payload?.id) {
-      byId.set(r.payload.id, {
-        ...(r.payload as Post),
-        source: 'motherland',
-        mediaType: 'video',
-        mediaUrl: r.videoUrl,
-      });
-    } else if (r.kind === 'long' || r.kind === 'short') {
-      // Surface downloaded offline MP4 videos right in the Home feed when offline too!
-      const pTitle = r.title;
-      const authorName =
-        r.payload?.channel?.title || r.payload?.creator?.name || 'Offline Vault';
-      const authorAvatar =
-        r.payload?.channel?.avatar || r.payload?.creator?.avatar || '';
-      byId.set(`offline_post_${r.id}`, {
-        id: `offline_post_${r.id}`,
-        source: 'motherland',
-        mediaType: 'video',
-        mediaUrl: r.videoUrl,
-        thumbnailUrl: r.thumbnailUrl || '',
-        content: pTitle,
-        author: {
-          id: r.payload?.channel?.id || r.payload?.creator?.id || 'motherland',
-          username: 'offline',
-          displayName: authorName,
-          avatar: authorAvatar,
-          isVerified: true,
-        },
-        createdAt: 'অফলাইনে ডাউনলোডেড ✓',
-        hashtags: Array.isArray(r.payload?.hashtags) ? r.payload.hashtags : [],
-        audience: 'public',
-        stats: {
-          likes: r.payload?.stats?.likes || 0,
-          comments: r.payload?.stats?.comments || 0,
-          shares: 0,
-        },
-      });
+      byId.set(r.payload.id, r.payload as Post);
     }
   }
-
   for (const p of allPosts) {
-    if (!p?.id || byId.has(p.id)) continue;
-    // Skip unplayable external video posts when offline
-    if (p.mediaType === 'video' && (!p.mediaUrl || !blobKeys.has(normalizeMediaKey(p.mediaUrl)))) {
-      continue;
+    if (p?.id && !byId.has(p.id)) {
+      byId.set(p.id, p);
     }
-    byId.set(p.id, p);
   }
-
+  // Put MOTHERLAND native playable videos & posts FIRST when offline!
   return Array.from(byId.values()).sort((a, b) => {
     const aPlayable = Boolean(a.mediaUrl && blobKeys.has(normalizeMediaKey(a.mediaUrl)));
     const bPlayable = Boolean(b.mediaUrl && blobKeys.has(normalizeMediaKey(b.mediaUrl)));
-    return Number(bPlayable) - Number(aPlayable);
+    return (
+      Number(bPlayable) - Number(aPlayable) ||
+      Number(b.source === 'motherland') - Number(a.source === 'motherland')
+    );
   });
 }
 

@@ -58,14 +58,13 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const isYouTube = Boolean(video?.source === 'youtube' && video?.youtubeId);
   const { isOnline } = useOfflineConnectivity();
-  const hasOfflineNativeVideo = !isOnline && Boolean(video?.videoUrl);
-  const isYouTube = !hasOfflineNativeVideo && Boolean(video?.source === 'youtube' && video?.youtubeId);
   const resolvedNativeUrl = useOfflineMediaSrc(
     !isYouTube && video?.videoUrl ? video.videoUrl : undefined,
-    !isOnline
+    false
   );
-  const resolvedPosterUrl = useOfflineMediaSrc(video?.thumbnailUrl, !isOnline);
+  const resolvedPosterUrl = useOfflineMediaSrc(video?.thumbnailUrl, false);
   const [fallbackBlobUrl, setFallbackBlobUrl] = useState<string>('');
   const [viewportWidth, setViewportWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 390

@@ -261,9 +261,8 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const nextShortItem = items[currentIndex + 1] || null;
   const activeSlot = (currentIndex % 2) as 0 | 1;
   const preloadSlot = ((currentIndex + 1) % 2) as 0 | 1;
-  const hasOfflineShortMp4 = !isOnline && Boolean(currentShort?.videoUrl);
-  const isYouTube = !hasOfflineShortMp4 && Boolean(currentShort?.source === 'youtube' && currentShort?.youtubeId);
-  const resolvedCurrentThumb = useOfflineMediaSrc(currentShort?.thumbnailUrl, !isOnline);
+  const isYouTube = Boolean(currentShort?.source === 'youtube' && currentShort?.youtubeId);
+  const resolvedCurrentThumb = useOfflineMediaSrc(currentShort?.thumbnailUrl, false);
 
   // Resolve cached IndexedDB Blob URLs for native MOTHERLAND Shorts slots
   useEffect(() => {
@@ -273,7 +272,7 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
     }
     let cancelled = false;
     const resolveSlot = async (slotIdx: 0 | 1, item: ShortVideo | null | undefined) => {
-      if (!item || !item.videoUrl || (isOnline && item.source === 'youtube')) {
+      if (!item || item.source === 'youtube' || !item.videoUrl) {
         if (!cancelled) {
           setSlotNativeSrcs((prev) => {
             if (prev[slotIdx] === '') return prev;

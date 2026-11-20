@@ -71,13 +71,6 @@ import {
   scoreAndDistributeFeedPosts,
   createEmptyRecommendationProfile,
 } from './src/server/recommendationEngine.ts';
-import {
-  getOfflinePlayablePackCatalog,
-  searchHelperBdCatalog,
-  resolveSocialMediaVideo,
-  proxyHelperBdStream,
-  looksLikeUrl,
-} from './src/server/helperBdEngine.ts';
 
 dotenv.config();
 
@@ -6392,84 +6385,6 @@ app.get('/api/videos/long', ah(async (req: Request, res: Response) => {
   res.json({
     videos: prioritizeFreshItems(visible, excludeIds, `${seed}_long`),
   });
-}));
-
-// Real MP4 Offline Pack Catalog (40 / 80 / 120 / 240 / 480 playable videos with zero fake stubs)
-app.get('/api/offline/pack-catalog', ah(async (req: Request, res: Response) => {
-  const count = Math.min(480, Math.max(10, parseInt(String(req.query.count || '40'), 10) || 40));
-  const [nativeVideos, nativeShorts, allPosts] = await Promise.all([
-    db.getLongVideos(),
-    db.getShortVideos(),
-    db.getAllPosts(),
-  ]);
-  const items = await getOfflinePlayablePackCatalog(count, nativeVideos, nativeShorts, allPosts);
-  res.json({
-    count: items.length,
-    items,
-  });
-}));
-
-// Helper BD Universal Social Media Search & Watermark-Free Video Downloader API
-app.get('/api/helper-bd/search', ah(async (req: Request, res: Response) => {
-  const q = String(req.query.q || '').trim();
-  if (!q) {
-    return res.json({ mode: 'search', items: [] });
-  }
-  const [nativeVideos, nativeShorts] = await Promise.all([
-    db.getLongVideos(),
-    db.getShortVideos(),
-  ]);
-
-  let youtubeItems: any[] = [];
-  if (!looksLikeUrl(q)) {
-    try {
-      const searchData = await fetchFromYouTubeApi('search', {
-        part: 'snippet',
-        q,
-        type: 'video',
-        maxResults: '10',
-      });
-      const videoIds = (searchData?.items || [])
-        .map((it: any) => it?.id?.videoId)
-        .filter(Boolean);
-      if (videoIds.length > 0) {
-        const statsData = await fetchFromYouTubeApi('videos', {
-          part: 'snippet,contentDetails,statistics',
-          id: videoIds.join(','),
-        });
-        youtubeItems = (statsData?.items || []).map(mapYouTubeVideoDetailsToItem);
-      }
-    } catch {
-      // Fallback to native & direct Archive MP4 results cleanly
-    }
-  }
-
-  const result = await searchHelperBdCatalog({
-    query: q,
-    nativeVideos,
-    nativeShorts,
-    youtubeItems,
-  });
-  res.json(result);
-}));
-
-app.post('/api/helper-bd/resolve', ah(async (req: Request, res: Response) => {
-  const targetUrl = String(req.body?.url || req.query?.url || '').trim();
-  if (!targetUrl) {
-    return res.status(400).json({ error: 'MISSING_URL', message: 'Please provide a valid video URL.' });
-  }
-  const resolved = await resolveSocialMediaVideo(targetUrl);
-  if (!resolved) {
-    return res.status(404).json({
-      error: 'RESOLVE_FAILED',
-      message: 'Could not extract a downloadable video from this link right now. Please check the URL or try another public video.',
-    });
-  }
-  res.json({ item: resolved });
-}));
-
-app.get('/api/helper-bd/stream', ah(async (req: Request, res: Response) => {
-  await proxyHelperBdStream(req, res);
 }));
 
 // MOTHERLAND-Native Video, Short & Post Deep-Link Resolver

@@ -37,8 +37,6 @@ import {
   useOfflineConnectivity,
   useOfflineMediaSrc,
   normalizeMediaKey,
-  getOfflineLongVideos,
-  getOfflineShorts,
 } from '../services/offlineVideoEngine';
 
 const OfflineMediaImage: React.FC<{
@@ -237,7 +235,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const isSavedOffline = (v: LongVideo) =>
     offlineVault.downloadedIds.has(v.id) || (v.youtubeId ? offlineVault.downloadedIds.has(v.youtubeId) : false);
   const isPlayableOffline = (v: LongVideo) => {
-    if (!v.videoUrl) return false;
+    if (v.source === 'youtube' || !v.videoUrl) return false;
     return offlineVault.playableBlobKeys.has(normalizeMediaKey(v.videoUrl));
   };
 
@@ -407,24 +405,10 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
 
   // Smart Staleness Auto-Refresh: quietly updates unseen recommendations without disturbing active player
   useEffect(() => {
-    if (refreshSignal <= 0 || !isOnline) return;
+    if (refreshSignal <= 0) return;
     void refreshRecommendationsOnly();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshSignal, isOnline]);
-
-  // Immediate swap to downloaded playable offline MP4 library when internet disconnects
-  useEffect(() => {
-    if (isOnline) return;
-    let active = true;
-    void Promise.all([getOfflineLongVideos(), getOfflineShorts()]).then(([offLong, offShorts]) => {
-      if (!active) return;
-      if (offLong.length > 0) setLongVideosList(offLong);
-      if (offShorts.length > 0) setShortsCarousel(offShorts);
-    });
-    return () => {
-      active = false;
-    };
-  }, [isOnline, offlineVault.playableFullCount]);
+  }, [refreshSignal]);
 
   // Load initial Video Homepage data cleanly (NO autoplay)
   useEffect(() => {
@@ -1717,20 +1701,26 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
     );
   }
 
-  // Split Recommended Videos cleanly — when Offline, ONLY show genuinely playable cached MP4 videos first!
-  const offlinePlayableLong = longVideosList.filter(isPlayableOffline);
+  // Split Recommended Videos cleanly into initial & secondary batches around Category Discovery & Shorts
   const displayedLongVideos = !isOnline
-    ? offlinePlayableLong.length > 0
-      ? offlinePlayableLong
-      : longVideosList.filter((v) => v.source !== 'youtube' && Boolean(v.videoUrl))
+    ? [...longVideosList].sort(
+        (a, b) => Number(isPlayableOffline(b)) - Number(isPlayableOffline(a))
+      )
     : longVideosList;
-  const offlinePlayableShorts = shortsCarousel.filter((s) =>
-    Boolean(s.videoUrl && offlineVault.playableBlobKeys.has(normalizeMediaKey(s.videoUrl)))
-  );
   const displayedShorts = !isOnline
-    ? offlinePlayableShorts.length > 0
-      ? offlinePlayableShorts
-      : shortsCarousel.filter((s) => s.source !== 'youtube' && Boolean(s.videoUrl))
+    ? [...shortsCarousel].sort((a, b) => {
+        const aPlayable = Boolean(
+          a.source !== 'youtube' &&
+            a.videoUrl &&
+            offlineVault.playableBlobKeys.has(normalizeMediaKey(a.videoUrl))
+        );
+        const bPlayable = Boolean(
+          b.source !== 'youtube' &&
+            b.videoUrl &&
+            offlineVault.playableBlobKeys.has(normalizeMediaKey(b.videoUrl))
+        );
+        return Number(bPlayable) - Number(aPlayable);
+      })
     : shortsCarousel;
   const topRecommended = displayedLongVideos.slice(0, 6);
   const moreRecommended = displayedLongVideos.slice(6);
