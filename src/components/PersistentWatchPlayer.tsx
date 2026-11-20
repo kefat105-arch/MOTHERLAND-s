@@ -12,11 +12,7 @@ import {
 import { warmVideoThumbnail } from '../utils/videoShareLinks';
 import { recordWatchedSuppression } from '../services/watchSuppression';
 import { VideoBrandOverlay } from './common/VideoBrandOverlay';
-import {
-  resolveOfflineMediaUrl,
-  useOfflineConnectivity,
-  useOfflineMediaSrc,
-} from '../services/offlineVideoEngine';
+import { resolveOfflineMediaUrl, useOfflineConnectivity } from '../services/offlineVideoEngine';
 
 interface PersistentWatchPlayerProps {
   video: LongVideo | null;
@@ -58,14 +54,8 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const isYouTube = Boolean(video?.source === 'youtube' && video?.youtubeId);
   const { isOnline } = useOfflineConnectivity();
-  const resolvedNativeUrl = useOfflineMediaSrc(
-    !isYouTube && video?.videoUrl ? video.videoUrl : undefined,
-    false
-  );
-  const resolvedPosterUrl = useOfflineMediaSrc(video?.thumbnailUrl, false);
-  const [fallbackBlobUrl, setFallbackBlobUrl] = useState<string>('');
+  const [resolvedNativeUrl, setResolvedNativeUrl] = useState<string>('');
   const [viewportWidth, setViewportWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 390
   );
@@ -75,6 +65,8 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
     width: number;
     height: number;
   } | null>(null);
+
+  const isYouTube = Boolean(video?.source === 'youtube' && video?.youtubeId);
 
   // Persistent YouTube iframe initial URL lock so loadVideoById reuses the SAME iframe across switches!
   const [ytBaseEmbedUrl, setYtBaseEmbedUrl] = useState<string>('');
@@ -150,14 +142,20 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
     return () => window.clearTimeout(revealTimer);
   }, [video?.id, video?.youtubeId, isYouTube]);
 
-  // Reset fallback Blob URL on video switch and reveal immediately if YouTube offline preview
+  // Resolve cached offline native video URL cleanly when offline
   useEffect(() => {
-    setFallbackBlobUrl('');
-    if (isYouTube && !isOnline) {
-      setFrameReady(true);
-      setIsBuffering(false);
+    let cancelled = false;
+    if (!isYouTube && video?.videoUrl && !isOnline) {
+      void resolveOfflineMediaUrl(video.videoUrl).then((u) => {
+        if (!cancelled) setResolvedNativeUrl(u || '');
+      });
+    } else {
+      setResolvedNativeUrl('');
     }
-  }, [video?.id, isYouTube, isOnline]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isYouTube, video?.videoUrl, isOnline]);
 
   // Preload upNextVideo thumbnail + native stream metadata/buffer when idle
   useEffect(() => {
@@ -388,8 +386,8 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
 
   return (
     <>
-      {/* Hidden preloader for upcoming native Up-Next video stream (online only) */}
-      {isOnline && upNextVideo && upNextVideo.source !== 'youtube' && upNextVideo.videoUrl && (
+      {/* Hidden preloader for upcoming native Up-Next video stream */}
+      {upNextVideo && upNextVideo.source !== 'youtube' && upNextVideo.videoUrl && (
         <video
           key={`upnext_preload_${upNextVideo.id}`}
           src={upNextVideo.videoUrl}
@@ -461,9 +459,9 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
         className="bg-black shadow-xl group"
       >
         {/* Crisp Thumbnail Transition Backdrop — Prevents black frame while next video swaps in */}
-        {(resolvedPosterUrl || video.thumbnailUrl) && (
+        {video.thumbnailUrl && (
           <img
-            src={resolvedPosterUrl || video.thumbnailUrl}
+            src={video.thumbnailUrl}
             alt=""
             aria-hidden="true"
             className={`absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-200 z-[6] ${
@@ -475,9 +473,9 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
         {/* Persistent Reused YouTube IFrame OR Persistent Reused Native Video Node */}
         {isYouTube && !isOnline ? (
           <div className="relative z-[8] w-full h-full flex flex-col items-center justify-center bg-black/85 text-center p-4">
-            {(resolvedPosterUrl || video.thumbnailUrl) && (
+            {video.thumbnailUrl && (
               <img
-                src={resolvedPosterUrl || video.thumbnailUrl}
+                src={video.thumbnailUrl}
                 alt={video.title}
                 className="absolute inset-0 w-full h-full object-cover opacity-30"
               />
@@ -514,22 +512,12 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
           <video
             ref={nativeVideoRef}
             key="native-watch-persistent-video"
-            src={fallbackBlobUrl || resolvedNativeUrl || video.videoUrl}
-            poster={resolvedPosterUrl || video.thumbnailUrl || undefined}
+            src={resolvedNativeUrl || video.videoUrl}
+            poster={video.thumbnailUrl || undefined}
             preload="auto"
             autoPlay
             playsInline
             muted={isMuted}
-            onError={() => {
-              if (video.videoUrl && !fallbackBlobUrl) {
-                void resolveOfflineMediaUrl(video.videoUrl, true).then((u) => {
-                  const activeSrc = fallbackBlobUrl || resolvedNativeUrl || video.videoUrl;
-                  if (u && u !== activeSrc) {
-                    setFallbackBlobUrl(u);
-                  }
-                });
-              }
-            }}
             onClick={() => {
               if (showFloatingMiniBar) onExpand();
               else togglePlayPause();

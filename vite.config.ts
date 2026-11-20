@@ -22,7 +22,6 @@ export default defineConfig(() => {
               handler: 'CacheFirst',
               options: {
                 cacheName: 'motherland-offline-media-v1',
-                rangeRequests: true,
                 expiration: { maxEntries: 500, maxAgeSeconds: 30 * 24 * 60 * 60 },
                 cacheableResponse: { statuses: [0, 200] },
               },

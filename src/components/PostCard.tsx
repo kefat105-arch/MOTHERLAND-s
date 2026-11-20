@@ -18,15 +18,12 @@ import {
   Ban,
   Download,
   CheckCircle2,
-  WifiOff,
 } from 'lucide-react';
 import {
   savePostVideoOffline,
   removeOfflineVideo,
   useOfflineVaultState,
   resolveOfflineMediaUrl,
-  useOfflineMediaSrc,
-  useOfflineConnectivity,
 } from '../services/offlineVideoEngine';
 import type { Post, ReactionType, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
@@ -101,13 +98,7 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [hasVideoStarted, setHasVideoStarted] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [isVideoBuffering, setIsVideoBuffering] = useState(false);
-  const [fallbackVideoUrl, setFallbackVideoUrl] = useState<string>('');
-  const { isOnline } = useOfflineConnectivity();
-  const resolvedVideoUrl = useOfflineMediaSrc(
-    post.mediaType === 'video' ? post.mediaUrl : undefined,
-    false
-  );
-  const resolvedThumbUrl = useOfflineMediaSrc(post.thumbnailUrl, false);
+  const [offlineMediaUrl, setOfflineMediaUrl] = useState<string>('');
   const offlineVault = useOfflineVaultState();
   const isVideoPost = post.mediaType === 'video' || post.source === 'youtube';
   const isSavedOffline =
@@ -139,13 +130,21 @@ export const PostCard: React.FC<PostCardProps> = ({
     75
   );
 
-  // Reset fallback Blob URL and clean up inline video activity tracking on unmount
+  // Clean up active inline video registration on unmount & resolve cached offline native video URL
   useEffect(() => {
-    setFallbackVideoUrl('');
+    let cancelled = false;
+    if (post.mediaType === 'video' && post.mediaUrl && typeof navigator !== 'undefined' && !navigator.onLine) {
+      void resolveOfflineMediaUrl(post.mediaUrl).then((u) => {
+        if (!cancelled && u) setOfflineMediaUrl(u);
+      });
+    } else {
+      setOfflineMediaUrl('');
+    }
     return () => {
+      cancelled = true;
       markInlineVideoInactive(post.id);
     };
-  }, [post.id]);
+  }, [post.id, post.mediaType, post.mediaUrl]);
 
   // Listen to YouTube inline iframe playback state for active-video protection & permanent watch suppression
   useEffect(() => {
@@ -249,10 +248,6 @@ export const PostCard: React.FC<PostCardProps> = ({
       : post.mediaType !== 'video' && post.mediaUrl && post.source !== 'youtube'
       ? [post.mediaUrl]
       : [];
-  const resolvedPostImageUrl = useOfflineMediaSrc(
-    postImages[activeImageIndex] || postImages[0],
-    false
-  );
 
   const handleCopyLink = () => {
     const url = buildMotherlandPostShareUrl(post);
@@ -640,62 +635,31 @@ export const PostCard: React.FC<PostCardProps> = ({
 
         {/* Media Display: YouTube / Video / Multi-Image Swipe Carousel */}
         {post.source === 'youtube' && post.externalId ? (
-          !isOnline ? (
-            <div className="relative aspect-video w-full bg-black flex flex-col items-center justify-center text-center p-4 overflow-hidden">
-              {(resolvedThumbUrl || post.thumbnailUrl) && (
-                <img
-                  src={resolvedThumbUrl || post.thumbnailUrl}
-                  alt={post.content || 'YouTube preview'}
-                  className="absolute inset-0 w-full h-full object-cover opacity-35"
-                />
-              )}
-              <div className="relative z-10 max-w-xs space-y-1.5">
-                <div className="w-10 h-10 mx-auto rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center">
-                  <WifiOff className="w-5 h-5" />
-                </div>
-                <p className="text-xs font-bold text-white line-clamp-2">
-                  {post.content || 'YouTube Video'}
-                </p>
-                <p className="text-[11px] text-slate-200">
-                  অফলাইন প্রিভিউ · প্লে করতে ইন্টারনেট অন করুন (MOTHERLAND ভিডিও সরাসরি অফলাইনে চলবে)
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div
-              className="relative aspect-video w-full bg-black overflow-hidden"
-              onPointerDown={() => markInlineVideoActive(post.id, post.externalId)}
-            >
-              <iframe
-                ref={inlineYtIframeRef}
-                src={ytEmbedUrl}
-                onLoad={() => registerYTListeningHandshake(inlineYtIframeRef.current, 101)}
-                title={post.content || 'YouTube Video'}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-                className="w-full h-full border-0"
-              />
-            </div>
-          )
+          <div
+            className="relative aspect-video w-full bg-black overflow-hidden"
+            onPointerDown={() => markInlineVideoActive(post.id, post.externalId)}
+          >
+            <iframe
+              ref={inlineYtIframeRef}
+              src={ytEmbedUrl}
+              onLoad={() => registerYTListeningHandshake(inlineYtIframeRef.current, 101)}
+              title={post.content || 'YouTube Video'}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              className="w-full h-full border-0"
+            />
+          </div>
         ) : post.mediaType === 'video' && post.mediaUrl ? (
           <div className="relative aspect-video w-full bg-black overflow-hidden">
             <video
               ref={inlineVideoRef}
-              src={fallbackVideoUrl || resolvedVideoUrl || post.mediaUrl}
-              poster={resolvedThumbUrl || post.thumbnailUrl || undefined}
+              src={offlineMediaUrl || post.mediaUrl}
+              poster={post.thumbnailUrl}
               preload="metadata"
               playsInline
               loop
               muted={isMuted}
               controls
-              onError={() => {
-                if (post.mediaUrl && !fallbackVideoUrl) {
-                  void resolveOfflineMediaUrl(post.mediaUrl, true).then((u) => {
-                    const current = fallbackVideoUrl || resolvedVideoUrl || post.mediaUrl;
-                    if (u && u !== current) setFallbackVideoUrl(u);
-                  });
-                }
-              }}
               onPlay={() => {
                 setHasVideoStarted(true);
                 setIsVideoPlaying(true);
@@ -742,9 +706,9 @@ export const PostCard: React.FC<PostCardProps> = ({
             onTouchStart={handleCarouselTouchStart}
             onTouchEnd={(e) => handleCarouselTouchEnd(e, postImages.length)}
           >
-            {(resolvedPostImageUrl || postImages[activeImageIndex] || postImages[0]) && (
+            {(postImages[activeImageIndex] || postImages[0]) && (
               <img
-                src={resolvedPostImageUrl || postImages[activeImageIndex] || postImages[0]}
+                src={postImages[activeImageIndex] || postImages[0]}
                 alt="Post attachment"
                 onClick={() => setLightboxIndex(activeImageIndex)}
                 className="w-full max-h-[520px] object-cover cursor-zoom-in"

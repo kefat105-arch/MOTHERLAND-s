@@ -45,8 +45,6 @@ import {
 } from './services/watchSuppression';
 import {
   isAppOnline,
-  markConnectivityOffline,
-  markConnectivityOnline,
   getOfflinePosts,
   getOfflineStories,
   getOfflineShorts,
@@ -56,19 +54,6 @@ import {
   mirrorOnlineShorts,
   mirrorOnlineLongVideos,
 } from './services/offlineVideoEngine';
-
-function isNetworkFailure(err: any): boolean {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
-  if (!err) return false;
-  if (err instanceof TypeError) return true;
-  const msg = String(err?.message || '').toLowerCase();
-  return (
-    msg.includes('failed to fetch') ||
-    msg.includes('networkerror') ||
-    msg.includes('network request failed') ||
-    msg.includes('load failed')
-  );
-}
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'motherland_auth_token';
@@ -472,7 +457,6 @@ export const api = {
         signal: options.signal,
       });
       const data = await res.json();
-      markConnectivityOnline();
       if (options.type === 'shorts' && Array.isArray(data?.items)) {
         void mirrorOnlineShorts(data.items);
       } else if (Array.isArray(data?.items)) {
@@ -480,12 +464,7 @@ export const api = {
       }
       return data;
     } catch (err) {
-      if ((err as any)?.name === 'AbortError') {
-        throw err;
-      }
-      if (isNetworkFailure(err)) {
-        markConnectivityOffline();
-      } else if (isAppOnline()) {
+      if ((err as any)?.name === 'AbortError' || isAppOnline()) {
         throw err;
       }
       const items =
@@ -1172,25 +1151,17 @@ export const api = {
         throw new Error(errData?.error || errData?.message || `Failed to load feed (${res.status})`);
       }
       const data = await res.json();
-      markConnectivityOnline();
       if (Array.isArray(data?.posts) && data.posts.length > 0) {
         void mirrorOnlinePosts(data.posts);
       }
       return data;
     } catch (err) {
       if ((err as any)?.name === 'AbortError') throw err;
-      if (isNetworkFailure(err)) {
-        markConnectivityOffline();
-      }
-      if (!isAppOnline() || isNetworkFailure(err)) {
+      if (!isAppOnline()) {
         const cached = await getOfflinePosts();
-        const filtered =
-          feedType === 'motherland'
-            ? cached.filter((p) => p.source === 'motherland')
-            : cached;
         return {
-          posts: filtered,
-          total: filtered.length,
+          posts: cached,
+          total: cached.length,
           page: 1,
           hasMore: false,
           nextYtCursor: null,
@@ -1322,19 +1293,13 @@ export const api = {
     try {
       const res = await authFetch(`${API_BASE}/stories`, { signal });
       const data = await parseJsonOrThrow<{ stories: Story[] }>(res);
-      markConnectivityOnline();
       if (Array.isArray(data?.stories) && data.stories.length > 0) {
         void mirrorOnlineStories(data.stories);
       }
       return data;
     } catch (err) {
-      if ((err as any)?.name !== 'AbortError') {
-        if (isNetworkFailure(err)) {
-          markConnectivityOffline();
-        }
-        if (!isAppOnline() || isNetworkFailure(err)) {
-          return { stories: await getOfflineStories() };
-        }
+      if ((err as any)?.name !== 'AbortError' && !isAppOnline()) {
+        return { stories: await getOfflineStories() };
       }
       throw err;
     }
@@ -1397,19 +1362,13 @@ export const api = {
         quotaExceeded?: boolean;
         exhaustedReason?: string;
       }>(res);
-      markConnectivityOnline();
       if (Array.isArray(data?.shorts) && data.shorts.length > 0) {
         void mirrorOnlineShorts(data.shorts);
       }
       return data;
     } catch (err) {
-      if ((err as any)?.name !== 'AbortError') {
-        if (isNetworkFailure(err)) {
-          markConnectivityOffline();
-        }
-        if (!isAppOnline() || isNetworkFailure(err)) {
-          return { shorts: await getOfflineShorts(), page: 1, nextPageToken: null, hasMore: false };
-        }
+      if ((err as any)?.name !== 'AbortError' && !isAppOnline()) {
+        return { shorts: await getOfflineShorts(), page: 1, nextPageToken: null, hasMore: false };
       }
       throw err;
     }
@@ -1440,19 +1399,13 @@ export const api = {
     try {
       const res = await authFetch(`${API_BASE}/videos/long${qs}`, { signal });
       const data = await parseJsonOrThrow<{ videos: LongVideo[] }>(res);
-      markConnectivityOnline();
       if (Array.isArray(data?.videos) && data.videos.length > 0) {
         void mirrorOnlineLongVideos(data.videos);
       }
       return data;
     } catch (err) {
-      if ((err as any)?.name !== 'AbortError') {
-        if (isNetworkFailure(err)) {
-          markConnectivityOffline();
-        }
-        if (!isAppOnline() || isNetworkFailure(err)) {
-          return { videos: await getOfflineLongVideos() };
-        }
+      if ((err as any)?.name !== 'AbortError' && !isAppOnline()) {
+        return { videos: await getOfflineLongVideos() };
       }
       throw err;
     }

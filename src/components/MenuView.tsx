@@ -23,9 +23,6 @@ import {
   Download,
   Trash2,
   Wifi,
-  Play,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import {
   OFFLINE_TIER_OPTIONS,
@@ -33,11 +30,9 @@ import {
   clearAllOfflineCache,
   useOfflineConnectivity,
   useOfflineVaultState,
-  useOfflineMediaSrc,
-  type OfflinePlayableItem,
 } from '../services/offlineVideoEngine';
 import { api } from '../api';
-import type { LongVideo, Post, ShortVideo, UserProfile, YouTubeOAuthStatus } from '../types';
+import type { UserProfile, YouTubeOAuthStatus } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 import { WaveLogo } from './wave/WaveLogo';
 import { MotherlandLiveIcon } from './live/MotherlandLiveIcon';
@@ -67,29 +62,9 @@ interface MenuViewProps {
   onOpenMotherlandLive?: () => void;
   onOpenServerManagement?: () => void;
   onUserUpdated?: (user: UserProfile) => void;
-  onPlayOfflineVideo?: (video: LongVideo) => void;
-  onPlayOfflineShort?: (short: ShortVideo, list: ShortVideo[]) => void;
   onOpenAuth: () => void;
   onLogout: () => void;
 }
-
-const OfflineItemThumb: React.FC<{ src?: string; alt: string }> = ({ src, alt }) => {
-  const resolved = useOfflineMediaSrc(src, false);
-  if (!resolved) {
-    return (
-      <div className="w-16 h-10 rounded-lg bg-black/50 flex items-center justify-center shrink-0 text-white/60">
-        <Play className="w-4 h-4" />
-      </div>
-    );
-  }
-  return (
-    <img
-      src={resolved}
-      alt={alt}
-      className="w-16 h-10 rounded-lg object-cover bg-black shrink-0"
-    />
-  );
-};
 
 export const MenuView: React.FC<MenuViewProps> = ({
   currentUser,
@@ -110,8 +85,6 @@ export const MenuView: React.FC<MenuViewProps> = ({
   onOpenMotherlandLive,
   onOpenServerManagement,
   onUserUpdated,
-  onPlayOfflineVideo,
-  onPlayOfflineShort,
   onOpenAuth,
   onLogout,
 }) => {
@@ -121,46 +94,6 @@ export const MenuView: React.FC<MenuViewProps> = ({
   const translationPrefs = useTranslationPrefs();
   const { isOnline, isOfflineModeActive } = useOfflineConnectivity();
   const offlineVault = useOfflineVaultState();
-  const [showOfflineList, setShowOfflineList] = useState(false);
-
-  const handleOpenSavedOfflineItem = (item: OfflinePlayableItem) => {
-    if (item.kind === 'short' && onPlayOfflineShort) {
-      const shortList = offlineVault.playableItems
-        .filter((x) => x.kind === 'short')
-        .map((x) => x.payload as ShortVideo);
-      onPlayOfflineShort(item.payload as ShortVideo, shortList);
-      return;
-    }
-    if (!onPlayOfflineVideo) return;
-    if (item.kind === 'post') {
-      const p = item.payload as Post;
-      const mapped: LongVideo = {
-        id: p.id,
-        source: p.source === 'youtube' ? 'youtube' : 'motherland',
-        youtubeId: p.externalId,
-        videoUrl: p.mediaUrl,
-        thumbnailUrl: p.thumbnailUrl || '',
-        title: p.content || `${p.author?.displayName || 'MOTHERLAND'} Video`,
-        description: p.content || '',
-        duration: 'Offline',
-        channel: {
-          id: p.author?.id || 'motherland',
-          title: p.author?.displayName || 'MOTHERLAND',
-          avatar: p.author?.avatar || '',
-          isVerified: p.author?.isVerified,
-        },
-        stats: {
-          views: 0,
-          likes: p.stats?.likes || 0,
-          comments: p.stats?.comments || 0,
-        },
-        publishedAt: 'অফলাইন ✓',
-      };
-      onPlayOfflineVideo(mapped);
-      return;
-    }
-    onPlayOfflineVideo(item.payload as LongVideo);
-  };
 
   const loadOAuthStatus = async () => {
     setIsLoadingOAuth(true);
@@ -512,9 +445,9 @@ export const MenuView: React.FC<MenuViewProps> = ({
                   {isOfflineModeActive ? 'অফলাইন মোড চালু' : 'অনলাইনে অটো বন্ধ'}
                 </span>
               </div>
-              <p className="text-[11px] text-[var(--text-secondary)]">
+              <p className="text-[11px] text-[var(--text-secondary)] truncate">
                 {offlineVault.totalVideosCount > 0
-                  ? `পূর্ণ ভিডিও অফলাইনে চলবে: ${offlineVault.playableFullCount}টি · মোট ক্যাশড: ${offlineVault.totalVideosCount}টি · ম্যানুয়াল: ${offlineVault.manualCount}টি`
+                  ? `${offlineVault.totalVideosCount}টি ভিডিও ক্যাশড · ম্যানুয়াল সেভ ${offlineVault.manualCount}টি`
                   : 'অনলাইনে থাকলে অফলাইন মোড বন্ধ থাকবে; নেট না থাকলে অটো চালু হবে'}
               </p>
             </div>
@@ -619,68 +552,6 @@ export const MenuView: React.FC<MenuViewProps> = ({
             );
           })}
         </div>
-
-        {/* Direct Saved Offline Playable Video List */}
-        {offlineVault.playableItems.length > 0 && (
-          <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
-            <button
-              type="button"
-              data-testid="toggle-offline-library-btn"
-              onClick={() => setShowOfflineList((v) => !v)}
-              className="w-full py-2 px-3 rounded-xl bg-[var(--bg-surface-alt)] hover:border-[var(--accent-primary-border)] border border-[var(--border-subtle)] flex items-center justify-between text-xs font-bold text-[var(--text-primary)] cursor-pointer"
-            >
-              <span>
-                সেভ করা অফলাইন ভিডিও দেখুন ({offlineVault.playableFullCount}টি প্লেযোগ্য ✓ / {offlineVault.playableItems.length}টি)
-              </span>
-              {showOfflineList || isOfflineModeActive ? (
-                <ChevronUp className="w-4 h-4 text-[var(--text-secondary)]" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-[var(--text-secondary)]" />
-              )}
-            </button>
-
-            {(showOfflineList || isOfflineModeActive) && (
-              <div className="max-h-72 overflow-y-auto space-y-1.5 pr-0.5">
-                {offlineVault.playableItems.slice(0, 40).map((item) => (
-                  <button
-                    key={`${item.kind}_${item.id}`}
-                    type="button"
-                    onClick={() => handleOpenSavedOfflineItem(item)}
-                    className="w-full p-2 rounded-xl bg-[var(--bg-surface-alt)] hover:border-[var(--accent-primary)] border border-[var(--border-subtle)] flex items-center justify-between gap-2.5 text-left transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <OfflineItemThumb src={item.thumbnailUrl} alt={item.title} />
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-[var(--text-primary)] truncate">
-                          {item.title}
-                        </p>
-                        <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)]">
-                          <span className="truncate max-w-[120px]">{item.subtitle}</span>
-                          <span>·</span>
-                          {item.hasFullVideoBlob ? (
-                            <span className="font-bold text-emerald-400">অফলাইনে প্লেযোগ্য ✓</span>
-                          ) : (
-                            <span className="text-amber-400">প্রিভিউ (নেট লাগবে)</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <span
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 shrink-0 ${
-                        item.hasFullVideoBlob
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-[var(--bg-surface)] text-[var(--text-secondary)] border border-[var(--border-subtle)]'
-                      }`}
-                    >
-                      <Play className="w-3 h-3 fill-current" />
-                      <span>{item.hasFullVideoBlob ? 'প্লে করুন' : 'প্রিভিউ'}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {/* 4. Quick Shortcuts Grid */}

@@ -66,14 +66,11 @@ import {
   EyeOff,
   MoreVertical,
   Download,
-  WifiOff,
 } from 'lucide-react';
 import {
   saveUnifiedVideoOffline,
   removeOfflineVideo,
   useOfflineVaultState,
-  useOfflineConnectivity,
-  useOfflineMediaSrc,
 } from '../../services/offlineVideoEngine';
 import { UnifiedVideo } from '../../types/video';
 import { FireLikeIcon, TalkIcon, BoostIcon, PulseIcon } from '../fire/MotherlandIcons';
@@ -218,8 +215,6 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
   const offlineVault = useOfflineVaultState();
-  const { isOnline } = useOfflineConnectivity();
-  const activeThumbSrc = useOfflineMediaSrc(activeVideo?.thumbnailUrl, false);
   const isYtSavedOffline = (v: UnifiedVideo) =>
     offlineVault.downloadedIds.has(v.id) || offlineVault.downloadedIds.has(v.videoId);
 
@@ -354,10 +349,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
     if (activeVideo.thumbnailUrl) warmVideoThumbnail(activeVideo.thumbnailUrl);
     videos.filter((v) => v.videoId !== activeVideo.videoId).slice(0, 4).forEach((v) => warmVideoThumbnail(v.thumbnailUrl));
 
-    if (!isOnline) {
-      setYtFrameReady(true);
-      setYtIsBuffering(false);
-    } else if (!ytBaseWatchSrc) {
+    if (!ytBaseWatchSrc) {
       ytWatchBoundIdRef.current = activeVideo.videoId;
       setYtBaseWatchSrc(
         buildYouTubeEmbedUrl(activeVideo.videoId, {
@@ -1235,9 +1227,9 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
 
                 {/* 16:9 Persistent Reused Video Player with Thumbnail Backdrop (Zero Black Screen) */}
                 <div className="relative w-full aspect-video bg-black overflow-hidden flex items-center justify-center">
-                  {(activeThumbSrc || activeVideo.thumbnailUrl) && (
+                  {activeVideo.thumbnailUrl && (
                     <img
-                      src={activeThumbSrc || activeVideo.thumbnailUrl}
+                      src={activeVideo.thumbnailUrl}
                       alt=""
                       aria-hidden="true"
                       className={`absolute inset-0 z-[5] w-full h-full object-cover pointer-events-none transition-opacity duration-200 ${
@@ -1245,26 +1237,7 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                       }`}
                     />
                   )}
-                  {!isOnline ? (
-                    <div className="relative z-[8] w-full h-full flex flex-col items-center justify-center bg-black/85 text-center p-4">
-                      {(activeThumbSrc || activeVideo.thumbnailUrl) && (
-                        <img
-                          src={activeThumbSrc || activeVideo.thumbnailUrl}
-                          alt={activeVideo.title}
-                          className="absolute inset-0 w-full h-full object-cover opacity-30"
-                        />
-                      )}
-                      <div className="relative z-10 max-w-xs space-y-1.5">
-                        <div className="w-10 h-10 mx-auto rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center">
-                          <WifiOff className="w-5 h-5" />
-                        </div>
-                        <p className="text-xs font-bold text-white line-clamp-2">{activeVideo.title}</p>
-                        <p className="text-[11px] text-slate-300">
-                          অফলাইন প্রিভিউ — YouTube প্লে করতে ইন্টারনেট সংযোগ চালু করুন (MOTHERLAND সেভ করা ভিডিও সরাসরি অফলাইনে চলবে)
-                        </p>
-                      </div>
-                    </div>
-                  ) : ytBaseWatchSrc ? (
+                  {ytBaseWatchSrc && (
                     <iframe
                       ref={ytWatchIframeRef}
                       key="yt-experience-persistent-watch-iframe"
@@ -1287,13 +1260,10 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                       allowFullScreen
                     />
-                  ) : null}
+                  )}
                   <VideoBrandOverlay
                     mode={ytIsPlaying && ytIsBuffering ? 'buffering' : 'paused'}
-                    visible={
-                      isOnline &&
-                      ((!ytIsPlaying && ytFrameReady) || (ytIsPlaying && ytIsBuffering && !ytFrameReady))
-                    }
+                    visible={(!ytIsPlaying && ytFrameReady) || (ytIsPlaying && ytIsBuffering && !ytFrameReady)}
                     interactive={!ytIsPlaying}
                     onResume={() => sendYTCommand(ytWatchIframeRef.current, 'playVideo')}
                   />

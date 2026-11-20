@@ -2484,15 +2484,6 @@ export default function App() {
             }}
             onOpenServerManagement={() => setIsServerModalOpen(true)}
             onUserUpdated={(updated) => setCurrentUser(updated)}
-            onPlayOfflineVideo={(video) => {
-              setActiveWatchVideo(video);
-              setIsWatchMinimized(false);
-              setActiveNav('video');
-            }}
-            onPlayOfflineShort={(short, list) => {
-              const idx = list.findIndex((s) => s.id === short.id);
-              openShortsPlayer(list.length > 0 ? list : [short], idx >= 0 ? idx : 0);
-            }}
             onOpenAuth={() => setIsAuthOpen(true)}
             onLogout={handleLogout}
           />
