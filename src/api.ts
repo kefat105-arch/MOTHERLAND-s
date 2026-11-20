@@ -43,17 +43,6 @@ import {
   getRecentlyShownIds,
   getSessionSeed,
 } from './services/watchSuppression';
-import {
-  isAppOnline,
-  getOfflinePosts,
-  getOfflineStories,
-  getOfflineShorts,
-  getOfflineLongVideos,
-  mirrorOnlinePosts,
-  mirrorOnlineStories,
-  mirrorOnlineShorts,
-  mirrorOnlineLongVideos,
-} from './services/offlineVideoEngine';
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'motherland_auth_token';
@@ -432,19 +421,6 @@ export const api = {
     quotaExceeded?: boolean;
     exhaustedReason?: string;
   }> {
-    if (!isAppOnline()) {
-      const items =
-        options.type === 'shorts' ? await getOfflineShorts() : await getOfflineLongVideos();
-      return {
-        items,
-        nextPageToken: null,
-        page: 1,
-        hasMore: false,
-        category: options.category || 'all',
-        type: options.type || 'long',
-      };
-    }
-
     const params = new URLSearchParams();
     if (options.type) params.set('type', options.type);
     if (options.category) params.set('category', options.category);
@@ -452,32 +428,10 @@ export const api = {
     if (options.page) params.set('page', String(options.page));
     if (options.pageSize) params.set('pageSize', String(options.pageSize));
 
-    try {
-      const res = await authFetch(`${API_BASE}/youtube/feed?${params.toString()}`, {
-        signal: options.signal,
-      });
-      const data = await res.json();
-      if (options.type === 'shorts' && Array.isArray(data?.items)) {
-        void mirrorOnlineShorts(data.items);
-      } else if (Array.isArray(data?.items)) {
-        void mirrorOnlineLongVideos(data.items);
-      }
-      return data;
-    } catch (err) {
-      if ((err as any)?.name === 'AbortError' || isAppOnline()) {
-        throw err;
-      }
-      const items =
-        options.type === 'shorts' ? await getOfflineShorts() : await getOfflineLongVideos();
-      return {
-        items,
-        nextPageToken: null,
-        page: 1,
-        hasMore: false,
-        category: options.category || 'all',
-        type: options.type || 'long',
-      };
-    }
+    const res = await authFetch(`${API_BASE}/youtube/feed?${params.toString()}`, {
+      signal: options.signal,
+    });
+    return res.json();
   },
 
   async getYouTubeComments(videoId: string, pageToken = '', order = 'relevance'): Promise<{
@@ -1123,20 +1077,6 @@ export const api = {
     quotaExceeded?: boolean;
     errorMessage?: string;
   }> {
-    if (!isAppOnline()) {
-      const cached = await getOfflinePosts();
-      const filtered =
-        feedType === 'motherland'
-          ? cached.filter((p) => p.source === 'motherland')
-          : cached;
-      return {
-        posts: filtered,
-        total: filtered.length,
-        page: 1,
-        hasMore: false,
-        nextYtCursor: null,
-      };
-    }
     const params = new URLSearchParams({
       feedType,
       source,
@@ -1144,31 +1084,12 @@ export const api = {
       pageSize: String(pageSize),
     });
     if (ytCursor) params.set('ytCursor', ytCursor);
-    try {
-      const res = await authFetch(`${API_BASE}/posts?${params.toString()}`, { signal });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData?.error || errData?.message || `Failed to load feed (${res.status})`);
-      }
-      const data = await res.json();
-      if (Array.isArray(data?.posts) && data.posts.length > 0) {
-        void mirrorOnlinePosts(data.posts);
-      }
-      return data;
-    } catch (err) {
-      if ((err as any)?.name === 'AbortError') throw err;
-      if (!isAppOnline()) {
-        const cached = await getOfflinePosts();
-        return {
-          posts: cached,
-          total: cached.length,
-          page: 1,
-          hasMore: false,
-          nextYtCursor: null,
-        };
-      }
-      throw err;
+    const res = await authFetch(`${API_BASE}/posts?${params.toString()}`, { signal });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData?.error || errData?.message || `Failed to load feed (${res.status})`);
     }
+    return res.json();
   },
 
   async createPost(data: {
@@ -1287,22 +1208,8 @@ export const api = {
 
   // Stories
   async getStories(signal?: AbortSignal): Promise<{ stories: Story[] }> {
-    if (!isAppOnline()) {
-      return { stories: await getOfflineStories() };
-    }
-    try {
-      const res = await authFetch(`${API_BASE}/stories`, { signal });
-      const data = await parseJsonOrThrow<{ stories: Story[] }>(res);
-      if (Array.isArray(data?.stories) && data.stories.length > 0) {
-        void mirrorOnlineStories(data.stories);
-      }
-      return data;
-    } catch (err) {
-      if ((err as any)?.name !== 'AbortError' && !isAppOnline()) {
-        return { stories: await getOfflineStories() };
-      }
-      throw err;
-    }
+    const res = await authFetch(`${API_BASE}/stories`, { signal });
+    return parseJsonOrThrow(res);
   },
 
   async createStory(data: { mediaUrl: string; mediaType?: 'image' | 'video'; caption?: string }) {
@@ -1343,35 +1250,14 @@ export const api = {
     quotaExceeded?: boolean;
     exhaustedReason?: string;
   }> {
-    if (!isAppOnline()) {
-      return { shorts: await getOfflineShorts(), page: 1, nextPageToken: null, hasMore: false };
-    }
     const params = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
     });
     if (includeWatched) params.set('includeWatched', '1');
     if (pageToken) params.set('pageToken', pageToken);
-    try {
-      const res = await authFetch(`${API_BASE}/videos/shorts?${params.toString()}`, { signal });
-      const data = await parseJsonOrThrow<{
-        shorts: ShortVideo[];
-        page?: number;
-        nextPageToken?: string | null;
-        hasMore?: boolean;
-        quotaExceeded?: boolean;
-        exhaustedReason?: string;
-      }>(res);
-      if (Array.isArray(data?.shorts) && data.shorts.length > 0) {
-        void mirrorOnlineShorts(data.shorts);
-      }
-      return data;
-    } catch (err) {
-      if ((err as any)?.name !== 'AbortError' && !isAppOnline()) {
-        return { shorts: await getOfflineShorts(), page: 1, nextPageToken: null, hasMore: false };
-      }
-      throw err;
-    }
+    const res = await authFetch(`${API_BASE}/videos/shorts?${params.toString()}`, { signal });
+    return parseJsonOrThrow(res);
   },
 
   async createShort(data: {
@@ -1392,23 +1278,9 @@ export const api = {
   },
 
   async getLongVideos(includeWatched = false, signal?: AbortSignal): Promise<{ videos: LongVideo[] }> {
-    if (!isAppOnline()) {
-      return { videos: await getOfflineLongVideos() };
-    }
     const qs = includeWatched ? '?includeWatched=1' : '';
-    try {
-      const res = await authFetch(`${API_BASE}/videos/long${qs}`, { signal });
-      const data = await parseJsonOrThrow<{ videos: LongVideo[] }>(res);
-      if (Array.isArray(data?.videos) && data.videos.length > 0) {
-        void mirrorOnlineLongVideos(data.videos);
-      }
-      return data;
-    } catch (err) {
-      if ((err as any)?.name !== 'AbortError' && !isAppOnline()) {
-        return { videos: await getOfflineLongVideos() };
-      }
-      throw err;
-    }
+    const res = await authFetch(`${API_BASE}/videos/long${qs}`, { signal });
+    return parseJsonOrThrow(res);
   },
 
   async createLongVideo(data: { videoUrl: string; thumbnailUrl?: string; title: string; description?: string; duration?: string; tags?: string[] }) {

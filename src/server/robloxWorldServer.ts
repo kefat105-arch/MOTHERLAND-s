@@ -236,7 +236,6 @@ export class RobloxWorldServerEngine {
         actionActive: p.actionActive,
         inCar: p.inCar,
         score: p.score,
-        speaking: Boolean(p.speaking),
         avatarConfig: p.avatarConfig,
       })),
     };
@@ -437,35 +436,6 @@ export class RobloxWorldServerEngine {
       displayName: p.displayName,
       text: clean,
       createdAt: new Date().toISOString(),
-    });
-  }
-
-  public updateVoiceState(userId: string, speaking: boolean): void {
-    const roomId = this.userRoomMap.get(userId);
-    if (!roomId) return;
-    const room = this.roomsById.get(roomId);
-    if (!room) return;
-    const p = room.players.get(userId);
-    if (!p) return;
-    p.speaking = Boolean(speaking);
-    this.broadcastToRoom(room, 'world:voice_state', {
-      userId,
-      speaking: p.speaking,
-    });
-  }
-
-  public relayVoiceSignal(
-    fromUserId: string,
-    targetUserId: string,
-    signalData: Record<string, any>
-  ): void {
-    const roomId = this.userRoomMap.get(fromUserId);
-    if (!roomId || !targetUserId) return;
-    const room = this.roomsById.get(roomId);
-    if (!room || !room.players.has(targetUserId)) return;
-    this.emitToUser(targetUserId, 'world:voice_signal', {
-      fromUserId,
-      signal: signalData,
     });
   }
 

@@ -13,44 +13,6 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         workbox: {
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-          navigateFallback: '/index.html',
-          navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//, /^\/ws/],
-          runtimeCaching: [
-            {
-              urlPattern: ({ url }) =>
-                url.pathname.startsWith('/uploads/') || url.pathname.startsWith('/api/media/'),
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'motherland-offline-media-v1',
-                expiration: { maxEntries: 500, maxAgeSeconds: 30 * 24 * 60 * 60 },
-                cacheableResponse: { statuses: [0, 200] },
-              },
-            },
-            {
-              urlPattern: ({ url }) =>
-                url.pathname === '/api/posts' ||
-                url.pathname === '/api/stories' ||
-                url.pathname.startsWith('/api/videos/') ||
-                url.pathname === '/api/youtube/feed',
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'motherland-api-feed-v1',
-                networkTimeoutSeconds: 4,
-                expiration: { maxEntries: 120, maxAgeSeconds: 14 * 24 * 60 * 60 },
-                cacheableResponse: { statuses: [0, 200] },
-              },
-            },
-            {
-              urlPattern: ({ url }) =>
-                url.hostname === 'i.ytimg.com' || url.hostname === 'yt3.ggpht.com',
-              handler: 'StaleWhileRevalidate',
-              options: {
-                cacheName: 'motherland-offline-media-v1',
-                expiration: { maxEntries: 600, maxAgeSeconds: 30 * 24 * 60 * 60 },
-                cacheableResponse: { statuses: [0, 200] },
-              },
-            },
-          ],
         },
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {

@@ -99,38 +99,6 @@ const WORD_BANK: Array<{ category: string; word: string }> = [
 
 export const GAME_CATALOG: GameCatalogEntry[] = [
   {
-    id: 'adopt_island',
-    name: 'ADOPT & RAISE: DREAM PET ISLAND 3D',
-    subtitle: 'রংধনু দ্বীপ, পোষা প্রাণী হ্যাচ ও ২৫ প্লেয়ার টাউন রোলপ্লে',
-    tagline: 'Pet Nursery · Hatch Eggs · Floating Neon Pets · Rainbow Castle · Fairground',
-    description:
-      'Roblox-এর সবচেয়ে জনপ্রিয় কালারফুল অ্যাডপশন আইল্যান্ড! নার্সারি থেকে ডিম ফুটিয়ে কিউট ফ্লোটিং নিয়ন পেট (ড্রাগন, ইউনিকর্ন, ফক্স) পাশে নিয়ে পিৎজা শপ, হট এয়ার বেলুন পার্ক, ফেরিস হুইল ও রংধনু ব্রিজ পেরিয়ে স্কাই ক্যাসেল ঘুরে দেখুন।',
-    category: 'roleplay',
-    badge: '25-Player Pet RP',
-    status: 'playable',
-    maxPlayersPerRoom: 25,
-    playersLabel: '25 Players / Server',
-    difficulty: 'Cozy Town & Pets',
-    estimatedSession: '45–90 Mins',
-    features: ['3D Companion Pet Follower', 'Neon Egg Hatchery', 'Rainbow Sky Castle'],
-  },
-  {
-    id: 'pet_swarm',
-    name: 'PET SWARM & BEE KINGDOM 3D',
-    subtitle: 'ক্লোভার মেডো, গোল্ডেন হানিকম্ব মাউন্টেন ও ২৫ প্লেয়ার সিমুলেটর',
-    tagline: 'Hive Swarm · Honeycomb Mountain · Crystal Fields · Pet Evolution',
-    description:
-      'উজ্জ্বল সূর্যালোকে বিশাল ক্লোভার মাঠ থেকে ফুলের পরাগ ও জেমস সংগ্রহ করে আপনার হানিকম্ব হাইভ আপগ্রেড করুন! উড়ন্ত মৌমাছি ও ড্রাগন পেট সোয়ার্ম নিয়ে গোল্ডেন হানি মাউন্টেন জয় করুন।',
-    category: 'tycoon',
-    badge: '25-Player Simulator',
-    status: 'playable',
-    maxPlayersPerRoom: 25,
-    playersLabel: '25 Players / Server',
-    difficulty: 'Swarm Simulator',
-    estimatedSession: '40–90 Mins',
-    features: ['Flying Swarm Pets', 'Giant Honeycomb Mountain', 'Crystal Gem Fields'],
-  },
-  {
     id: 'squid_game',
     name: 'SQUID GAME: SEASON 1 ARENA',
     subtitle: 'স্কুইড গেম সিজন ১ — ২৫ প্লেয়ার সারভাইভাল কমপ্লেক্স',

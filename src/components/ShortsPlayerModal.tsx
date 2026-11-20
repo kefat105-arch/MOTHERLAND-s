@@ -19,14 +19,7 @@ import {
   ExternalLink,
   Copy,
   Gauge,
-  Download,
-  CheckCircle2,
 } from 'lucide-react';
-import {
-  saveShortOffline,
-  removeOfflineVideo,
-  useOfflineVaultState,
-} from '../services/offlineVideoEngine';
 import type { ShortVideo } from '../types';
 import { api } from '../api';
 import {
@@ -99,7 +92,6 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [actionNotice, setActionNotice] = useState<{ text: string; url?: string } | null>(null);
-  const offlineVault = useOfflineVaultState();
 
   // Playback progress & instant-switch zero-black-screen state
   const [currentTime, setCurrentTime] = useState(0);
@@ -1411,39 +1403,6 @@ export const ShortsPlayerModal: React.FC<ShortsPlayerModalProps> = ({
 
             {moreMenuOpen && (
               <div className="absolute right-12 bottom-0 w-48 rounded-2xl ml-glass-elevated py-1.5 text-xs text-[var(--text-primary)] z-40">
-                <button
-                  type="button"
-                  data-testid={`short-offline-save-${currentShort.id}`}
-                  onClick={async () => {
-                    const saved =
-                      offlineVault.downloadedIds.has(currentShort.id) ||
-                      (currentShort.youtubeId
-                        ? offlineVault.downloadedIds.has(currentShort.youtubeId)
-                        : false);
-                    if (saved) {
-                      await removeOfflineVideo(currentShort.id);
-                    } else {
-                      await saveShortOffline(currentShort);
-                    }
-                    setMoreMenuOpen(false);
-                  }}
-                  className="w-full px-3.5 py-2.5 text-left hover:bg-[var(--bg-surface-alt)] flex items-center gap-2.5 font-semibold text-[var(--accent-primary)]"
-                >
-                  {offlineVault.downloadedIds.has(currentShort.id) ||
-                  (currentShort.youtubeId &&
-                    offlineVault.downloadedIds.has(currentShort.youtubeId)) ? (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                      <span>অফলাইনে সেভ ✓</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-3.5 h-3.5 shrink-0" />
-                      <span>অফলাইনে ডাউনলোড</span>
-                    </>
-                  )}
-                </button>
-
                 <button
                   type="button"
                   onClick={() => {

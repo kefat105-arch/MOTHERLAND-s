@@ -9248,14 +9248,6 @@ async function startServer() {
             robloxWorldServer.handleWorldAction(userId, String(payload.actionType || ''), payload.data || {});
           } else if (ev === 'world:chat') {
             robloxWorldServer.sendRoomChat(userId, String(payload.text || ''));
-          } else if (ev === 'world:voice_state') {
-            robloxWorldServer.updateVoiceState(userId, Boolean(payload.speaking));
-          } else if (ev === 'world:voice_signal') {
-            robloxWorldServer.relayVoiceSignal(
-              userId,
-              String(payload.targetUserId || ''),
-              payload.signal && typeof payload.signal === 'object' ? payload.signal : {}
-            );
           }
           return;
         }

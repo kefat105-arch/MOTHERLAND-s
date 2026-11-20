@@ -20,12 +20,7 @@ import {
   UserCheck,
   X,
   AlertCircle,
-  WifiOff,
 } from 'lucide-react';
-import {
-  useOfflineConnectivity,
-  useOfflineVaultState,
-} from './services/offlineVideoEngine';
 import { api } from './api';
 import type {
   UserProfile,
@@ -128,9 +123,6 @@ export default function App() {
   // Core Data (user session restored optimistically from durable local profile, feeds fetched fresh)
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => api.getCachedUser());
   const [authToken, setAuthToken] = useState<string>(() => api.getToken() || '');
-  const { isOnline, isOfflineModeActive } = useOfflineConnectivity();
-  const offlineVault = useOfflineVaultState();
-  const wasOfflineRef = useRef<boolean>(!isOnline);
   const [posts, setPosts] = useState<Post[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
   const [shorts, setShorts] = useState<ShortVideo[]>([]);
@@ -1284,20 +1276,6 @@ export default function App() {
     };
   }, [activeNav, shortsPlayerState.isOpen, activeWatchVideo, isWatchMinimized]);
 
-  // Automatically switch back from Offline Mode to Online Mode on reconnect without interrupting playback
-  useEffect(() => {
-    if (!isOnline) {
-      wasOfflineRef.current = true;
-      return;
-    }
-    if (wasOfflineRef.current) {
-      wasOfflineRef.current = false;
-      if (!shortsPlayerState.isOpen && !(activeWatchVideo && !isWatchMinimized) && getActiveInlineVideoIds().size === 0) {
-        void bootstrapApp({ preserveExisting: true });
-      }
-    }
-  }, [isOnline, shortsPlayerState.isOpen, activeWatchVideo, isWatchMinimized]);
-
   // IntersectionObserver for Home Feed infinite scroll
   useEffect(() => {
     if (activeNav !== 'home') return;
@@ -1920,19 +1898,6 @@ export default function App() {
             refreshAll();
           }}
         />
-      )}
-
-      {/* Automatic Offline Mode Banner (Hidden when Online, activates ONLY when Internet is Off) */}
-      {isOfflineModeActive && activeNav !== 'youtube' && (
-        <div
-          data-testid="auto-offline-banner"
-          className="w-full bg-amber-500/15 border-b border-amber-500/35 px-3 py-1.5 text-center text-[11px] font-bold text-amber-300 flex items-center justify-center gap-2"
-        >
-          <WifiOff className="w-3.5 h-3.5 shrink-0" />
-          <span>
-            অফলাইন মোড অটো চালু · {offlineVault.totalVideosCount}টি ভিডিও অফলাইনে রেডি
-          </span>
-        </div>
       )}
 
       {/* Main Content Area */}

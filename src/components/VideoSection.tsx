@@ -25,15 +25,7 @@ import {
   Copy,
   Compass,
   History,
-  MoreVertical,
-  Download,
-  CheckCircle2,
 } from 'lucide-react';
-import {
-  saveVideoOffline,
-  removeOfflineVideo,
-  useOfflineVaultState,
-} from '../services/offlineVideoEngine';
 import { api } from '../api';
 import type { ShortVideo, LongVideo, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
@@ -153,10 +145,6 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const [watchActionNotice, setWatchActionNotice] = useState<{ text: string; url?: string } | null>(null);
   const [copiedShare, setCopiedShare] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
-  const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
-  const offlineVault = useOfflineVaultState();
-  const isSavedOffline = (v: LongVideo) =>
-    offlineVault.downloadedIds.has(v.id) || (v.youtubeId ? offlineVault.downloadedIds.has(v.youtubeId) : false);
 
   const savedScrollYRef = useRef(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -843,69 +831,9 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           >
             {video.channel.title}
           </button>
-          <div className="text-[11px] text-[var(--text-muted)] tabular-nums flex items-center gap-1.5">
-            <span className="truncate">{video.stats.views.toLocaleString()} views · {video.publishedAt}</span>
-            {isSavedOffline(video) && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-[var(--accent-primary)] shrink-0">
-                <CheckCircle2 className="w-3 h-3" />
-                <span>অফলাইন</span>
-              </span>
-            )}
+          <div className="text-[11px] text-[var(--text-muted)] tabular-nums">
+            {video.stats.views.toLocaleString()} views · {video.publishedAt}
           </div>
-        </div>
-
-        {/* 3-Dot Card Action Menu (Offline Download & Share) */}
-        <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
-          <button
-            type="button"
-            data-testid={`video-card-menu-${video.id}`}
-            onClick={() => setOpenCardMenuId((prev) => (prev === video.id ? null : video.id))}
-            className="w-8 h-8 rounded-xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface-alt)] flex items-center justify-center"
-            aria-label="Video options"
-          >
-            <MoreVertical className="w-4 h-4" />
-          </button>
-
-          {openCardMenuId === video.id && (
-            <div className="absolute right-0 bottom-9 z-30 w-48 ml-glass-elevated rounded-xl shadow-xl py-1 text-xs text-[var(--text-primary)] border border-[var(--border-subtle)]">
-              <button
-                type="button"
-                data-testid={`video-offline-save-${video.id}`}
-                onClick={async () => {
-                  if (isSavedOffline(video)) {
-                    await removeOfflineVideo(video.id);
-                  } else {
-                    await saveVideoOffline(video);
-                  }
-                  setOpenCardMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2 font-semibold"
-              >
-                {isSavedOffline(video) ? (
-                  <>
-                    <CheckCircle2 className="w-3.5 h-3.5 text-[var(--accent-primary)] shrink-0" />
-                    <span>অফলাইনে সেভ ✓ (Remove)</span>
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-3.5 h-3.5 text-[var(--accent-primary)] shrink-0" />
-                    <span>অফলাইনে ডাউনলোড</span>
-                  </>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  handleShareVideo(video);
-                  setOpenCardMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2"
-              >
-                <Copy className="w-3.5 h-3.5 text-[var(--accent-gold)] shrink-0" />
-                <span>Copy Link</span>
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </article>
@@ -1176,30 +1104,6 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               <div className="p-2 rounded-2xl ml-glass-elevated flex flex-wrap gap-2 text-xs">
                 <button
                   type="button"
-                  onClick={async () => {
-                    if (isSavedOffline(watchingVideo)) {
-                      await removeOfflineVideo(watchingVideo.id);
-                    } else {
-                      await saveVideoOffline(watchingVideo);
-                    }
-                    setMoreMenuOpen(false);
-                  }}
-                  className="px-3 py-2 rounded-xl bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] text-[var(--accent-primary)] font-bold flex items-center gap-1.5"
-                >
-                  {isSavedOffline(watchingVideo) ? (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>অফলাইনে সেভ ✓</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-3.5 h-3.5" />
-                      <span>অফলাইনে ডাউনলোড</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
                   onClick={() => {
                     handleShareVideo(watchingVideo);
                     setMoreMenuOpen(false);
@@ -1427,56 +1331,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 {copiedShare ? <Check className="w-4 h-4 text-orange-400" /> : <BoostIcon size={18} />}
                 <span>{copiedShare ? 'Copied' : 'Boost'}</span>
               </button>
-
-              <button
-                type="button"
-                onClick={() => setMoreMenuOpen((o) => !o)}
-                className="min-h-[40px] w-10 rounded-xl ml-glass text-[var(--text-primary)] flex items-center justify-center flex-shrink-0"
-                aria-label="More video options"
-              >
-                <MoreVertical className="w-4 h-4" />
-              </button>
             </div>
-
-            {moreMenuOpen && (
-              <div className="p-2 rounded-2xl ml-glass-elevated flex flex-wrap gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (isSavedOffline(watchingVideo)) {
-                      await removeOfflineVideo(watchingVideo.id);
-                    } else {
-                      await saveVideoOffline(watchingVideo);
-                    }
-                    setMoreMenuOpen(false);
-                  }}
-                  className="px-3 py-2 rounded-xl bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] text-[var(--accent-primary)] font-bold flex items-center gap-1.5"
-                >
-                  {isSavedOffline(watchingVideo) ? (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>অফলাইনে সেভ ✓</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-3.5 h-3.5" />
-                      <span>অফলাইনে ডাউনলোড</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleShareVideo(watchingVideo);
-                    setMoreMenuOpen(false);
-                  }}
-                  className="px-3 py-2 rounded-xl bg-[var(--bg-surface-alt)] text-[var(--text-primary)] font-semibold flex items-center gap-1.5"
-                >
-                  <Copy className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
-                  <span>Copy Link</span>
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Up Next Recommendations */}

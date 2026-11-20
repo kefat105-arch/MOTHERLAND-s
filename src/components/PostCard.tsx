@@ -16,15 +16,7 @@ import {
   Pencil,
   Flag,
   Ban,
-  Download,
-  CheckCircle2,
 } from 'lucide-react';
-import {
-  savePostVideoOffline,
-  removeOfflineVideo,
-  useOfflineVaultState,
-  resolveOfflineMediaUrl,
-} from '../services/offlineVideoEngine';
 import type { Post, ReactionType, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import { FIRE_REACTIONS } from '../data/fireEmojiCatalog';
@@ -98,12 +90,6 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [hasVideoStarted, setHasVideoStarted] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [isVideoBuffering, setIsVideoBuffering] = useState(false);
-  const [offlineMediaUrl, setOfflineMediaUrl] = useState<string>('');
-  const offlineVault = useOfflineVaultState();
-  const isVideoPost = post.mediaType === 'video' || post.source === 'youtube';
-  const isSavedOffline =
-    offlineVault.downloadedIds.has(post.id) ||
-    (post.externalId ? offlineVault.downloadedIds.has(post.externalId) : false);
 
   const inlineVideoRef = useRef<HTMLVideoElement | null>(null);
   const inlineYtIframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -130,21 +116,12 @@ export const PostCard: React.FC<PostCardProps> = ({
     75
   );
 
-  // Clean up active inline video registration on unmount & resolve cached offline native video URL
+  // Clean up active inline video registration on unmount
   useEffect(() => {
-    let cancelled = false;
-    if (post.mediaType === 'video' && post.mediaUrl && typeof navigator !== 'undefined' && !navigator.onLine) {
-      void resolveOfflineMediaUrl(post.mediaUrl).then((u) => {
-        if (!cancelled && u) setOfflineMediaUrl(u);
-      });
-    } else {
-      setOfflineMediaUrl('');
-    }
     return () => {
-      cancelled = true;
       markInlineVideoInactive(post.id);
     };
-  }, [post.id, post.mediaType, post.mediaUrl]);
+  }, [post.id]);
 
   // Listen to YouTube inline iframe playback state for active-video protection & permanent watch suppression
   useEffect(() => {
@@ -368,34 +345,6 @@ export const PostCard: React.FC<PostCardProps> = ({
                   <Bookmark className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
                   <span>{isSaved ? 'Unsave Post' : 'Save Post'}</span>
                 </button>
-
-                {isVideoPost && (
-                  <button
-                    type="button"
-                    data-testid={`post-offline-save-${post.id}`}
-                    onClick={async () => {
-                      if (isSavedOffline) {
-                        await removeOfflineVideo(post.id);
-                      } else {
-                        await savePostVideoOffline(post);
-                      }
-                      setMenuOpen(false);
-                    }}
-                    className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2 font-semibold text-[var(--accent-primary)]"
-                  >
-                    {isSavedOffline ? (
-                      <>
-                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                        <span>অফলাইনে সেভ ✓</span>
-                      </>
-                    ) : (
-                      <>
-                        <Download className="w-3.5 h-3.5 shrink-0" />
-                        <span>অফলাইনে ডাউনলোড</span>
-                      </>
-                    )}
-                  </button>
-                )}
 
                 {isAuthor && onEditPost && post.source === 'motherland' && (
                   <button
@@ -653,7 +602,7 @@ export const PostCard: React.FC<PostCardProps> = ({
           <div className="relative aspect-video w-full bg-black overflow-hidden">
             <video
               ref={inlineVideoRef}
-              src={offlineMediaUrl || post.mediaUrl}
+              src={post.mediaUrl}
               poster={post.thumbnailUrl}
               preload="metadata"
               playsInline

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, ChevronDown, X, WifiOff } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, Maximize, ChevronDown, X } from 'lucide-react';
 import type { LongVideo } from '../types';
 import { api } from '../api';
 import {
@@ -12,7 +12,6 @@ import {
 import { warmVideoThumbnail } from '../utils/videoShareLinks';
 import { recordWatchedSuppression } from '../services/watchSuppression';
 import { VideoBrandOverlay } from './common/VideoBrandOverlay';
-import { resolveOfflineMediaUrl, useOfflineConnectivity } from '../services/offlineVideoEngine';
 
 interface PersistentWatchPlayerProps {
   video: LongVideo | null;
@@ -54,8 +53,6 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const { isOnline } = useOfflineConnectivity();
-  const [resolvedNativeUrl, setResolvedNativeUrl] = useState<string>('');
   const [viewportWidth, setViewportWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 390
   );
@@ -141,21 +138,6 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
 
     return () => window.clearTimeout(revealTimer);
   }, [video?.id, video?.youtubeId, isYouTube]);
-
-  // Resolve cached offline native video URL cleanly when offline
-  useEffect(() => {
-    let cancelled = false;
-    if (!isYouTube && video?.videoUrl && !isOnline) {
-      void resolveOfflineMediaUrl(video.videoUrl).then((u) => {
-        if (!cancelled) setResolvedNativeUrl(u || '');
-      });
-    } else {
-      setResolvedNativeUrl('');
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [isYouTube, video?.videoUrl, isOnline]);
 
   // Preload upNextVideo thumbnail + native stream metadata/buffer when idle
   useEffect(() => {
@@ -471,26 +453,7 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
         )}
 
         {/* Persistent Reused YouTube IFrame OR Persistent Reused Native Video Node */}
-        {isYouTube && !isOnline ? (
-          <div className="relative z-[8] w-full h-full flex flex-col items-center justify-center bg-black/85 text-center p-4">
-            {video.thumbnailUrl && (
-              <img
-                src={video.thumbnailUrl}
-                alt={video.title}
-                className="absolute inset-0 w-full h-full object-cover opacity-30"
-              />
-            )}
-            <div className="relative z-10 max-w-xs space-y-1.5">
-              <div className="w-10 h-10 mx-auto rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center">
-                <WifiOff className="w-5 h-5" />
-              </div>
-              <p className="text-xs font-bold text-white line-clamp-2">{video.title}</p>
-              <p className="text-[11px] text-slate-300">
-                অফলাইন মোড চালু — ইন্টারনেট ফিরলে YouTube ভিডিও প্লে হবে (MOTHERLAND ভিডিও সরাসরি অফলাইনে চলবে)
-              </p>
-            </div>
-          </div>
-        ) : isYouTube && ytBaseEmbedUrl ? (
+        {isYouTube && ytBaseEmbedUrl ? (
           <iframe
             ref={ytIframeRef}
             key="yt-watch-persistent-iframe"
@@ -512,7 +475,7 @@ export const PersistentWatchPlayer: React.FC<PersistentWatchPlayerProps> = ({
           <video
             ref={nativeVideoRef}
             key="native-watch-persistent-video"
-            src={resolvedNativeUrl || video.videoUrl}
+            src={video.videoUrl}
             poster={video.thumbnailUrl || undefined}
             preload="auto"
             autoPlay

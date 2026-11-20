@@ -64,14 +64,7 @@ import {
   Pencil,
   AlertCircle,
   EyeOff,
-  MoreVertical,
-  Download,
 } from 'lucide-react';
-import {
-  saveUnifiedVideoOffline,
-  removeOfflineVideo,
-  useOfflineVaultState,
-} from '../../services/offlineVideoEngine';
 import { UnifiedVideo } from '../../types/video';
 import { FireLikeIcon, TalkIcon, BoostIcon, PulseIcon } from '../fire/MotherlandIcons';
 import { FireEmojiPicker } from '../fire/FireEmojiPicker';
@@ -213,10 +206,6 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
   const [activeQuery, setActiveQuery] = useState('');
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-  const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
-  const offlineVault = useOfflineVaultState();
-  const isYtSavedOffline = (v: UnifiedVideo) =>
-    offlineVault.downloadedIds.has(v.id) || offlineVault.downloadedIds.has(v.videoId);
 
   // Authenticated YouTube Channel State
   const [authUser, setAuthUser] = useState<GoogleAuthUser | null>(getStoredGoogleAuth());
@@ -1399,29 +1388,6 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                         <span>{copiedNotice || 'Boost'}</span>
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (isYtSavedOffline(activeVideo)) {
-                            await removeOfflineVideo(activeVideo.id);
-                          } else {
-                            await saveUnifiedVideoOffline(activeVideo);
-                          }
-                        }}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all ${
-                          isYtSavedOffline(activeVideo)
-                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                            : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
-                        }`}
-                      >
-                        {isYtSavedOffline(activeVideo) ? (
-                          <CheckCircle2 className="w-4 h-4" />
-                        ) : (
-                          <Download className="w-4 h-4" />
-                        )}
-                        <span>{isYtSavedOffline(activeVideo) ? 'অফলাইনে সেভ ✓' : 'অফলাইন'}</span>
-                      </button>
-
                       <a
                         href={activeVideo.originalVideoUrl}
                         target="_blank"
@@ -1651,72 +1617,12 @@ export const YouTubeFullExperience: React.FC<YouTubeFullExperienceProps> = ({
                             <p className="text-[11px] text-slate-400 mt-1 truncate">{vid.creatorName}</p>
                           </div>
 
-                          <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500 relative">
-                            <span className="truncate">{vid.publishedAt || 'YouTube'}</span>
-                            <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                              {isYtSavedOffline(vid) && (
-                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => setOpenCardMenuId((p) => (p === vid.id ? null : vid.id))}
-                                className="w-7 h-7 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white flex items-center justify-center"
-                                aria-label="Video options"
-                              >
-                                <MoreVertical className="w-4 h-4" />
-                              </button>
-                            </div>
-
-                            {openCardMenuId === vid.id && (
-                              <div
-                                onClick={(e) => e.stopPropagation()}
-                                className="absolute right-0 bottom-8 z-30 w-44 rounded-xl bg-[#161d31] border border-white/15 shadow-2xl py-1 text-xs text-slate-200"
-                              >
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    if (isYtSavedOffline(vid)) {
-                                      await removeOfflineVideo(vid.id);
-                                    } else {
-                                      await saveUnifiedVideoOffline(vid);
-                                    }
-                                    setOpenCardMenuId(null);
-                                  }}
-                                  className="w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2 font-semibold text-emerald-300"
-                                >
-                                  {isYtSavedOffline(vid) ? (
-                                    <>
-                                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                                      <span>অফলাইনে সেভ ✓</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Download className="w-3.5 h-3.5 shrink-0" />
-                                      <span>অফলাইনে ডাউনলোড</span>
-                                    </>
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const shareUrl = buildMotherlandVideoShareUrl({
-                                      id: vid.id,
-                                      youtubeId: vid.videoId,
-                                      source: 'youtube',
-                                      isShort: false,
-                                    });
-                                    navigator.clipboard?.writeText(shareUrl);
-                                    setCopiedNotice('Link copied!');
-                                    setOpenCardMenuId(null);
-                                    setTimeout(() => setCopiedNotice(null), 2000);
-                                  }}
-                                  className="w-full text-left px-3 py-2 hover:bg-white/10 flex items-center gap-2"
-                                >
-                                  <Share2 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                  <span>Copy Link</span>
-                                </button>
-                              </div>
-                            )}
+                          <div className="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-500">
+                            <span>{vid.publishedAt || 'YouTube'}</span>
+                            <span className="text-red-400 font-semibold group-hover:underline flex items-center gap-1">
+                              <Play className="w-3 h-3 fill-current" />
+                              <span>Watch</span>
+                            </span>
                           </div>
                         </div>
                       </div>
