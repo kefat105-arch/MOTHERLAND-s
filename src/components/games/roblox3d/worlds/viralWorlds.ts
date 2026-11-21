@@ -10,10 +10,14 @@ import {
 import {
   createAsphaltRoadTexture,
   createCheckerTexture,
+  createCloudClusters,
+  createGrassTexture,
+  createRobloxSkyDome,
   createSandTexture,
   createStudTexture,
   createThreePointLights,
   createWoodPlankTexture,
+  updateSunShadowTarget,
 } from '../robloxRenderer';
 import { robloxAudio } from '../robloxAudio';
 import type {
@@ -1963,6 +1967,640 @@ function createMm2ManorWorld(
   };
 }
 
+// ==========================================
+// 9. ADOPT & RAISE: DREAM PET ISLAND 3D
+// ==========================================
+function createAdoptIslandWorld(
+  scene: THREE.Scene,
+  isSoftwareGl: boolean,
+  maxAnisotropy: number,
+  initialAvatar: RobloxAvatarConfig
+): WorldController {
+  scene.background = new THREE.Color(0x7cc9ff);
+  if (scene.fog instanceof THREE.Fog) {
+    scene.fog.color.setHex(0x9ee0ff);
+    scene.fog.near = 75;
+    scene.fog.far = 260;
+  }
+
+  const skyDome = createRobloxSkyDome(scene, {
+    topHex: '#1e78f0',
+    horizonHex: '#a5e1ff',
+    groundHex: '#7cc9ff',
+    sunPos: [80, 110, -140],
+  });
+  const clouds = createCloudClusters(scene, 20, 44, 130);
+  const lights = createThreePointLights(scene, {
+    isSoftwareGl,
+    sunColor: 0xfff5db,
+    sunIntensity: 2.35,
+    hemiSky: 0xdaf0ff,
+    hemiGround: 0x3b6e3c,
+    hemiIntensity: 0.78,
+  });
+
+  const worldGroup = new THREE.Group();
+  scene.add(worldGroup);
+
+  let avatarCfg = initialAvatar;
+  let playerRig = createRobloxCharacter(buildAvatarStyle(avatarCfg));
+  scene.add(playerRig.root);
+
+  // Cute multi-part 3D Companion Pet that follows beside the player
+  const petNames = ['Neon Dragon', 'Starlight Unicorn', 'Golden Kitsune', 'Emerald Turtle'];
+  let petIdx = 0;
+  let petLevel = 1;
+  const petGroup = new THREE.Group();
+  const petBodyMat = new THREE.MeshStandardMaterial({ color: 0x14b8a6, roughness: 0.25, metalness: 0.15 });
+  const petAccentMat = new THREE.MeshStandardMaterial({
+    color: 0xfde047,
+    emissive: 0xfacc15,
+    emissiveIntensity: 0.8,
+    roughness: 0.2,
+  });
+  const petBody = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.72, 1.15), petBodyMat);
+  petBody.castShadow = true;
+  const petHead = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.72, 0.78), petBodyMat);
+  petHead.position.set(0, 0.42, 0.62);
+  petHead.castShadow = true;
+  const petWingL = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.1, 0.55), petAccentMat);
+  petWingL.position.set(-0.75, 0.35, -0.05);
+  const petWingR = petWingL.clone();
+  petWingR.position.x = 0.75;
+  const petHorn = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.42, 8), petAccentMat);
+  petHorn.position.set(0, 0.92, 0.65);
+  petGroup.add(petBody, petHead, petWingL, petWingR, petHorn);
+  scene.add(petGroup);
+
+  const platforms: PlatformDef[] = [];
+  const addPlat = (x: number, y: number, z: number, w: number, h: number, d: number, mat: THREE.Material) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y - h / 2, z);
+    m.receiveShadow = true;
+    m.castShadow = true;
+    worldGroup.add(m);
+    platforms.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, y });
+  };
+
+  // Shimmering Ocean + Sandy Shore + Lush Green Island
+  const ocean = new THREE.Mesh(
+    new THREE.PlaneGeometry(420, 420),
+    new THREE.MeshPhysicalMaterial({ color: 0x0ea5e9, roughness: 0.14, metalness: 0.18 })
+  );
+  ocean.rotation.x = -Math.PI / 2;
+  ocean.position.y = -0.6;
+  worldGroup.add(ocean);
+
+  const grassMat = new THREE.MeshStandardMaterial({ map: createGrassTexture(maxAnisotropy, 24), roughness: 0.85 });
+  const sandMat = new THREE.MeshStandardMaterial({ map: createSandTexture(maxAnisotropy, 20), roughness: 0.9 });
+  const tileMat = new THREE.MeshStandardMaterial({
+    map: createCheckerTexture('#f8fafc', '#fde68a', maxAnisotropy, 12, 12),
+    roughness: 0.6,
+  });
+
+  addPlat(0, 0, 0, 175, 1.5, 175, sandMat);
+  addPlat(0, 0.35, 0, 152, 1.0, 152, grassMat);
+  addPlat(0, 0.45, 0, 32, 0.3, 32, tileMat); // Central Town Square
+
+  // Nursery Building (Pastel Mint & Pink Roof + Glowing Giant Pet Egg)
+  const nurseryMat = new THREE.MeshStandardMaterial({ color: 0x99f6e4, roughness: 0.55 });
+  const pinkRoofMat = new THREE.MeshStandardMaterial({ color: 0xf472b6, roughness: 0.45 });
+  const nurseryBase = new THREE.Mesh(new THREE.BoxGeometry(20, 9, 14), nurseryMat);
+  nurseryBase.position.set(-28, 4.85, -18);
+  nurseryBase.castShadow = true;
+  const nurseryRoof = new THREE.Mesh(new THREE.BoxGeometry(22, 2.2, 16), pinkRoofMat);
+  nurseryRoof.position.set(-28, 10.4, -18);
+  const giantEgg = new THREE.Mesh(
+    new THREE.SphereGeometry(2.8, 18, 14),
+    new THREE.MeshStandardMaterial({ color: 0xf472b6, emissive: 0xa855f7, emissiveIntensity: 0.7, roughness: 0.2 })
+  );
+  giantEgg.scale.set(1, 1.35, 1);
+  giantEgg.position.set(-28, 14.5, -18);
+  worldGroup.add(nurseryBase, nurseryRoof, giantEgg);
+
+  // Rainbow Bridge leading up to Floating Sky Castle
+  const rainbowColors = [0xef4444, 0xf97316, 0xfacc15, 0x22c55e, 0x3b82f6, 0xa855f7];
+  for (let i = 0; i < 18; i++) {
+    const stepY = 0.6 + i * 0.75;
+    const stepZ = -26 - i * 3.1;
+    const stepMat = new THREE.MeshStandardMaterial({
+      color: rainbowColors[i % rainbowColors.length],
+      emissive: rainbowColors[i % rainbowColors.length],
+      emissiveIntensity: 0.22,
+      roughness: 0.4,
+    });
+    addPlat(0, stepY, stepZ, 8.5, 0.5, 3.2, stepMat);
+  }
+  const skyCastleFloorMat = new THREE.MeshStandardMaterial({ color: 0xfef3c7, roughness: 0.4 });
+  addPlat(0, 14.2, -92, 34, 1.5, 28, skyCastleFloorMat);
+  for (const tx of [-13, 13]) {
+    const tower = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.6, 2.8, 14, 12),
+      new THREE.MeshStandardMaterial({ color: 0xfef9c3, roughness: 0.4 })
+    );
+    tower.position.set(tx, 21, -100);
+    const spire = new THREE.Mesh(
+      new THREE.ConeGeometry(3.5, 6, 12),
+      new THREE.MeshStandardMaterial({ color: 0xec4899, roughness: 0.35 })
+    );
+    spire.position.set(tx, 30.5, -100);
+    worldGroup.add(tower, spire);
+  }
+
+  // Animated Ferris Wheel in the Park
+  const wheelHub = new THREE.Group();
+  wheelHub.position.set(34, 15, -14);
+  const wheelRing = new THREE.Mesh(
+    new THREE.TorusGeometry(11.5, 0.45, 10, 28),
+    new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.4, roughness: 0.3 })
+  );
+  wheelHub.add(wheelRing);
+  const standL = new THREE.Mesh(new THREE.BoxGeometry(1.2, 16, 1.2), new THREE.MeshStandardMaterial({ color: 0x475569 }));
+  standL.position.set(34, 8, -11);
+  const standR = standL.clone();
+  standR.position.z = -17;
+  worldGroup.add(wheelHub, standL, standR);
+
+  // Floating Hot Air Balloons
+  const balloons: Array<{ group: THREE.Group; baseY: number; phase: number }> = [];
+  for (let b = 0; b < 4; b++) {
+    const bg = new THREE.Group();
+    const ang = (b / 4) * Math.PI * 2;
+    bg.position.set(Math.cos(ang) * 48, 28 + b * 3, Math.sin(ang) * 48);
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(4.2, 14, 12),
+      new THREE.MeshStandardMaterial({ color: rainbowColors[b % rainbowColors.length], roughness: 0.45 })
+    );
+    const basket = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.4, 1.8), new THREE.MeshStandardMaterial({ color: 0x92400e }));
+    basket.position.y = -6.2;
+    bg.add(bulb, basket);
+    worldGroup.add(bg);
+    balloons.push({ group: bg, baseY: bg.position.y, phase: b * 1.4 });
+  }
+
+  // Collectible Pet Hearts & Bucks across Town + Sky Castle
+  const pickups: Array<{ x: number; y: number; z: number; mesh: THREE.Mesh; cooldown: number }> = [];
+  const pickupSpots: Array<[number, number, number]> = [
+    [-16, 1.4, -14],
+    [-28, 1.4, -6],
+    [18, 1.4, 12],
+    [32, 1.4, -22],
+    [0, 15.2, -92],
+    [-8, 15.2, -96],
+    [8, 15.2, -96],
+    [12, 1.4, -12],
+    [-12, 1.4, 18],
+    [0, 1.4, 24],
+  ];
+  for (const [hx, hy, hz] of pickupSpots) {
+    const gem = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.85, 0),
+      new THREE.MeshStandardMaterial({ color: 0xf472b6, emissive: 0xec4899, emissiveIntensity: 0.9 })
+    );
+    gem.position.set(hx, hy, hz);
+    worldGroup.add(gem);
+    pickups.push({ x: hx, y: hy, z: hz, mesh: gem, cooldown: 0 });
+  }
+
+  // Hatch Pad outside Nursery
+  const hatchPad = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.2, 3.4, 0.35, 24),
+    new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0xeab308, emissiveIntensity: 1.0 })
+  );
+  hatchPad.position.set(-20, 0.55, -14);
+  worldGroup.add(hatchPad);
+
+  let px = 0;
+  let py = 0.6;
+  let pz = 12;
+  let facingYaw = Math.PI;
+  let vx = 0;
+  let vy = 0;
+  let vz = 0;
+  let grounded = true;
+  let bucks = 150;
+  let petX = 1.8;
+  let petY = 1.8;
+  let petZ = 12;
+  let signalText: string | null = null;
+  let signalTimer = 0;
+
+  const groundHeightAt = (x: number, z: number): number => {
+    let best = -20;
+    for (const p of platforms) {
+      if (x >= p.minX - 0.3 && x <= p.maxX + 0.3 && z >= p.minZ - 0.3 && z <= p.maxZ + 0.3) {
+        if (p.y > best && p.y <= py + 2.4) best = p.y;
+      }
+    }
+    return best;
+  };
+
+  return {
+    update: (dt, elapsed, input, yaw, _pitch, isFp) => {
+      playerRig.setFirstPersonHidden(isFp);
+      skyDome.position.set(px, 0, pz);
+      updateSunShadowTarget(lights.sun, [26, 38, 22], px, pz);
+      wheelHub.rotation.z = elapsed * 0.35;
+      giantEgg.rotation.y = elapsed * 0.9;
+      giantEgg.position.y = 14.5 + Math.sin(elapsed * 2) * 0.45;
+      for (const bl of balloons) {
+        bl.group.position.y = bl.baseY + Math.sin(elapsed * 0.7 + bl.phase) * 1.6;
+      }
+      if (signalTimer > 0) {
+        signalTimer -= dt;
+        if (signalTimer <= 0) signalText = null;
+      }
+
+      _fwd.set(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
+      _rgt.set(-Math.cos(yaw), 0, Math.sin(yaw)).normalize();
+      const spd = input.sprint ? 10.2 : 6.8;
+      vx = THREE.MathUtils.damp(vx, (_fwd.x * -input.moveZ + _rgt.x * input.moveX) * spd, 10, dt);
+      vz = THREE.MathUtils.damp(vz, (_fwd.z * -input.moveZ + _rgt.z * input.moveX) * spd, 10, dt);
+      if (input.jumpPressed && grounded) {
+        vy = 11.8;
+        grounded = false;
+        robloxAudio.playJump();
+      }
+      vy -= 26 * dt;
+      px = THREE.MathUtils.clamp(px + vx * dt, -76, 76);
+      pz = THREE.MathUtils.clamp(pz + vz * dt, -110, 76);
+      py += vy * dt;
+      const fy = groundHeightAt(px, pz);
+      if (py <= fy) {
+        py = fy;
+        vy = 0;
+        grounded = true;
+      } else {
+        grounded = false;
+      }
+
+      // Hatch new Pet Egg on Hatch Pad or Action
+      if (input.actionPressed || Math.hypot(px - -20, pz - -14) < 3.2) {
+        if (input.actionPressed && bucks >= 100) {
+          bucks -= 100;
+          petIdx = (petIdx + 1) % petNames.length;
+          petLevel++;
+          const petColors = [0x14b8a6, 0xf472b6, 0xf59e0b, 0x22c55e];
+          petBodyMat.color.setHex(petColors[petIdx]);
+          robloxAudio.playCheckpoint();
+          signalText = `HATCHED: ${petNames[petIdx]} Lv.${petLevel}!`;
+          signalTimer = 2.4;
+        }
+      }
+
+      for (const pk of pickups) {
+        if (pk.cooldown > 0) {
+          pk.cooldown -= dt;
+          pk.mesh.visible = pk.cooldown <= 0;
+          continue;
+        }
+        pk.mesh.rotation.y = elapsed * 2.2;
+        if (Math.hypot(px - pk.x, pz - pk.z) < 2.2 && Math.abs(py - pk.y) < 3.0) {
+          bucks += 45;
+          pk.cooldown = 8;
+          pk.mesh.visible = false;
+          robloxAudio.playCoin();
+        }
+      }
+
+      // Smooth Companion Pet Following beside player's shoulder
+      const desiredPetX = px + Math.cos(facingYaw) * 1.9 - Math.sin(facingYaw) * 1.1;
+      const desiredPetZ = pz - Math.sin(facingYaw) * 1.9 - Math.cos(facingYaw) * 1.1;
+      const desiredPetY = py + 1.85 + Math.sin(elapsed * 3.4) * 0.25;
+      petX = THREE.MathUtils.damp(petX, desiredPetX, 6, dt);
+      petY = THREE.MathUtils.damp(petY, desiredPetY, 6, dt);
+      petZ = THREE.MathUtils.damp(petZ, desiredPetZ, 6, dt);
+      petGroup.position.set(petX, petY, petZ);
+      petGroup.rotation.y = smoothRotateYaw(petGroup.rotation.y, facingYaw, dt, 8);
+      petWingL.rotation.z = Math.sin(elapsed * 12) * 0.45;
+      petWingR.rotation.z = -Math.sin(elapsed * 12) * 0.45;
+
+      const hs = Math.hypot(vx, vz);
+      playerRig.root.position.set(px, py, pz);
+      if (hs > 0.4) {
+        facingYaw = smoothRotateYaw(facingYaw, Math.atan2(vx, vz), dt, 10);
+        playerRig.root.rotation.y = facingYaw;
+      } else if (isFp) {
+        facingYaw = yaw;
+        playerRig.root.rotation.y = yaw;
+      }
+      animateRobloxCharacter(playerRig, hs, grounded, elapsed, 0);
+
+      return {
+        worldTitle: 'ADOPT ISLAND 3D',
+        stageLabel: `${petNames[petIdx]} · Lv.${petLevel}`,
+        timerSec: null,
+        score: bucks,
+        scoreLabel: '$ BUCKS',
+        lives: 1,
+        maxLives: 1,
+        phase: 'playing',
+        signalText,
+        signalTone: 'gold',
+        actionLabel: 'HATCH EGG (100)',
+        secondaryActionLabel: null,
+        canSwitchStage: false,
+      };
+    },
+    getPlayerPosition: (out) => out.copy(_pOut.set(px, py, pz)),
+    getPlayerYaw: () => facingYaw,
+    getPlayerSpeed: () => Math.hypot(vx, vz),
+    isPlayerGrounded: () => grounded,
+    groundHeightAt,
+    setAvatarConfig: (cfg) => {
+      avatarCfg = cfg;
+      scene.remove(playerRig.root);
+      playerRig = createRobloxCharacter(buildAvatarStyle(avatarCfg));
+      playerRig.root.position.set(px, py, pz);
+      scene.add(playerRig.root);
+    },
+    reset: () => {
+      px = 0;
+      py = 0.6;
+      pz = 12;
+    },
+    dispose: () => {
+      disposeGroup(worldGroup);
+      scene.remove(worldGroup, skyDome, clouds, petGroup, playerRig.root, lights.sun, lights.hemi, lights.rim);
+    },
+  };
+}
+
+// ==========================================
+// 10. PET SWARM & BEE KINGDOM 3D
+// ==========================================
+function createPetSwarmWorld(
+  scene: THREE.Scene,
+  isSoftwareGl: boolean,
+  maxAnisotropy: number,
+  initialAvatar: RobloxAvatarConfig
+): WorldController {
+  scene.background = new THREE.Color(0x6ec3ff);
+  if (scene.fog instanceof THREE.Fog) {
+    scene.fog.color.setHex(0x9be2ff);
+    scene.fog.near = 75;
+    scene.fog.far = 250;
+  }
+
+  const skyDome = createRobloxSkyDome(scene, {
+    topHex: '#1877e8',
+    horizonHex: '#aee4ff',
+    groundHex: '#6ec3ff',
+    sunPos: [90, 120, -130],
+  });
+  const clouds = createCloudClusters(scene, 18, 48, 135);
+  const lights = createThreePointLights(scene, {
+    isSoftwareGl,
+    sunColor: 0xfff3c4,
+    sunIntensity: 2.35,
+    hemiSky: 0xdbeafe,
+    hemiGround: 0x3b6e35,
+    hemiIntensity: 0.78,
+  });
+
+  const worldGroup = new THREE.Group();
+  scene.add(worldGroup);
+
+  let avatarCfg = initialAvatar;
+  let playerRig = createRobloxCharacter(buildAvatarStyle(avatarCfg));
+  scene.add(playerRig.root);
+
+  const grassMat = new THREE.MeshStandardMaterial({ map: createGrassTexture(maxAnisotropy, 22), roughness: 0.86 });
+  const honeyMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    emissive: 0xd97706,
+    emissiveIntensity: 0.35,
+    roughness: 0.25,
+    metalness: 0.15,
+  });
+
+  const platforms: PlatformDef[] = [];
+  const addPlat = (x: number, y: number, z: number, w: number, h: number, d: number, mat: THREE.Material) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y - h / 2, z);
+    m.receiveShadow = true;
+    m.castShadow = true;
+    worldGroup.add(m);
+    platforms.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, y });
+  };
+
+  // Clover Meadow Base + 3-Tier Honeycomb Mountain Steps
+  addPlat(0, 0, 0, 170, 1.5, 170, grassMat);
+  addPlat(0, 2.2, -48, 56, 2.5, 38, honeyMat);
+  addPlat(0, 4.6, -54, 38, 2.5, 26, honeyMat);
+  addPlat(0, 7.2, -58, 22, 3.0, 16, honeyMat);
+
+  // Your Honeycomb Hive Stand + Convert Pad
+  const hiveWall = new THREE.Mesh(
+    new THREE.BoxGeometry(10, 9, 2),
+    new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.35 })
+  );
+  hiveWall.position.set(0, 4.5, 28);
+  const convertPad = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.4, 3.4, 0.3, 20),
+    new THREE.MeshStandardMaterial({ color: 0x22c55e, emissive: 0x16a34a, emissiveIntensity: 1.0 })
+  );
+  convertPad.position.set(0, 0.2, 23);
+  worldGroup.add(hiveWall, convertPad);
+
+  // Flower & Crystal Collectibles Fields
+  const gems: Array<{ x: number; y: number; z: number; value: number; mesh: THREE.Mesh; timer: number }> = [];
+  const fieldColors = [0xf43f5e, 0x38bdf8, 0xfacc15, 0xa855f7, 0x22c55e];
+  for (let i = 0; i < 36; i++) {
+    const ang = (i / 36) * Math.PI * 2;
+    const rad = 12 + (i % 5) * 10;
+    const gx = Math.cos(ang) * rad;
+    const gz = Math.sin(ang) * rad - 8;
+    const gy = gz < -30 ? 3.5 : 1.0;
+    const col = fieldColors[i % fieldColors.length];
+    const mesh = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.95, 0),
+      new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.85, roughness: 0.2 })
+    );
+    mesh.position.set(gx, gy, gz);
+    worldGroup.add(mesh);
+    gems.push({ x: gx, y: gy, z: gz, value: 25 + (i % 4) * 15, mesh, timer: 0 });
+  }
+
+  // Orbiting 5-Bee Swarm Companions
+  const swarmBees: THREE.Group[] = [];
+  const beeMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.3 });
+  const stripeMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5 });
+  const wingMat = new THREE.MeshStandardMaterial({ color: 0xe0f2fe, transparent: true, opacity: 0.78 });
+  for (let i = 0; i < 5; i++) {
+    const bg = new THREE.Group();
+    const bBody = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.52, 0.8), beeMat);
+    const bStripe = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.54, 0.22), stripeMat);
+    const wL = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.08, 0.35), wingMat);
+    wL.position.set(-0.45, 0.3, 0);
+    const wR = wL.clone();
+    wR.position.x = 0.45;
+    bg.add(bBody, bStripe, wL, wR);
+    scene.add(bg);
+    swarmBees.push(bg);
+  }
+
+  let px = 0;
+  let py = 0.2;
+  let pz = 14;
+  let facingYaw = Math.PI;
+  let vx = 0;
+  let vy = 0;
+  let vz = 0;
+  let grounded = true;
+  let pollen = 0;
+  let capacity = 250;
+  let honeyCoins = 0;
+  let swarmPower = 1;
+  let signalText: string | null = null;
+  let signalTimer = 0;
+
+  const groundHeightAt = (x: number, z: number): number => {
+    let best = 0;
+    for (const p of platforms) {
+      if (x >= p.minX - 0.3 && x <= p.maxX + 0.3 && z >= p.minZ - 0.3 && z <= p.maxZ + 0.3) {
+        if (p.y > best && p.y <= py + 2.5) best = p.y;
+      }
+    }
+    return best;
+  };
+
+  return {
+    update: (dt, elapsed, input, yaw, _pitch, isFp) => {
+      playerRig.setFirstPersonHidden(isFp);
+      skyDome.position.set(px, 0, pz);
+      updateSunShadowTarget(lights.sun, [26, 38, 22], px, pz);
+      if (signalTimer > 0) {
+        signalTimer -= dt;
+        if (signalTimer <= 0) signalText = null;
+      }
+
+      _fwd.set(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
+      _rgt.set(-Math.cos(yaw), 0, Math.sin(yaw)).normalize();
+      const spd = input.sprint ? 10.4 : 6.8;
+      vx = THREE.MathUtils.damp(vx, (_fwd.x * -input.moveZ + _rgt.x * input.moveX) * spd, 10, dt);
+      vz = THREE.MathUtils.damp(vz, (_fwd.z * -input.moveZ + _rgt.z * input.moveX) * spd, 10, dt);
+      if (input.jumpPressed && grounded) {
+        vy = 11.8;
+        grounded = false;
+        robloxAudio.playJump();
+      }
+      vy -= 26 * dt;
+      px = THREE.MathUtils.clamp(px + vx * dt, -76, 76);
+      pz = THREE.MathUtils.clamp(pz + vz * dt, -76, 76);
+      py += vy * dt;
+      const fy = groundHeightAt(px, pz);
+      if (py <= fy) {
+        py = fy;
+        vy = 0;
+        grounded = true;
+      } else {
+        grounded = false;
+      }
+
+      // Harvest Crystal & Pollen Gems
+      for (const g of gems) {
+        if (g.timer > 0) {
+          g.timer -= dt;
+          g.mesh.visible = g.timer <= 0;
+          continue;
+        }
+        g.mesh.rotation.y = elapsed * 2.5;
+        if (Math.hypot(px - g.x, pz - g.z) < 2.6 && pollen < capacity) {
+          pollen = Math.min(capacity, pollen + g.value * swarmPower);
+          g.timer = 7;
+          g.mesh.visible = false;
+          robloxAudio.playCoin();
+        }
+      }
+
+      // Convert Pollen to Honey at Hive Stand
+      if (Math.hypot(px - 0, pz - 23) < 3.6 && pollen > 0) {
+        honeyCoins += pollen * 2;
+        pollen = 0;
+        robloxAudio.playCheckpoint();
+        signalText = 'HONEY CONVERTED!';
+        signalTimer = 1.6;
+      }
+
+      // Action button upgrades Bag Capacity & Swarm Power
+      if (input.actionPressed) {
+        const upgCost = swarmPower * 300;
+        if (honeyCoins >= upgCost) {
+          honeyCoins -= upgCost;
+          swarmPower++;
+          capacity += 250;
+          robloxAudio.playCheckpoint();
+          signalText = `SWARM TIER ${swarmPower}!`;
+          signalTimer = 2.2;
+        } else {
+          signalText = `NEED ${upgCost} HONEY`;
+          signalTimer = 1.5;
+        }
+      }
+
+      // Animate Orbiting Swarm Bees
+      for (let i = 0; i < swarmBees.length; i++) {
+        const ang = elapsed * 2.4 + (i * Math.PI * 2) / swarmBees.length;
+        const bx = px + Math.cos(ang) * 2.5;
+        const bz = pz + Math.sin(ang) * 2.5;
+        const by = py + 2.2 + Math.sin(elapsed * 5 + i) * 0.35;
+        swarmBees[i].position.set(bx, by, bz);
+        swarmBees[i].rotation.y = -ang;
+      }
+
+      const hs = Math.hypot(vx, vz);
+      playerRig.root.position.set(px, py, pz);
+      if (hs > 0.4) {
+        facingYaw = smoothRotateYaw(facingYaw, Math.atan2(vx, vz), dt, 10);
+        playerRig.root.rotation.y = facingYaw;
+      } else if (isFp) {
+        facingYaw = yaw;
+        playerRig.root.rotation.y = yaw;
+      }
+      animateRobloxCharacter(playerRig, hs, grounded, elapsed, 0);
+
+      return {
+        worldTitle: 'PET SWARM 3D',
+        stageLabel: `Bag ${pollen}/${capacity} · Swarm Lv.${swarmPower}`,
+        timerSec: null,
+        score: honeyCoins,
+        scoreLabel: 'HONEY',
+        lives: 1,
+        maxLives: 1,
+        phase: 'playing',
+        signalText,
+        signalTone: 'gold',
+        actionLabel: `UPGRADE (${swarmPower * 300})`,
+        secondaryActionLabel: null,
+        canSwitchStage: false,
+      };
+    },
+    getPlayerPosition: (out) => out.copy(_pOut.set(px, py, pz)),
+    getPlayerYaw: () => facingYaw,
+    getPlayerSpeed: () => Math.hypot(vx, vz),
+    isPlayerGrounded: () => grounded,
+    groundHeightAt,
+    setAvatarConfig: (cfg) => {
+      avatarCfg = cfg;
+      scene.remove(playerRig.root);
+      playerRig = createRobloxCharacter(buildAvatarStyle(avatarCfg));
+      playerRig.root.position.set(px, py, pz);
+      scene.add(playerRig.root);
+    },
+    reset: () => {
+      px = 0;
+      py = 0.2;
+      pz = 14;
+    },
+    dispose: () => {
+      disposeGroup(worldGroup);
+      for (const b of swarmBees) scene.remove(b);
+      scene.remove(worldGroup, skyDome, clouds, playerRig.root, lights.sun, lights.hemi, lights.rim);
+    },
+  };
+}
+
 export function createViralWorldById(
   worldId: Exclude<RobloxWorldId, 'squid_game'>,
   scene: THREE.Scene,
@@ -1971,6 +2609,10 @@ export function createViralWorldById(
   initialAvatar: RobloxAvatarConfig = DEFAULT_ROBLOX_AVATAR
 ): WorldController {
   switch (worldId) {
+    case 'adopt_island':
+      return createAdoptIslandWorld(scene, isSoftwareGl, maxAnisotropy, initialAvatar);
+    case 'pet_swarm':
+      return createPetSwarmWorld(scene, isSoftwareGl, maxAnisotropy, initialAvatar);
     case 'tower_obby':
       return createTowerObbyWorld(scene, isSoftwareGl, maxAnisotropy, initialAvatar);
     case 'brookhaven_rp':

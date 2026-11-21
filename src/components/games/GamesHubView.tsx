@@ -7,7 +7,10 @@ import {
   Gamepad2,
   Layers,
   Loader2,
+  Mic,
+  MessageSquare,
   Play,
+  Search,
   Server,
   Shield,
   Sparkles,
@@ -28,6 +31,7 @@ import { BmGamesIcon } from './BmGamesIcon';
 import { LiveSpyEmblem } from './LiveSpyEmblem';
 import { AvatarCustomizerModal } from './roblox3d/AvatarCustomizerModal';
 import { ROBLOX_DEFAULT_GAMES, ROBLOX_GAME_THUMBNAILS } from './roblox3d/gameCatalog';
+import { ROBLOX_WORLD_ID_SET } from './roblox3d/gameRegistry';
 import { loadSavedRobloxAvatar, saveRobloxAvatar } from './roblox3d/robloxCharacter';
 import { SQUID_STAGES, type RobloxWorldId, type SquidStageId } from './roblox3d/types';
 
@@ -48,27 +52,15 @@ interface GamesHubViewProps {
 }
 
 const CATEGORIES: Array<{ id: GameCategoryFilter; label: string }> = [
-  { id: 'all', label: 'All Games' },
-  { id: 'survival', label: 'Squid S1 & Survival' },
-  { id: 'roleplay', label: 'Mega City RP' },
-  { id: 'action', label: 'BedWars & Action' },
+  { id: 'all', label: 'Discover All' },
+  { id: 'roleplay', label: 'Pets & City RP' },
+  { id: 'tycoon', label: 'Pet Swarm & Tycoon' },
+  { id: 'survival', label: 'Squid S1 & Disasters' },
+  { id: 'action', label: 'BedWars & Blox' },
   { id: 'obby', label: 'Obby 40 Stages' },
-  { id: 'tycoon', label: 'Mega Tycoon' },
   { id: 'horror', label: 'Doors 100' },
   { id: 'multiplayer', label: 'Live Spy' },
 ];
-
-const ROBLOX_WORLD_IDS = new Set<string>([
-  'squid_game',
-  'brookhaven_rp',
-  'blox_arena',
-  'tower_obby',
-  'bedwars_sky',
-  'tycoon_empire',
-  'natural_disaster',
-  'doors_hotel',
-  'mm2_manor',
-]);
 
 type ServerStatsMap = Record<
   string,
@@ -88,6 +80,7 @@ export const GamesHubView: React.FC<GamesHubViewProps> = ({
   onRequireAuth,
 }) => {
   const [activeCategory, setActiveCategory] = useState<GameCategoryFilter>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [games, setGames] = useState<GameCatalogEntry[]>(ROBLOX_DEFAULT_GAMES);
   const [serverStats, setServerStats] = useState<ServerStatsMap>({});
   const [selectedCapacity, setSelectedCapacity] = useState<LiveSpyCapacity>(6);
@@ -139,16 +132,36 @@ export const GamesHubView: React.FC<GamesHubViewProps> = ({
   }, [activeRobloxLaunch]);
 
   const filteredGames = useMemo(() => {
-    if (activeCategory === 'all') return games;
-    if (activeCategory === 'multiplayer' || activeCategory === 'social') {
-      return games.filter((g) => g.id === 'live_spy');
-    }
-    return games.filter((g) => g.category === activeCategory);
-  }, [activeCategory, games]);
+    const q = searchQuery.trim().toLowerCase();
+    const catFiltered =
+      activeCategory === 'all'
+        ? games
+        : activeCategory === 'multiplayer' || activeCategory === 'social'
+        ? games.filter((g) => g.id === 'live_spy')
+        : games.filter((g) => g.category === activeCategory);
+
+    if (!q) return catFiltered;
+    return catFiltered.filter(
+      (g) =>
+        g.name.toLowerCase().includes(q) ||
+        (g.subtitle || '').toLowerCase().includes(q) ||
+        (g.description || '').toLowerCase().includes(q) ||
+        (g.tagline || '').toLowerCase().includes(q)
+    );
+  }, [activeCategory, games, searchQuery]);
+
+  const topPickPetWorld =
+    !searchQuery.trim() && activeCategory === 'all'
+      ? filteredGames.find((g) => g.id === 'adopt_island') || null
+      : null;
 
   const squidGame = filteredGames.find((g) => g.id === 'squid_game') || null;
   const otherRobloxGames = filteredGames.filter(
-    (g) => g.id !== 'squid_game' && g.id !== 'live_spy' && ROBLOX_WORLD_IDS.has(g.id)
+    (g) =>
+      g.id !== 'squid_game' &&
+      g.id !== 'live_spy' &&
+      g.id !== topPickPetWorld?.id &&
+      ROBLOX_WORLD_ID_SET.has(g.id)
   );
   const liveSpyGame = filteredGames.find((g) => g.id === 'live_spy') || null;
 
@@ -157,8 +170,11 @@ export const GamesHubView: React.FC<GamesHubViewProps> = ({
     if (!stat || stat.activeServers === 0 || !stat.rooms || stat.rooms.length === 0) {
       return 'Server #1 · 0/25 Open';
     }
-    const openRoom = stat.rooms.find((r) => r.players < stat.maxPerRoom) || stat.rooms[stat.rooms.length - 1];
-    return `${stat.activeServers} Server${stat.activeServers > 1 ? 's' : ''} · S#${openRoom.serverNumber} (${openRoom.players}/25)`;
+    const openRoom =
+      stat.rooms.find((r) => r.players < stat.maxPerRoom) || stat.rooms[stat.rooms.length - 1];
+    return `${stat.activeServers} Server${stat.activeServers > 1 ? 's' : ''} · S#${
+      openRoom.serverNumber
+    } (${openRoom.players}/25)`;
   };
 
   const handlePlayLiveSpy = () => {
@@ -226,7 +242,7 @@ export const GamesHubView: React.FC<GamesHubViewProps> = ({
   return (
     <div
       data-testid="games-hub-view"
-      className="w-full max-w-6xl mx-auto px-3 sm:px-4 py-4 space-y-6 pb-24"
+      className="w-full max-w-6xl mx-auto px-3 sm:px-4 py-4 space-y-5 pb-24"
     >
       {/* Avatar Editor Modal */}
       {showAvatarModal && (
@@ -237,43 +253,64 @@ export const GamesHubView: React.FC<GamesHubViewProps> = ({
         />
       )}
 
-      {/* Games Hub Header */}
-      <div className="ml-glass rounded-2xl p-4 sm:p-5 border border-[var(--border-subtle)] flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <button
-            type="button"
-            data-testid="games-hub-back-btn"
-            onClick={onBack}
-            className="w-10 h-10 rounded-xl bg-[var(--bg-surface-alt)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-center text-[var(--text-primary)] shrink-0 transition-colors"
-            aria-label="Back to Home Feed"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
+      {/* Roblox-Style Platform Launcher Header */}
+      <div className="ml-glass rounded-2xl p-3.5 sm:p-4 border border-[var(--border-subtle)] space-y-3">
+        <div className="flex items-center justify-between gap-2.5 flex-wrap">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <button
+              type="button"
+              data-testid="games-hub-back-btn"
+              onClick={onBack}
+              className="w-10 h-10 rounded-xl bg-[var(--bg-surface-alt)] hover:bg-[var(--bg-surface)] border border-[var(--border-subtle)] flex items-center justify-center text-[var(--text-primary)] shrink-0 transition-colors"
+              aria-label="Back to Home Feed"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
 
-          <div className="w-11 h-11 rounded-2xl bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] flex items-center justify-center shrink-0">
-            <BmGamesIcon className="w-7 h-7" />
+            <div className="w-10 h-10 rounded-2xl bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] flex items-center justify-center shrink-0">
+              <BmGamesIcon className="w-6 h-6" />
+            </div>
+
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-xl font-black tracking-tight text-[var(--text-primary)] truncate">
+                BM GAMES · 3D WORLD PLATFORM
+              </h1>
+              <p className="text-[11px] sm:text-xs font-medium text-[var(--text-secondary)] truncate flex items-center gap-2">
+                <span>25 Players/Server Auto-Match</span>
+                <span className="inline-flex items-center gap-1 text-emerald-500 font-bold">
+                  <Mic className="w-3 h-3" /> ভয়েস
+                </span>
+                <span className="inline-flex items-center gap-1 text-sky-400 font-bold">
+                  <MessageSquare className="w-3 h-3" /> মেসেজ
+                </span>
+              </p>
+            </div>
           </div>
 
-          <div className="min-w-0">
-            <h1 className="text-lg sm:text-xl font-black tracking-tight text-[var(--text-primary)] truncate">
-              BM GAMES · 25-PLAYER 3D WORLDS
-            </h1>
-            <p className="text-xs sm:text-sm font-medium text-[var(--text-secondary)] truncate">
-              25 Players/Server Auto-Matchmaking · Squid Game S1 · Long-Form 30–60 Min Worlds
-            </p>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            {/* Search Experiences Input */}
+            <div className="flex-1 sm:w-56 h-10 rounded-xl bg-[var(--bg-surface-alt)] border border-[var(--border-subtle)] px-3 flex items-center gap-2">
+              <Search className="w-4 h-4 text-[var(--text-muted)] shrink-0" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search 3D games..."
+                className="w-full bg-transparent text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
+              />
+            </div>
+
+            <button
+              type="button"
+              data-testid="hub-avatar-customizer-btn"
+              onClick={() => setShowAvatarModal(true)}
+              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[var(--accent-primary-soft)] hover:bg-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--accent-primary-border)] text-xs font-black text-[var(--accent-primary)] flex items-center gap-1.5 shrink-0 transition-all"
+            >
+              <UserCog className="w-4 h-4" />
+              <span className="hidden md:inline">ক্যারেক্টার</span>
+            </button>
           </div>
         </div>
-
-        <button
-          type="button"
-          data-testid="hub-avatar-customizer-btn"
-          onClick={() => setShowAvatarModal(true)}
-          className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[var(--accent-primary-soft)] hover:bg-[var(--accent-primary)] hover:text-[var(--accent-primary-contrast)] border border-[var(--accent-primary-border)] text-xs font-black text-[var(--accent-primary)] flex items-center gap-1.5 shrink-0 transition-all"
-        >
-          <UserCog className="w-4 h-4" />
-          <span className="hidden sm:inline">ক্যারেক্টার মডিফাই</span>
-          <span className="sm:hidden">Avatar</span>
-        </button>
       </div>
 
       {/* Category Filter Strip */}
@@ -297,6 +334,78 @@ export const GamesHubView: React.FC<GamesHubViewProps> = ({
           );
         })}
       </div>
+
+      {/* NEW TOP PICK HERO: ADOPT & RAISE DREAM PET ISLAND 3D */}
+      {topPickPetWorld && (
+        <section
+          data-testid="adopt-island-featured-card"
+          className="rounded-3xl overflow-hidden border border-sky-400/40 bg-gradient-to-br from-[#0e1e36] via-[#132946] to-[#0a1322] text-slate-100 shadow-2xl"
+        >
+          <div className="grid grid-cols-1 lg:grid-cols-12">
+            <div className="lg:col-span-6 relative min-h-[220px] sm:min-h-[260px] bg-[#0b1322] overflow-hidden">
+              {!failedImages['adopt_island'] ? (
+                <img
+                  src={ROBLOX_GAME_THUMBNAILS.adopt_island}
+                  alt={topPickPetWorld.name}
+                  onError={() => setFailedImages((p) => ({ ...p, adopt_island: true }))}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-sky-950">
+                  <Gamepad2 className="w-16 h-16 text-sky-400" />
+                </div>
+              )}
+              <div className="absolute inset-0 bg-gradient-to-t from-[#0b1322]/90 via-transparent to-black/25" />
+              <div className="absolute top-3 left-3 px-2.5 py-1 rounded-lg bg-sky-500 text-slate-950 text-[11px] font-black shadow">
+                NEW VIRAL TOP PICK · VIBRANT 3D
+              </div>
+              <div className="absolute top-3 right-3 px-2.5 py-1 rounded-lg bg-[#0d1322]/90 border border-teal-400/40 text-[11px] font-black text-teal-300 flex items-center gap-1">
+                <Server className="w-3 h-3" />
+                <span>{formatServerLabel('adopt_island')}</span>
+              </div>
+            </div>
+
+            <div className="lg:col-span-6 p-4 sm:p-6 flex flex-col justify-between gap-4">
+              <div className="space-y-2.5">
+                <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white">
+                  {topPickPetWorld.name}
+                </h2>
+                {topPickPetWorld.subtitle && (
+                  <p className="text-xs sm:text-sm font-bold text-sky-300">
+                    {topPickPetWorld.subtitle}
+                  </p>
+                )}
+                <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
+                  {topPickPetWorld.description}
+                </p>
+                <div className="flex flex-wrap gap-2 pt-1 text-[11px] font-bold text-amber-300">
+                  {(topPickPetWorld.features || []).map((f) => (
+                    <span key={f} className="px-2.5 py-1 rounded-lg bg-white/10 border border-white/10">
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-3">
+                <span className="text-xs font-bold text-teal-300 flex items-center gap-1.5">
+                  <Users className="w-4 h-4" />
+                  <span>25 Players / Room · Voice + Chat Built-In</span>
+                </span>
+                <button
+                  type="button"
+                  data-testid="play-roblox-adopt_island"
+                  onClick={() => handleLaunchRobloxWorld('adopt_island')}
+                  className="min-h-[46px] px-6 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-black tracking-wide flex items-center gap-2 shadow-lg active:scale-95 transition-all shrink-0"
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  <span>PLAY NOW</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* FLAGSHIP FEATURED GAME: SQUID GAME SEASON 1 ONLY */}
       {squidGame && (
@@ -409,16 +518,16 @@ export const GamesHubView: React.FC<GamesHubViewProps> = ({
         </section>
       )}
 
-      {/* MASSIVE 25-PLAYER 3D ROBLOX ARCADE GRID */}
+      {/* MASSIVE 25-PLAYER 3D ROBLOX EXPERIENCES GRID */}
       {otherRobloxGames.length > 0 && (
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm sm:text-base font-black text-[var(--text-primary)] flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-[var(--accent-gold)]" />
-              <span>ম্যাসিভ ২৫-প্লেয়ার ৩ডি Roblox ওয়ার্ল্ড (৩০–৯০ মিনিট গেমপ্লে)</span>
+              <span>সকল ২৫-প্লেয়ার ৩ডি ওয়ার্ল্ড (ইউনিফাইড ভয়েস ও মেসেজ সিস্টেম)</span>
             </h2>
             <span className="text-xs font-bold text-[var(--text-secondary)]">
-              {otherRobloxGames.length} Multiplayer Worlds
+              {otherRobloxGames.length} Worlds
             </span>
           </div>
 

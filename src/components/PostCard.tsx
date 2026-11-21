@@ -16,7 +16,18 @@ import {
   Pencil,
   Flag,
   Ban,
+  Download,
+  CheckCircle2,
+  WifiOff,
 } from 'lucide-react';
+import {
+  savePostVideoOffline,
+  removeOfflineVideo,
+  useOfflineVaultState,
+  resolveOfflineMediaUrl,
+  useOfflineMediaSrc,
+  useOfflineConnectivity,
+} from '../services/offlineVideoEngine';
 import type { Post, ReactionType, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
 import { FIRE_REACTIONS } from '../data/fireEmojiCatalog';
@@ -90,6 +101,18 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [hasVideoStarted, setHasVideoStarted] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [isVideoBuffering, setIsVideoBuffering] = useState(false);
+  const [fallbackVideoUrl, setFallbackVideoUrl] = useState<string>('');
+  const { isOnline } = useOfflineConnectivity();
+  const resolvedVideoUrl = useOfflineMediaSrc(
+    post.mediaType === 'video' ? post.mediaUrl : undefined,
+    false
+  );
+  const resolvedThumbUrl = useOfflineMediaSrc(post.thumbnailUrl, false);
+  const offlineVault = useOfflineVaultState();
+  const isVideoPost = post.mediaType === 'video' || post.source === 'youtube';
+  const isSavedOffline =
+    offlineVault.downloadedIds.has(post.id) ||
+    (post.externalId ? offlineVault.downloadedIds.has(post.externalId) : false);
 
   const inlineVideoRef = useRef<HTMLVideoElement | null>(null);
   const inlineYtIframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -116,8 +139,9 @@ export const PostCard: React.FC<PostCardProps> = ({
     75
   );
 
-  // Clean up active inline video registration on unmount
+  // Reset fallback Blob URL and clean up inline video activity tracking on unmount
   useEffect(() => {
+    setFallbackVideoUrl('');
     return () => {
       markInlineVideoInactive(post.id);
     };
@@ -225,6 +249,10 @@ export const PostCard: React.FC<PostCardProps> = ({
       : post.mediaType !== 'video' && post.mediaUrl && post.source !== 'youtube'
       ? [post.mediaUrl]
       : [];
+  const resolvedPostImageUrl = useOfflineMediaSrc(
+    postImages[activeImageIndex] || postImages[0],
+    false
+  );
 
   const handleCopyLink = () => {
     const url = buildMotherlandPostShareUrl(post);
@@ -345,6 +373,34 @@ export const PostCard: React.FC<PostCardProps> = ({
                   <Bookmark className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
                   <span>{isSaved ? 'Unsave Post' : 'Save Post'}</span>
                 </button>
+
+                {isVideoPost && (
+                  <button
+                    type="button"
+                    data-testid={`post-offline-save-${post.id}`}
+                    onClick={async () => {
+                      if (isSavedOffline) {
+                        await removeOfflineVideo(post.id);
+                      } else {
+                        await savePostVideoOffline(post);
+                      }
+                      setMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2 font-semibold text-[var(--accent-primary)]"
+                  >
+                    {isSavedOffline ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>অফলাইনে সেভ ✓</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-3.5 h-3.5 shrink-0" />
+                        <span>অফলাইনে ডাউনলোড</span>
+                      </>
+                    )}
+                  </button>
+                )}
 
                 {isAuthor && onEditPost && post.source === 'motherland' && (
                   <button
@@ -584,31 +640,62 @@ export const PostCard: React.FC<PostCardProps> = ({
 
         {/* Media Display: YouTube / Video / Multi-Image Swipe Carousel */}
         {post.source === 'youtube' && post.externalId ? (
-          <div
-            className="relative aspect-video w-full bg-black overflow-hidden"
-            onPointerDown={() => markInlineVideoActive(post.id, post.externalId)}
-          >
-            <iframe
-              ref={inlineYtIframeRef}
-              src={ytEmbedUrl}
-              onLoad={() => registerYTListeningHandshake(inlineYtIframeRef.current, 101)}
-              title={post.content || 'YouTube Video'}
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-              className="w-full h-full border-0"
-            />
-          </div>
+          !isOnline ? (
+            <div className="relative aspect-video w-full bg-black flex flex-col items-center justify-center text-center p-4 overflow-hidden">
+              {(resolvedThumbUrl || post.thumbnailUrl) && (
+                <img
+                  src={resolvedThumbUrl || post.thumbnailUrl}
+                  alt={post.content || 'YouTube preview'}
+                  className="absolute inset-0 w-full h-full object-cover opacity-35"
+                />
+              )}
+              <div className="relative z-10 max-w-xs space-y-1.5">
+                <div className="w-10 h-10 mx-auto rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center">
+                  <WifiOff className="w-5 h-5" />
+                </div>
+                <p className="text-xs font-bold text-white line-clamp-2">
+                  {post.content || 'YouTube Video'}
+                </p>
+                <p className="text-[11px] text-slate-200">
+                  অফলাইন প্রিভিউ · প্লে করতে ইন্টারনেট অন করুন (MOTHERLAND ভিডিও সরাসরি অফলাইনে চলবে)
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="relative aspect-video w-full bg-black overflow-hidden"
+              onPointerDown={() => markInlineVideoActive(post.id, post.externalId)}
+            >
+              <iframe
+                ref={inlineYtIframeRef}
+                src={ytEmbedUrl}
+                onLoad={() => registerYTListeningHandshake(inlineYtIframeRef.current, 101)}
+                title={post.content || 'YouTube Video'}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+                className="w-full h-full border-0"
+              />
+            </div>
+          )
         ) : post.mediaType === 'video' && post.mediaUrl ? (
           <div className="relative aspect-video w-full bg-black overflow-hidden">
             <video
               ref={inlineVideoRef}
-              src={post.mediaUrl}
-              poster={post.thumbnailUrl}
+              src={fallbackVideoUrl || resolvedVideoUrl || post.mediaUrl}
+              poster={resolvedThumbUrl || post.thumbnailUrl || undefined}
               preload="metadata"
               playsInline
               loop
               muted={isMuted}
               controls
+              onError={() => {
+                if (post.mediaUrl && !fallbackVideoUrl) {
+                  void resolveOfflineMediaUrl(post.mediaUrl, true).then((u) => {
+                    const current = fallbackVideoUrl || resolvedVideoUrl || post.mediaUrl;
+                    if (u && u !== current) setFallbackVideoUrl(u);
+                  });
+                }
+              }}
               onPlay={() => {
                 setHasVideoStarted(true);
                 setIsVideoPlaying(true);
@@ -655,9 +742,9 @@ export const PostCard: React.FC<PostCardProps> = ({
             onTouchStart={handleCarouselTouchStart}
             onTouchEnd={(e) => handleCarouselTouchEnd(e, postImages.length)}
           >
-            {(postImages[activeImageIndex] || postImages[0]) && (
+            {(resolvedPostImageUrl || postImages[activeImageIndex] || postImages[0]) && (
               <img
-                src={postImages[activeImageIndex] || postImages[0]}
+                src={resolvedPostImageUrl || postImages[activeImageIndex] || postImages[0]}
                 alt="Post attachment"
                 onClick={() => setLightboxIndex(activeImageIndex)}
                 className="w-full max-h-[520px] object-cover cursor-zoom-in"

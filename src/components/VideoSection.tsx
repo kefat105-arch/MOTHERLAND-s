@@ -25,7 +25,93 @@ import {
   Copy,
   Compass,
   History,
+  MoreVertical,
+  Download,
+  CheckCircle2,
+  WifiOff,
 } from 'lucide-react';
+import {
+  saveVideoOffline,
+  removeOfflineVideo,
+  useOfflineVaultState,
+  useOfflineConnectivity,
+  useOfflineMediaSrc,
+  normalizeMediaKey,
+  getOfflineLongVideos,
+  getOfflineShorts,
+} from '../services/offlineVideoEngine';
+
+const OfflineMediaImage: React.FC<{
+  src?: string;
+  alt: string;
+  className?: string;
+  loading?: 'lazy' | 'eager';
+}> = ({ src, alt, className, loading = 'lazy' }) => {
+  const resolved = useOfflineMediaSrc(src, false);
+  if (!resolved) return null;
+  return <img src={resolved} alt={alt} className={className} loading={loading} />;
+};
+
+function mapFeedItemToShort(item: any): ShortVideo {
+  const isMotherland =
+    item?.source === 'motherland' ||
+    (Boolean(item?.videoUrl) && !item?.youtubeId) ||
+    Boolean(item?.creator);
+  if (isMotherland) {
+    return {
+      id: item.id,
+      source: item.source || 'motherland',
+      youtubeId: item.youtubeId,
+      videoUrl: item.videoUrl || '',
+      thumbnailUrl: item.thumbnailUrl || '',
+      title: item.title || 'MOTHERLAND Short',
+      caption: item.caption || item.description || '',
+      durationSeconds: typeof item.durationSeconds === 'number' ? item.durationSeconds : 30,
+      aspectRatio: item.aspectRatio || '9:16',
+      hashtags: Array.isArray(item.hashtags) ? item.hashtags : ['Shorts'],
+      creator: item.creator || {
+        id: item.channel?.id || 'motherland',
+        name: item.channel?.title || 'Creator',
+        username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
+        avatar: item.channel?.avatar || '',
+        isVerified: true,
+      },
+      stats: {
+        likes: item.stats?.likes || 0,
+        comments: item.stats?.comments || 0,
+        shares: item.stats?.shares || 0,
+        views: item.stats?.views || 0,
+      },
+      createdAt: item.createdAt || item.publishedAt || 'Recently',
+    };
+  }
+  return {
+    id: item.id,
+    source: 'youtube',
+    youtubeId: item.youtubeId,
+    videoUrl: '',
+    thumbnailUrl: item.thumbnailUrl,
+    title: item.title,
+    caption: item.description,
+    durationSeconds: item.durationSeconds,
+    aspectRatio: '9:16',
+    hashtags: ['Shorts'],
+    creator: {
+      id: item.channel?.id || 'yt',
+      name: item.channel?.title || 'Creator',
+      username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
+      avatar: item.channel?.avatar || '',
+      isVerified: true,
+    },
+    stats: {
+      likes: item.stats?.likes || 0,
+      comments: item.stats?.comments || 0,
+      shares: 0,
+      views: item.stats?.views || 0,
+    },
+    createdAt: item.publishedAt || 'Recently',
+  };
+}
 import { api } from '../api';
 import type { ShortVideo, LongVideo, UserProfile } from '../types';
 import { useBackHandler } from '../hooks/useBackNavigation';
@@ -145,6 +231,15 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
   const [watchActionNotice, setWatchActionNotice] = useState<{ text: string; url?: string } | null>(null);
   const [copiedShare, setCopiedShare] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [openCardMenuId, setOpenCardMenuId] = useState<string | null>(null);
+  const offlineVault = useOfflineVaultState();
+  const { isOnline } = useOfflineConnectivity();
+  const isSavedOffline = (v: LongVideo) =>
+    offlineVault.downloadedIds.has(v.id) || (v.youtubeId ? offlineVault.downloadedIds.has(v.youtubeId) : false);
+  const isPlayableOffline = (v: LongVideo) => {
+    if (!v.videoUrl) return false;
+    return offlineVault.playableBlobKeys.has(normalizeMediaKey(v.videoUrl));
+  };
 
   const savedScrollYRef = useRef(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -289,38 +384,20 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         recordShownFeedIds('video', cleaned.map((v) => v.youtubeId || v.id));
       }
       if (Array.isArray(ytShorts.items) && ytShorts.items.length > 0) {
-        const nextYtShorts: ShortVideo[] = ytShorts.items
-          .filter((item: any) => typeof item.durationSeconds === 'number' && item.durationSeconds > 0 && item.durationSeconds <= 180)
-          .map((item: any) => ({
-            id: item.id,
-            source: 'youtube',
-            youtubeId: item.youtubeId,
-            videoUrl: '',
-            thumbnailUrl: item.thumbnailUrl,
-            title: item.title,
-            caption: item.description,
-            durationSeconds: item.durationSeconds,
-            aspectRatio: '9:16',
-            hashtags: ['Shorts'],
-            creator: {
-              id: item.channel?.id || 'yt',
-              name: item.channel?.title || 'Creator',
-              username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
-              avatar: item.channel?.avatar || '',
-              isVerified: true,
-            },
-            stats: {
-              likes: item.stats?.likes || 0,
-              comments: item.stats?.comments || 0,
-              shares: 0,
-              views: item.stats?.views || 0,
-            },
-            createdAt: item.publishedAt || 'Recently',
-          }));
+        const nextShorts: ShortVideo[] = ytShorts.items
+          .filter(
+            (item: any) =>
+              item?.source === 'motherland' ||
+              Boolean(item?.videoUrl) ||
+              (typeof item.durationSeconds === 'number' &&
+                item.durationSeconds > 0 &&
+                item.durationSeconds <= 180)
+          )
+          .map(mapFeedItemToShort);
         setShortsCarousel((prev) => {
           const localOnly = filterEligibleShorts(prev.filter((s) => s.source !== 'youtube'));
           const sSeen = new Set(localOnly.map((s) => s.youtubeId || s.id));
-          return [...localOnly, ...filterEligibleShorts(nextYtShorts).filter((s) => !sSeen.has(s.youtubeId || s.id))];
+          return [...localOnly, ...filterEligibleShorts(nextShorts).filter((s) => !sSeen.has(s.youtubeId || s.id))];
         });
       }
     } finally {
@@ -330,10 +407,24 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
 
   // Smart Staleness Auto-Refresh: quietly updates unseen recommendations without disturbing active player
   useEffect(() => {
-    if (refreshSignal <= 0) return;
+    if (refreshSignal <= 0 || !isOnline) return;
     void refreshRecommendationsOnly();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshSignal]);
+  }, [refreshSignal, isOnline]);
+
+  // Immediate swap to downloaded playable offline MP4 library when internet disconnects
+  useEffect(() => {
+    if (isOnline) return;
+    let active = true;
+    void Promise.all([getOfflineLongVideos(), getOfflineShorts()]).then(([offLong, offShorts]) => {
+      if (!active) return;
+      if (offLong.length > 0) setLongVideosList(offLong);
+      if (offShorts.length > 0) setShortsCarousel(offShorts);
+    });
+    return () => {
+      active = false;
+    };
+  }, [isOnline, offlineVault.playableFullCount]);
 
   // Load initial Video Homepage data cleanly (NO autoplay)
   useEffect(() => {
@@ -397,38 +488,23 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           pageSize: 12,
         });
         if (mounted && shortsRes.items && shortsRes.items.length > 0) {
-          const ytShorts: ShortVideo[] = shortsRes.items
-            .filter((item: any) => typeof item.durationSeconds === 'number' && item.durationSeconds > 0 && item.durationSeconds <= 180)
-            .map((item: any) => ({
-              id: item.id,
-              source: 'youtube',
-              youtubeId: item.youtubeId,
-              videoUrl: '',
-              thumbnailUrl: item.thumbnailUrl,
-              title: item.title,
-              caption: item.description,
-              durationSeconds: item.durationSeconds,
-              aspectRatio: '9:16',
-              hashtags: ['Shorts'],
-              creator: {
-                id: item.channel?.id || 'yt',
-                name: item.channel?.title || 'Creator',
-                username: (item.channel?.title || 'creator').toLowerCase().replace(/\s+/g, '_'),
-                avatar: item.channel?.avatar || '',
-                isVerified: true,
-              },
-              stats: {
-                likes: item.stats?.likes || 0,
-                comments: item.stats?.comments || 0,
-                shares: Math.floor((item.stats?.likes || 0) / 10),
-                views: item.stats?.views || 0,
-              },
-              createdAt: item.publishedAt || new Date().toISOString(),
-            }));
+          const nextShorts: ShortVideo[] = shortsRes.items
+            .filter(
+              (item: any) =>
+                item?.source === 'motherland' ||
+                Boolean(item?.videoUrl) ||
+                (typeof item.durationSeconds === 'number' &&
+                  item.durationSeconds > 0 &&
+                  item.durationSeconds <= 180)
+            )
+            .map(mapFeedItemToShort);
 
           setShortsCarousel((prev) => {
             const seen = new Set(prev.map((s) => s.youtubeId || s.id));
-            return [...filterEligibleShorts(prev), ...filterEligibleShorts(ytShorts).filter((s) => !seen.has(s.youtubeId || s.id))];
+            return [
+              ...filterEligibleShorts(prev),
+              ...filterEligibleShorts(nextShorts).filter((s) => !seen.has(s.youtubeId || s.id)),
+            ];
           });
         }
       } catch {
@@ -758,7 +834,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
     >
       <div className="relative aspect-video bg-black overflow-hidden">
         {video.thumbnailUrl ? (
-          <img
+          <OfflineMediaImage
             src={video.thumbnailUrl}
             alt={video.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -768,6 +844,12 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
         <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/80 text-[10px] font-mono text-white font-semibold tabular-nums">
           {video.duration}
         </span>
+        {isPlayableOffline(video) && (
+          <span className="absolute top-2 right-2 px-2 py-0.5 rounded-lg bg-emerald-600/90 text-white text-[10px] font-bold flex items-center gap-1 shadow">
+            <CheckCircle2 className="w-3 h-3" />
+            <span>অফলাইনে প্লেযোগ্য ✓</span>
+          </span>
+        )}
         <span className="absolute top-2 left-2 px-2 py-0.5 rounded-lg bg-black/65 backdrop-blur-md border border-white/15 text-white text-[10px] font-semibold flex items-center gap-1">
           {video.source === 'youtube' ? (
             <>
@@ -831,9 +913,69 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           >
             {video.channel.title}
           </button>
-          <div className="text-[11px] text-[var(--text-muted)] tabular-nums">
-            {video.stats.views.toLocaleString()} views · {video.publishedAt}
+          <div className="text-[11px] text-[var(--text-muted)] tabular-nums flex items-center gap-1.5">
+            <span className="truncate">{video.stats.views.toLocaleString()} views · {video.publishedAt}</span>
+            {isSavedOffline(video) && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-[var(--accent-primary)] shrink-0">
+                <CheckCircle2 className="w-3 h-3" />
+                <span>অফলাইন</span>
+              </span>
+            )}
           </div>
+        </div>
+
+        {/* 3-Dot Card Action Menu (Offline Download & Share) */}
+        <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            data-testid={`video-card-menu-${video.id}`}
+            onClick={() => setOpenCardMenuId((prev) => (prev === video.id ? null : video.id))}
+            className="w-8 h-8 rounded-xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface-alt)] flex items-center justify-center"
+            aria-label="Video options"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+
+          {openCardMenuId === video.id && (
+            <div className="absolute right-0 bottom-9 z-30 w-48 ml-glass-elevated rounded-xl shadow-xl py-1 text-xs text-[var(--text-primary)] border border-[var(--border-subtle)]">
+              <button
+                type="button"
+                data-testid={`video-offline-save-${video.id}`}
+                onClick={async () => {
+                  if (isSavedOffline(video)) {
+                    await removeOfflineVideo(video.id);
+                  } else {
+                    await saveVideoOffline(video);
+                  }
+                  setOpenCardMenuId(null);
+                }}
+                className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2 font-semibold"
+              >
+                {isSavedOffline(video) ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[var(--accent-primary)] shrink-0" />
+                    <span>অফলাইনে সেভ ✓ (Remove)</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-3.5 h-3.5 text-[var(--accent-primary)] shrink-0" />
+                    <span>অফলাইনে ডাউনলোড</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleShareVideo(video);
+                  setOpenCardMenuId(null);
+                }}
+                className="w-full text-left px-3 py-2.5 hover:bg-[var(--bg-surface-alt)] flex items-center gap-2"
+              >
+                <Copy className="w-3.5 h-3.5 text-[var(--accent-gold)] shrink-0" />
+                <span>Copy Link</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </article>
@@ -1104,6 +1246,30 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
               <div className="p-2 rounded-2xl ml-glass-elevated flex flex-wrap gap-2 text-xs">
                 <button
                   type="button"
+                  onClick={async () => {
+                    if (isSavedOffline(watchingVideo)) {
+                      await removeOfflineVideo(watchingVideo.id);
+                    } else {
+                      await saveVideoOffline(watchingVideo);
+                    }
+                    setMoreMenuOpen(false);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] text-[var(--accent-primary)] font-bold flex items-center gap-1.5"
+                >
+                  {isSavedOffline(watchingVideo) ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>অফলাইনে সেভ ✓</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5" />
+                      <span>অফলাইনে ডাউনলোড</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     handleShareVideo(watchingVideo);
                     setMoreMenuOpen(false);
@@ -1331,7 +1497,56 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
                 {copiedShare ? <Check className="w-4 h-4 text-orange-400" /> : <BoostIcon size={18} />}
                 <span>{copiedShare ? 'Copied' : 'Boost'}</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setMoreMenuOpen((o) => !o)}
+                className="min-h-[40px] w-10 rounded-xl ml-glass text-[var(--text-primary)] flex items-center justify-center flex-shrink-0"
+                aria-label="More video options"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
             </div>
+
+            {moreMenuOpen && (
+              <div className="p-2 rounded-2xl ml-glass-elevated flex flex-wrap gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (isSavedOffline(watchingVideo)) {
+                      await removeOfflineVideo(watchingVideo.id);
+                    } else {
+                      await saveVideoOffline(watchingVideo);
+                    }
+                    setMoreMenuOpen(false);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-[var(--accent-primary-soft)] border border-[var(--accent-primary-border)] text-[var(--accent-primary)] font-bold flex items-center gap-1.5"
+                >
+                  {isSavedOffline(watchingVideo) ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>অফলাইনে সেভ ✓</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5" />
+                      <span>অফলাইনে ডাউনলোড</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleShareVideo(watchingVideo);
+                    setMoreMenuOpen(false);
+                  }}
+                  className="px-3 py-2 rounded-xl bg-[var(--bg-surface-alt)] text-[var(--text-primary)] font-semibold flex items-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5 text-[var(--accent-gold)]" />
+                  <span>Copy Link</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Up Next Recommendations */}
@@ -1502,15 +1717,37 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
     );
   }
 
-  // Split Recommended Videos cleanly into initial & secondary batches around Category Discovery & Shorts
-  const topRecommended = longVideosList.slice(0, 6);
-  const moreRecommended = longVideosList.slice(6);
+  // Split Recommended Videos cleanly — when Offline, ONLY show genuinely playable cached MP4 videos first!
+  const offlinePlayableLong = longVideosList.filter(isPlayableOffline);
+  const displayedLongVideos = !isOnline
+    ? offlinePlayableLong.length > 0
+      ? offlinePlayableLong
+      : longVideosList.filter((v) => v.source !== 'youtube' && Boolean(v.videoUrl))
+    : longVideosList;
+  const offlinePlayableShorts = shortsCarousel.filter((s) =>
+    Boolean(s.videoUrl && offlineVault.playableBlobKeys.has(normalizeMediaKey(s.videoUrl)))
+  );
+  const displayedShorts = !isOnline
+    ? offlinePlayableShorts.length > 0
+      ? offlinePlayableShorts
+      : shortsCarousel.filter((s) => s.source !== 'youtube' && Boolean(s.videoUrl))
+    : shortsCarousel;
+  const topRecommended = displayedLongVideos.slice(0, 6);
+  const moreRecommended = displayedLongVideos.slice(6);
 
   // =========================================================================
   // VIEW A: 6-SECTION YOUTUBE-STYLE VIDEO HOMEPAGE (ZERO AUTOPLAY ON LOAD)
   // =========================================================================
   return (
     <div className="max-w-6xl mx-auto px-3 sm:px-4 py-3 pb-28 space-y-5">
+      {!isOnline && (
+        <div className="p-3 rounded-2xl bg-amber-500/15 border border-amber-500/35 flex items-center gap-2.5 text-xs text-amber-200">
+          <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>
+            অফলাইন মোড চালু — ডাউনলোড করা পূর্ণ MOTHERLAND ভিডিও ({offlineVault.playableFullCount}টি) সবার উপরে দেখানো হচ্ছে এবং সরাসরি অফলাইনে চলবে।
+          </span>
+        </div>
+      )}
       {/* SECTION 1: Sticky Top Search Bar, Upload Button & Swipeable Categories */}
       <section className="sticky top-[57px] z-20 ml-canvas-bg/95 backdrop-blur-md -mx-3 sm:-mx-4 px-3 sm:px-4 pt-2 pb-2.5 border-b border-[var(--border-subtle)] space-y-2.5">
         <div className="flex items-center gap-2">
@@ -1771,7 +2008,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
       </section>
 
       {/* SECTION 5: Horizontal Small Video Discovery Carousel */}
-      {shortsCarousel.length > 0 && (
+      {displayedShorts.length > 0 && (
         <section className="space-y-2.5">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-extrabold text-[var(--text-primary)] flex items-center gap-2">
@@ -1780,7 +2017,7 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
             </h2>
             <button
               type="button"
-              onClick={() => onOpenShortsPlayer(shortsCarousel, 0)}
+              onClick={() => onOpenShortsPlayer(displayedShorts, 0)}
               className="text-xs font-semibold text-[var(--accent-primary)] hover:underline"
             >
               Watch Full-Screen
@@ -1788,21 +2025,28 @@ export const VideoSection: React.FC<VideoSectionProps> = ({
           </div>
 
           <div className="flex gap-3 overflow-x-auto no-scrollbar touch-pan-x pb-1">
-            {shortsCarousel.slice(0, 12).map((short, idx) => (
+            {displayedShorts.slice(0, 12).map((short, idx) => (
               <div
                 key={short.id}
-                onClick={() => onOpenShortsPlayer(shortsCarousel, idx)}
+                onClick={() => onOpenShortsPlayer(displayedShorts, idx)}
                 className="w-36 sm:w-40 flex-shrink-0 cursor-pointer group"
               >
                 <div className="relative aspect-[9/16] rounded-2xl overflow-hidden bg-black border border-[var(--border-subtle)] shadow-sm">
                   {short.thumbnailUrl ? (
-                    <img
+                    <OfflineMediaImage
                       src={short.thumbnailUrl}
                       alt={short.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       loading="lazy"
                     />
                   ) : null}
+                  {short.source !== 'youtube' &&
+                    short.videoUrl &&
+                    offlineVault.playableBlobKeys.has(normalizeMediaKey(short.videoUrl)) && (
+                      <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded-md bg-emerald-600/90 text-white text-[9px] font-bold">
+                        অফলাইন ✓
+                      </span>
+                    )}
                   <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/90 via-black/45 to-transparent">
                     <p className="text-[11px] font-bold text-white line-clamp-2 leading-snug">
                       {short.title}

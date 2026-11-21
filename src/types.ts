@@ -760,6 +760,7 @@ export interface WorldRoomPlayerSnapshot {
   actionActive: boolean;
   inCar: boolean;
   score: number;
+  speaking?: boolean;
   avatarConfig: RobloxAvatarConfig;
 }
 

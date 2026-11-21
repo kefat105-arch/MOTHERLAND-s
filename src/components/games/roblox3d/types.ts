@@ -2,6 +2,8 @@ import type * as THREE from 'three';
 import type { RobloxAvatarConfig } from '../../../types';
 
 export type RobloxWorldId =
+  | 'adopt_island'
+  | 'pet_swarm'
   | 'squid_game'
   | 'brookhaven_rp'
   | 'blox_arena'

@@ -1,17 +1,24 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import {
-  ArrowLeft,
   ChevronRight,
   Eye,
   Heart,
   Layers,
+  LogOut,
+  MessageSquare,
+  Mic,
+  MicOff,
   RotateCcw,
+  Send,
+  Settings,
+  Smile,
   Trophy,
   UserCog,
   Users,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
 import type { RealtimeEvent } from '../../../hooks/useRealtime';
 import { useBackHandler } from '../../../hooks/useBackNavigation';
@@ -23,6 +30,7 @@ import type {
 } from '../../../types';
 import { AvatarCustomizerModal } from './AvatarCustomizerModal';
 import { DalgonaModalOverlay } from './DalgonaModalOverlay';
+import { createUnifiedRobloxWorld, getRobloxWorldMeta } from './gameRegistry';
 import { robloxAudio } from './robloxAudio';
 import { RobloxCameraController } from './robloxCameraController';
 import {
@@ -43,8 +51,6 @@ import {
   type SquidStageId,
   type WorldController,
 } from './types';
-import { createSquidGameWorld } from './worlds/squidGameWorld';
-import { createViralWorldById } from './worlds/viralWorlds';
 
 interface RobloxGameStageProps {
   worldId: RobloxWorldId;
@@ -73,9 +79,22 @@ interface RemoteAvatarEntry {
   grounded: boolean;
   actionActive: boolean;
   inCar: boolean;
+  speaking: boolean;
+}
+
+interface WorldChatEntry {
+  id: string;
+  userId: string;
+  displayName: string;
+  text: string;
+  ts: number;
 }
 
 const _playerPos = new THREE.Vector3();
+
+const RTC_CONFIG: RTCConfiguration = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+};
 
 function serializeAvatarKey(cfg: RobloxAvatarConfig, name: string): string {
   return `${name}|${cfg.skinHex}|${cfg.shirtHex}|${cfg.pantsHex}|${cfg.hairHex}|${cfg.hatStyle}|${cfg.faceMood}|${cfg.accessory}`;
@@ -104,6 +123,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
   subscribeSpyEvents,
   onExit,
 }) => {
+  const worldMeta = useMemo(() => getRobloxWorldMeta(worldId), [worldId]);
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<WorldController | null>(null);
   const cameraCtrlRef = useRef<RobloxCameraController | null>(null);
@@ -114,6 +134,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
   const jumpQueuedRef = useRef(false);
   const actionQueuedRef = useRef(false);
   const secondaryQueuedRef = useRef(false);
+  const localEmoteUntilRef = useRef<number>(0);
 
   // Avatar & Server Room state
   const [avatarConfig, setAvatarConfig] = useState<RobloxAvatarConfig>(() => loadSavedRobloxAvatar());
@@ -145,14 +166,16 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
     serverNumber: number;
     playerCount: number;
     maxPlayers: number;
+    players: WorldRoomPlayerSnapshot[];
   }>({
     serverNumber: 1,
     playerCount: 1,
     maxPlayers: 25,
+    players: [],
   });
 
   const [hud, setHud] = useState<RobloxHudState>({
-    worldTitle: 'LOADING 3D WORLD',
+    worldTitle: worldMeta?.entry.name || 'LOADING 3D WORLD',
     stageLabel: '',
     timerSec: null,
     score: 0,
@@ -174,6 +197,28 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
   const [showAvatarModal, setShowAvatarModal] = useState(false);
   const [contextLost, setContextLost] = useState(false);
 
+  // Unified Roblox CoreGui States: Core Menu, In-Game Messages, Voice Chat, Emotes
+  const [coreMenuOpen, setCoreMenuOpen] = useState(false);
+  const [coreMenuTab, setCoreMenuTab] = useState<'players' | 'settings'>('players');
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState<WorldChatEntry[]>([]);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const [emoteMenuOpen, setEmoteMenuOpen] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
+  const [voiceError, setVoiceError] = useState('');
+  const [remoteAudioStreams, setRemoteAudioStreams] = useState<Array<{ userId: string; stream: MediaStream }>>([]);
+
+  const chatOpenRef = useRef(chatOpen);
+  chatOpenRef.current = chatOpen;
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // WebRTC Voice Mesh Refs
+  const localVoiceStreamRef = useRef<MediaStream | null>(null);
+  const voicePeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const voiceActiveRef = useRef(false);
+  voiceActiveRef.current = voiceActive;
+
   // Virtual Joystick visual knob state
   const [joyKnob, setJoyKnob] = useState<{ x: number; y: number; active: boolean }>({
     x: 0,
@@ -191,7 +236,22 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
     setJoyKnob({ x: 0, y: 0, active: false });
   }, []);
 
-  useBackHandler('roblox-3d-stage', true, onExit, 30);
+  useBackHandler(
+    'roblox-3d-stage',
+    true,
+    () => {
+      if (coreMenuOpen) {
+        setCoreMenuOpen(false);
+        return;
+      }
+      if (chatOpen) {
+        setChatOpen(false);
+        return;
+      }
+      onExit();
+    },
+    30
+  );
 
   // Transmit world events through authenticated App WS or isolated guest WS
   const emitWorldWs = useCallback(
@@ -214,39 +274,188 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
   const emitWorldWsRef = useRef(emitWorldWs);
   emitWorldWsRef.current = emitWorldWs;
 
-  const applyRoomStateSnapshot = useCallback((state: WorldRoomPublicState, explicitSelfId?: string) => {
-    if (!state || state.worldId !== worldId) return;
-    if (explicitSelfId) {
-      selfUserIdRef.current = explicitSelfId;
-    }
-    const selfId = selfUserIdRef.current;
-
-    serverCtxRef.current = {
-      phase: state.phase,
-      phaseTimer: state.phaseTimer,
-      phaseData: state.phaseData || {},
-      playerCount: state.playerCount,
-      selfUserId: selfId,
-    };
-
-    setServerHud({
-      serverNumber: state.serverNumber || 1,
-      playerCount: state.playerCount || 1,
-      maxPlayers: state.maxPlayers || 25,
-    });
-
-    const nextMap = new Map<string, WorldRoomPlayerSnapshot>();
-    for (const p of state.players || []) {
-      if (p.userId !== selfId) {
-        nextMap.set(p.userId, p);
+  // WebRTC Voice Helpers
+  const closeVoicePeer = useCallback((peerUserId: string) => {
+    const pc = voicePeersRef.current.get(peerUserId);
+    if (pc) {
+      try {
+        pc.close();
+      } catch {
+        // ignore
       }
+      voicePeersRef.current.delete(peerUserId);
     }
-    remoteTargetsRef.current = nextMap;
-  }, [worldId]);
+    setRemoteAudioStreams((prev) => prev.filter((item) => item.userId !== peerUserId));
+  }, []);
 
-  // Real 25-Player Room WebSocket Bridge (Authenticated or Guest Isolation Socket)
+  const createVoicePeer = useCallback(
+    (peerUserId: string): RTCPeerConnection => {
+      const existing = voicePeersRef.current.get(peerUserId);
+      if (existing) return existing;
+
+      const pc = new RTCPeerConnection(RTC_CONFIG);
+      voicePeersRef.current.set(peerUserId, pc);
+
+      if (localVoiceStreamRef.current) {
+        for (const track of localVoiceStreamRef.current.getAudioTracks()) {
+          pc.addTrack(track, localVoiceStreamRef.current);
+        }
+      }
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          emitWorldWsRef.current('world:voice_signal', {
+            targetUserId: peerUserId,
+            signalData: { type: 'ice', candidate: e.candidate },
+          });
+        }
+      };
+
+      pc.ontrack = (e) => {
+        const stream = e.streams?.[0];
+        if (!stream) return;
+        setRemoteAudioStreams((prev) => {
+          if (prev.some((s) => s.userId === peerUserId)) {
+            return prev.map((s) => (s.userId === peerUserId ? { userId: peerUserId, stream } : s));
+          }
+          return [...prev, { userId: peerUserId, stream }];
+        });
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          closeVoicePeer(peerUserId);
+        }
+      };
+
+      return pc;
+    },
+    [closeVoicePeer]
+  );
+
+  const handleVoiceSignalMessage = useCallback(
+    async (fromUserId: string, signalData: any) => {
+      if (!fromUserId || !signalData) return;
+      try {
+        const pc = createVoicePeer(fromUserId);
+        if (signalData.type === 'offer' && signalData.sdp) {
+          await pc.setRemoteDescription(new RTCSessionDescription(signalData.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          emitWorldWsRef.current('world:voice_signal', {
+            targetUserId: fromUserId,
+            signalData: { type: 'answer', sdp: answer },
+          });
+        } else if (signalData.type === 'answer' && signalData.sdp) {
+          await pc.setRemoteDescription(new RTCSessionDescription(signalData.sdp));
+        } else if (signalData.type === 'ice' && signalData.candidate) {
+          await pc.addIceCandidate(new RTCIceCandidate(signalData.candidate));
+        }
+      } catch {
+        // ignore transient signaling race
+      }
+    },
+    [createVoicePeer]
+  );
+
+  const stopVoiceChat = useCallback(() => {
+    setVoiceActive(false);
+    voiceActiveRef.current = false;
+    emitWorldWsRef.current('world:voice_state', { speaking: false });
+    if (localVoiceStreamRef.current) {
+      for (const t of localVoiceStreamRef.current.getTracks()) t.stop();
+      localVoiceStreamRef.current = null;
+    }
+    for (const uid of Array.from(voicePeersRef.current.keys())) {
+      closeVoicePeer(uid);
+    }
+    setRemoteAudioStreams([]);
+  }, [closeVoicePeer]);
+
+  const toggleVoiceChat = useCallback(async () => {
+    robloxAudio.unlock();
+    robloxAudio.playClick();
+    setVoiceError('');
+    if (voiceActiveRef.current) {
+      stopVoiceChat();
+      return;
+    }
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setVoiceError('এই ব্রাউজারে মাইক্রোফোন সাপোর্ট নেই');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localVoiceStreamRef.current = stream;
+      setVoiceActive(true);
+      voiceActiveRef.current = true;
+      emitWorldWsRef.current('world:voice_state', { speaking: true });
+
+      // Offer audio connection to all current remote players in the 25-player room
+      for (const remoteId of remoteTargetsRef.current.keys()) {
+        const pc = createVoicePeer(remoteId);
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          emitWorldWsRef.current('world:voice_signal', {
+            targetUserId: remoteId,
+            signalData: { type: 'offer', sdp: offer },
+          });
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      setVoiceError('মাইক্রোফোন পারমিশন দিন');
+      stopVoiceChat();
+    }
+  }, [createVoicePeer, stopVoiceChat]);
+
   useEffect(() => {
-    const displayName = currentUser?.displayName || `Player-${guestIdRef.current.slice(-4).toUpperCase()}`;
+    return () => {
+      stopVoiceChat();
+    };
+  }, [stopVoiceChat]);
+
+  const applyRoomStateSnapshot = useCallback(
+    (state: WorldRoomPublicState, explicitSelfId?: string) => {
+      if (!state || state.worldId !== worldId) return;
+      if (explicitSelfId) {
+        selfUserIdRef.current = explicitSelfId;
+      }
+      const selfId = selfUserIdRef.current;
+
+      serverCtxRef.current = {
+        phase: state.phase,
+        phaseTimer: state.phaseTimer,
+        phaseData: state.phaseData || {},
+        playerCount: state.playerCount,
+        selfUserId: selfId,
+      };
+
+      const roster = state.players || [];
+      setServerHud({
+        serverNumber: state.serverNumber || 1,
+        playerCount: state.playerCount || Math.max(1, roster.length),
+        maxPlayers: state.maxPlayers || 25,
+        players: roster,
+      });
+
+      const nextMap = new Map<string, WorldRoomPlayerSnapshot>();
+      for (const p of roster) {
+        if (p.userId !== selfId) {
+          nextMap.set(p.userId, p);
+        }
+      }
+      remoteTargetsRef.current = nextMap;
+    },
+    [worldId]
+  );
+
+  // Real 25-Player Room WebSocket Bridge (Movement + Chat + WebRTC Voice)
+  useEffect(() => {
+    const displayName =
+      currentUser?.displayName || `Player-${guestIdRef.current.slice(-4).toUpperCase()}`;
 
     const handleIncomingEvent = (evt: RealtimeEvent | Record<string, any>) => {
       const evType = evt.type || evt.event;
@@ -266,9 +475,44 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
         const uid = String(evt.userId || '');
         if (uid) {
           remoteTargetsRef.current.delete(uid);
+          closeVoicePeer(uid);
+          setServerHud((prev) => ({
+            ...prev,
+            playerCount: typeof evt.playerCount === 'number' ? Math.max(1, evt.playerCount) : Math.max(1, prev.playerCount - 1),
+            players: prev.players.filter((pl) => pl.userId !== uid),
+          }));
         }
-        if (typeof evt.playerCount === 'number') {
-          setServerHud((prev) => ({ ...prev, playerCount: Math.max(1, evt.playerCount) }));
+      } else if (evType === 'world:chat') {
+        const msg: WorldChatEntry = {
+          id: `${evt.ts || Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          userId: String(evt.userId || ''),
+          displayName: String(evt.displayName || 'Player'),
+          text: String(evt.text || ''),
+          ts: Number(evt.ts || Date.now()),
+        };
+        if (msg.text) {
+          setChatMessages((prev) => [...prev.slice(-49), msg]);
+          if (!chatOpenRef.current && msg.userId !== selfUserIdRef.current) {
+            setUnreadChatCount((c) => c + 1);
+          }
+        }
+      } else if (evType === 'world:voice_state') {
+        const uid = String(evt.userId || '');
+        if (uid) {
+          const speaking = Boolean(evt.speaking);
+          const target = remoteTargetsRef.current.get(uid);
+          if (target) {
+            target.speaking = speaking;
+          }
+          setServerHud((prev) => ({
+            ...prev,
+            players: prev.players.map((p) => (p.userId === uid ? { ...p, speaking } : p)),
+          }));
+        }
+      } else if (evType === 'world:voice_signal') {
+        const fromId = String(evt.fromUserId || '');
+        if (fromId && fromId !== selfUserIdRef.current) {
+          void handleVoiceSignalMessage(fromId, evt.signalData);
         }
       }
     };
@@ -372,7 +616,40 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
       serverCtxRef.current = null;
       remoteTargetsRef.current.clear();
     };
-  }, [worldId, currentUser, sendWsEvent, subscribeSpyEvents, applyRoomStateSnapshot]);
+  }, [
+    worldId,
+    currentUser,
+    sendWsEvent,
+    subscribeSpyEvents,
+    applyRoomStateSnapshot,
+    closeVoicePeer,
+    handleVoiceSignalMessage,
+  ]);
+
+  // Auto-scroll chat box when new messages arrive
+  useEffect(() => {
+    if (chatOpen && chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages.length, chatOpen]);
+
+  const handleSendChat = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const clean = chatInput.trim();
+    if (!clean) return;
+    robloxAudio.unlock();
+    robloxAudio.playClick();
+    emitWorldWs('world:chat', { text: clean.slice(0, 140) });
+    setChatInput('');
+  };
+
+  const triggerEmote = (label: string) => {
+    robloxAudio.unlock();
+    robloxAudio.playClick();
+    localEmoteUntilRef.current = performance.now() + 2600;
+    setEmoteMenuOpen(false);
+    emitWorldWs('world:chat', { text: `*${label}*` });
+  };
 
   // Update avatar live in Three.js world and broadcast to 25-player room
   const handleAvatarChange = useCallback(
@@ -386,12 +663,18 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
     [emitWorldWs]
   );
 
-  // Clear movement whenever modals open
+  // Clear movement whenever modals/drawers open
   useEffect(() => {
-    if (showStagePicker || showAvatarModal || hud.dalgona?.active || hud.phase !== 'playing') {
+    if (
+      showStagePicker ||
+      showAvatarModal ||
+      coreMenuOpen ||
+      hud.dalgona?.active ||
+      hud.phase !== 'playing'
+    ) {
       clearAllMovementInputs();
     }
-  }, [showStagePicker, showAvatarModal, hud.dalgona?.active, hud.phase, clearAllMovementInputs]);
+  }, [showStagePicker, showAvatarModal, coreMenuOpen, hud.dalgona?.active, hud.phase, clearAllMovementInputs]);
 
   const handleToggleCamera = useCallback(() => {
     const camCtrl = cameraCtrlRef.current;
@@ -427,9 +710,10 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
     robloxAudio.playClick();
     clearAllMovementInputs();
     controllerRef.current?.reset();
+    setCoreMenuOpen(false);
   }, [clearAllMovementInputs]);
 
-  // Main Three.js Scene Lifecycle + Live 25-Player Remote Avatar Sync
+  // Main Three.js Scene Lifecycle via Plug-and-Play Registry
   useEffect(() => {
     const mount = canvasMountRef.current;
     if (!mount) return;
@@ -440,10 +724,14 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
 
     const detachCamEvents = camCtrl.attach(bundle.renderer.domElement);
 
-    const world: WorldController =
-      worldId === 'squid_game'
-        ? createSquidGameWorld(bundle.scene, bundle.isSoftwareGl, bundle.maxAnisotropy, initialSquidStage)
-        : createViralWorldById(worldId, bundle.scene, bundle.isSoftwareGl, bundle.maxAnisotropy);
+    const world: WorldController = createUnifiedRobloxWorld(
+      worldId,
+      bundle.scene,
+      bundle.isSoftwareGl,
+      bundle.maxAnisotropy,
+      avatarConfigRef.current,
+      initialSquidStage
+    );
     controllerRef.current = world;
     world.setAvatarConfig?.(avatarConfigRef.current);
 
@@ -464,7 +752,6 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
     });
     resizeObserver.observe(mount);
 
-    // Keyboard & Window Blur Listeners (prevents stuck auto-run)
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const code = e.code;
@@ -482,6 +769,8 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
         camCtrl.stepZoom(-1.8);
       } else if (code === 'Minus' || code === 'NumpadSubtract') {
         camCtrl.stepZoom(1.8);
+      } else if (code === 'Escape') {
+        setCoreMenuOpen((prev) => !prev);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -504,7 +793,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
     let elapsed = 0;
     let hudSyncAccum = 0;
     let moveNetAccum = 0;
-    let lastSentPos = { x: 0, y: 0, z: 0, yaw: 0, speed: 0, score: -1 };
+    let lastSentPos = { x: 0, y: 0, z: 0, yaw: 0, speed: 0, score: -1, actionActive: false };
     const remoteMap = remoteSceneMapRef.current;
 
     const tick = () => {
@@ -572,13 +861,15 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
       const playerYaw = world.getPlayerYaw();
       const playerSpeed = world.getPlayerSpeed();
       const playerGrounded = world.isPlayerGrounded();
+      const localEmoteActive = now < localEmoteUntilRef.current;
       const movedEnough =
         Math.abs(_playerPos.x - lastSentPos.x) > 0.04 ||
         Math.abs(_playerPos.y - lastSentPos.y) > 0.04 ||
         Math.abs(_playerPos.z - lastSentPos.z) > 0.04 ||
         Math.abs(playerYaw - lastSentPos.yaw) > 0.05 ||
         Math.abs(playerSpeed - lastSentPos.speed) > 0.25 ||
-        nextHud.score !== lastSentPos.score;
+        nextHud.score !== lastSentPos.score ||
+        localEmoteActive !== lastSentPos.actionActive;
 
       if ((movedEnough && moveNetAccum >= 0.075) || moveNetAccum >= 1.5) {
         moveNetAccum = 0;
@@ -589,6 +880,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
           yaw: playerYaw,
           speed: playerSpeed,
           score: nextHud.score,
+          actionActive: localEmoteActive,
         };
         emitWorldWsRef.current('world:move', {
           x: Number(_playerPos.x.toFixed(2)),
@@ -597,7 +889,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
           yaw: Number(playerYaw.toFixed(2)),
           speed: Number(playerSpeed.toFixed(2)),
           grounded: playerGrounded,
-          actionActive: false,
+          actionActive: localEmoteActive,
           inCar: Boolean(nextHud.inCar),
           score: nextHud.score,
         });
@@ -605,7 +897,6 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
 
       // Sync Remote 25-Player Avatars inside Three.js scene
       const liveTargets = remoteTargetsRef.current;
-      // Remove departed players
       for (const [uid, entry] of remoteMap.entries()) {
         if (!liveTargets.has(uid)) {
           if (entry.rig) {
@@ -615,7 +906,6 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
           remoteMap.delete(uid);
         }
       }
-      // Spawn / update present remote players (max 24 remotes = 25 total)
       for (const [uid, snap] of liveTargets.entries()) {
         const av = snap.avatarConfig || avatarConfigRef.current;
         const avKey = serializeAvatarKey(av, snap.displayName || 'Player');
@@ -652,6 +942,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
             grounded: snap.grounded !== false,
             actionActive: Boolean(snap.actionActive),
             inCar: Boolean(snap.inCar),
+            speaking: Boolean(snap.speaking),
           };
           remoteMap.set(uid, entry);
         } else {
@@ -680,6 +971,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
           entry.grounded = snap.grounded !== false;
           entry.actionActive = Boolean(snap.actionActive);
           entry.inCar = Boolean(snap.inCar);
+          entry.speaking = Boolean(snap.speaking);
         }
 
         if (entry.rig) {
@@ -696,7 +988,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
             entry.speed,
             entry.grounded,
             elapsed,
-            entry.actionActive ? 0.3 : 0
+            entry.actionActive ? 0.32 : 0
           );
         }
       }
@@ -806,12 +1098,21 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
   const hasNextSquidStage =
     worldId === 'squid_game' && currentSquidIdx >= 0 && currentSquidIdx < SQUID_STAGES.length - 1;
 
+  const recentToastChat = chatMessages.slice(-2);
+  const selfName =
+    currentUser?.displayName || `Player-${guestIdRef.current.slice(-4).toUpperCase()}`;
+
   return (
     <div
       data-testid="roblox-3d-stage"
       className="fixed inset-0 z-50 h-[100dvh] w-full bg-[#070a12] text-slate-100 select-none overflow-hidden"
     >
-      {/* Dedicated Empty WebGL Mount (never blurred) */}
+      {/* Hidden Remote Room WebRTC Audio Playback Elements */}
+      {remoteAudioStreams.map(({ userId, stream }) => (
+        <RemoteAudioPlayer key={userId} stream={stream} />
+      ))}
+
+      {/* Dedicated Empty WebGL Mount */}
       <div ref={canvasMountRef} className="absolute inset-0 w-full h-full" />
 
       {/* First-Person Crosshair Reticle */}
@@ -824,78 +1125,233 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
         </div>
       )}
 
-      {/* Clean Minimal Top Micro-HUD (Zero Clutter) */}
+      {/* UNIFIED ROBLOX CORE TOPBAR (Same across ALL games!) */}
       <header className="pointer-events-none fixed top-0 inset-x-0 z-20 p-2.5 flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-2">
-          {/* Left: Back + Server #N · Players/25 + Stage/Score */}
-          <div className="pointer-events-auto flex items-center gap-1.5 min-w-0">
-            <button
-              type="button"
-              data-testid="roblox-exit-btn"
-              onClick={onExit}
-              className="w-9 h-9 rounded-xl bg-[#0d1322]/85 border border-white/15 hover:border-white/35 text-white flex items-center justify-center shrink-0"
-              aria-label="Back to Games"
-            >
-              <ArrowLeft className="w-4 h-4" />
-            </button>
+        <div className="flex items-start justify-between gap-2">
+          {/* TOP-LEFT COREGui STRIP: Tilted Roblox Menu + Chat/Messages + Voice Mic + Stage */}
+          <div className="pointer-events-auto flex flex-col gap-2 min-w-0">
+            <div className="flex items-center gap-1.5">
+              {/* 1. Authentic Tilted Square Roblox Core Menu Button */}
+              <button
+                type="button"
+                data-testid="roblox-core-menu-btn"
+                onClick={() => {
+                  robloxAudio.unlock();
+                  robloxAudio.playClick();
+                  setCoreMenuOpen((o) => !o);
+                }}
+                className="w-10 h-10 rounded-xl bg-[#111722]/90 border border-white/20 hover:border-white/45 flex items-center justify-center shadow-lg transition-all active:scale-95"
+                title="Roblox Core Menu (Esc)"
+                aria-label="Open Game Menu"
+              >
+                <div className="w-4 h-4 rounded-[3px] border-[3px] border-white rotate-[-14deg] flex items-center justify-center">
+                  <div className="w-1 h-1 bg-[#111722]" />
+                </div>
+              </button>
 
-            <div className="px-2.5 py-1 rounded-xl bg-[#0d1322]/85 border border-teal-400/35 flex items-center gap-1.5 shrink-0">
-              <Users className="w-3.5 h-3.5 text-teal-400" />
-              <span className="text-[11px] font-black text-teal-200 tabular-nums">
-                S#{serverHud.serverNumber} · {serverHud.playerCount}/{serverHud.maxPlayers}
-              </span>
+              {/* 2. In-Game Messages / Chat Toggle */}
+              <button
+                type="button"
+                data-testid="roblox-chat-toggle-btn"
+                onClick={() => {
+                  robloxAudio.unlock();
+                  robloxAudio.playClick();
+                  setChatOpen((o) => {
+                    if (!o) setUnreadChatCount(0);
+                    return !o;
+                  });
+                }}
+                className={`relative w-10 h-10 rounded-xl border flex items-center justify-center shadow-lg transition-all ${
+                  chatOpen
+                    ? 'bg-sky-600/95 border-sky-300 text-white'
+                    : 'bg-[#111722]/90 border-white/15 hover:border-white/35 text-slate-100'
+                }`}
+                title="মেসেজ / Room Chat"
+                aria-label="In-Game Chat"
+              >
+                <MessageSquare className="w-4 h-4" />
+                {unreadChatCount > 0 && !chatOpen && (
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-[9px] font-black text-white flex items-center justify-center">
+                    {unreadChatCount > 9 ? '9+' : unreadChatCount}
+                  </span>
+                )}
+              </button>
+
+              {/* 3. Voice Talk Section (WebRTC Room Voice Mic) */}
+              <button
+                type="button"
+                data-testid="roblox-voice-toggle-btn"
+                onClick={toggleVoiceChat}
+                className={`h-10 px-2.5 rounded-xl border flex items-center gap-1.5 shadow-lg transition-all text-[11px] font-black ${
+                  voiceActive
+                    ? 'bg-emerald-600/95 border-emerald-300 text-white'
+                    : 'bg-[#111722]/90 border-white/15 hover:border-white/35 text-slate-100'
+                }`}
+                title="কথা বলা সেকশন (Voice Chat)"
+                aria-label="Toggle Voice Microphone"
+              >
+                {voiceActive ? <Mic className="w-4 h-4 animate-pulse" /> : <MicOff className="w-4 h-4 text-slate-300" />}
+                <span className="hidden sm:inline">{voiceActive ? 'কথা চালু' : 'ভয়েস'}</span>
+              </button>
+
+              {/* Current World Stage / Progress Pill */}
+              {hud.stageLabel && (
+                <div className="hidden md:flex px-3 h-10 rounded-xl bg-[#111722]/85 border border-white/12 items-center gap-2 max-w-[240px]">
+                  <span className="text-[11px] font-bold text-slate-100 truncate">{hud.stageLabel}</span>
+                </div>
+              )}
             </div>
 
-            {hud.stageLabel && (
-              <div className="hidden xs:flex px-2.5 py-1 rounded-xl bg-[#0d1322]/85 border border-white/12 items-center gap-2 max-w-[200px] sm:max-w-[260px]">
-                <span className="text-[11px] font-bold text-slate-100 truncate">{hud.stageLabel}</span>
-                {hud.levelLabel && (
-                  <span className="text-[10px] font-black text-amber-300 shrink-0">{hud.levelLabel}</span>
-                )}
+            {voiceError && (
+              <div className="px-2.5 py-1 rounded-lg bg-rose-950/90 border border-rose-500/40 text-[10px] font-bold text-rose-200 max-w-xs">
+                {voiceError}
+              </div>
+            )}
+
+            {/* Floating Chat Toasts when Chat Box is collapsed */}
+            {!chatOpen && recentToastChat.length > 0 && (
+              <div className="pointer-events-none flex flex-col gap-1 max-w-[260px]">
+                {recentToastChat.map((m) => (
+                  <div
+                    key={m.id}
+                    className="px-2.5 py-1 rounded-lg bg-black/55 backdrop-blur-sm text-[11px] text-slate-100 truncate"
+                  >
+                    <span className="font-black text-amber-300">{m.displayName}: </span>
+                    <span>{m.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Roblox-Style Corner Chat Drawer (Transparent Glass) */}
+            {chatOpen && (
+              <div
+                data-testid="roblox-chat-drawer"
+                className="w-[270px] sm:w-[320px] rounded-2xl bg-[#0d131f]/88 backdrop-blur-md border border-white/15 shadow-2xl overflow-hidden flex flex-col"
+              >
+                <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between text-[11px] font-black text-slate-200">
+                  <span>সার্ভার #{serverHud.serverNumber} মেসেজ ({serverHud.playerCount}/25)</span>
+                  <button
+                    type="button"
+                    onClick={() => setChatOpen(false)}
+                    className="text-slate-400 hover:text-white"
+                    aria-label="Close Chat"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div
+                  ref={chatScrollRef}
+                  className="h-36 overflow-y-auto px-3 py-2 space-y-1.5 text-xs"
+                >
+                  {chatMessages.length === 0 ? (
+                    <p className="text-[11px] text-slate-400">
+                      এই রুমের সবার সাথে কথা বলুন বা মেসেজ দিন...
+                    </p>
+                  ) : (
+                    chatMessages.map((m) => (
+                      <div key={m.id} className="leading-snug break-words">
+                        <span className="font-black text-sky-300">{m.displayName}: </span>
+                        <span className="text-slate-100">{m.text}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <form onSubmit={handleSendChat} className="p-2 border-t border-white/10 flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder="মেসেজ লিখুন..."
+                    maxLength={140}
+                    className="flex-1 bg-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                  />
+                  <button
+                    type="submit"
+                    className="w-8 h-8 rounded-lg bg-sky-600 hover:bg-sky-500 text-white flex items-center justify-center shrink-0"
+                    aria-label="Send Message"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                </form>
               </div>
             )}
           </div>
 
-          {/* Right: Stats + 1P/3P + Avatar + Stage Switcher + Sound */}
+          {/* TOP-RIGHT COREGui STRIP: Server Players Pill + Score + 1P/3P + Emotes */}
           <div className="pointer-events-auto flex items-center gap-1.5 shrink-0">
             {hud.maxLives > 1 && (
-              <div className="hidden sm:flex items-center gap-1 px-2 h-9 rounded-xl bg-[#0d1322]/85 border border-white/12">
+              <div className="hidden sm:flex items-center gap-1 px-2.5 h-10 rounded-xl bg-[#111722]/88 border border-white/15">
                 <Heart className="w-3.5 h-3.5 text-rose-400 fill-rose-400" />
                 <span className="text-[11px] font-black tabular-nums">{hud.lives}</span>
               </div>
             )}
 
             {hud.timerSec !== null && (
-              <div className="px-2 h-9 rounded-xl bg-[#0d1322]/85 border border-white/12 flex items-center">
+              <div className="px-2.5 h-10 rounded-xl bg-[#111722]/88 border border-white/15 flex items-center">
                 <span className="text-[11px] font-black tabular-nums text-sky-300">{hud.timerSec}s</span>
               </div>
             )}
 
-            <div className="px-2.5 h-9 rounded-xl bg-[#0d1322]/85 border border-white/12 flex items-center gap-1">
+            <div className="px-2.5 h-10 rounded-xl bg-[#111722]/88 border border-white/15 flex items-center gap-1">
               <Trophy className="w-3.5 h-3.5 text-amber-400" />
               <span className="text-[11px] font-black tabular-nums">{hud.score}</span>
             </div>
 
             <button
               type="button"
+              data-testid="roblox-server-players-btn"
+              onClick={() => {
+                setCoreMenuTab('players');
+                setCoreMenuOpen(true);
+              }}
+              className="h-10 px-2.5 rounded-xl bg-[#111722]/88 border border-teal-400/40 hover:border-teal-300 flex items-center gap-1.5 text-[11px] font-black text-teal-200 tabular-nums"
+              title="Server Players (25 Max)"
+            >
+              <Users className="w-3.5 h-3.5 text-teal-400" />
+              <span>
+                S#{serverHud.serverNumber} · {serverHud.playerCount}/{serverHud.maxPlayers}
+              </span>
+            </button>
+
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setEmoteMenuOpen((o) => !o)}
+                className="w-10 h-10 rounded-xl bg-[#111722]/88 border border-white/15 hover:border-amber-400/50 text-amber-300 flex items-center justify-center"
+                title="Emotes"
+                aria-label="Emotes"
+              >
+                <Smile className="w-4 h-4" />
+              </button>
+
+              {emoteMenuOpen && (
+                <div className="absolute right-0 top-11 w-36 rounded-xl bg-[#111722]/95 border border-white/15 p-1.5 space-y-1 shadow-xl z-30">
+                  {['Wave 👋', 'Dance 💃', 'Cheer 🎉'].map((em) => (
+                    <button
+                      key={em}
+                      type="button"
+                      onClick={() => triggerEmote(em)}
+                      className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-white/10 text-xs font-bold text-white"
+                    >
+                      {em}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
               data-testid="roblox-camera-toggle"
               onClick={handleToggleCamera}
-              className="h-9 px-2.5 rounded-xl bg-[#0d1322]/85 border border-teal-400/40 text-[11px] font-black text-teal-300 flex items-center gap-1"
+              className="h-10 px-2.5 rounded-xl bg-[#111722]/88 border border-teal-400/40 text-[11px] font-black text-teal-300 flex items-center gap-1"
               title="1P / 3P"
             >
               <Eye className="w-3.5 h-3.5" />
               <span>{isFirstPerson ? '1P' : '3P'}</span>
-            </button>
-
-            <button
-              type="button"
-              data-testid="roblox-avatar-btn"
-              onClick={() => setShowAvatarModal(true)}
-              className="w-9 h-9 rounded-xl bg-[#0d1322]/85 border border-white/15 hover:border-amber-400/50 flex items-center justify-center text-amber-300"
-              aria-label="Customize Avatar"
-              title="Avatar"
-            >
-              <UserCog className="w-4 h-4" />
             </button>
 
             {hud.canSwitchStage && (
@@ -903,25 +1359,16 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
                 type="button"
                 data-testid="squid-stages-btn"
                 onClick={() => setShowStagePicker((prev) => !prev)}
-                className="h-9 px-2.5 rounded-xl bg-rose-600/95 hover:bg-rose-500 text-[11px] font-black text-white flex items-center gap-1"
+                className="h-10 px-2.5 rounded-xl bg-rose-600/95 hover:bg-rose-500 text-[11px] font-black text-white flex items-center gap-1"
               >
                 <Layers className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">S1</span>
               </button>
             )}
-
-            <button
-              type="button"
-              onClick={handleToggleMute}
-              className="w-9 h-9 rounded-xl bg-[#0d1322]/85 border border-white/12 flex items-center justify-center text-slate-200"
-              aria-label="Sound"
-            >
-              {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4" />}
-            </button>
           </div>
         </div>
 
-        {/* Transient Signal Pill (Only rendered when critical signal like GREEN/RED LIGHT or TSUNAMI fires) */}
+        {/* Transient Signal Pill */}
         {hud.signalText && (
           <div className="flex justify-center">
             <div className={`px-3.5 py-1 rounded-xl border text-xs font-black tracking-wide ${signalColorClass}`}>
@@ -946,6 +1393,204 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
           </div>
         )}
       </header>
+
+      {/* UNIFIED ROBLOX CORE PAUSE / SETTINGS / 25-PLAYER LIST DRAWER */}
+      {coreMenuOpen && (
+        <div
+          data-testid="roblox-core-menu-modal"
+          className="fixed inset-0 z-40 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3"
+        >
+          <div className="w-full max-w-lg max-h-[85dvh] rounded-3xl bg-[#101622] border border-white/15 shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2 bg-[#0b1019]">
+              <div className="min-w-0">
+                <h2 className="text-sm font-black text-white truncate">
+                  {worldMeta?.entry.name || hud.worldTitle}
+                </h2>
+                <p className="text-[11px] font-bold text-teal-300">
+                  Server #{serverHud.serverNumber} · {serverHud.playerCount}/{serverHud.maxPlayers} Players Connected
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCoreMenuOpen(false)}
+                className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
+                aria-label="Resume Game"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Core Menu Sub-Tabs */}
+            <div className="px-4 pt-3 flex items-center gap-2 border-b border-white/10 pb-2.5">
+              <button
+                type="button"
+                onClick={() => setCoreMenuTab('players')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 ${
+                  coreMenuTab === 'players'
+                    ? 'bg-white text-slate-950'
+                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Players ({serverHud.playerCount}/25)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCoreMenuTab('settings')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 ${
+                  coreMenuTab === 'settings'
+                    ? 'bg-white text-slate-950'
+                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>Settings &amp; Controls</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCoreMenuOpen(false);
+                  setShowAvatarModal(true);
+                }}
+                className="ml-auto px-3 py-1.5 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 text-xs font-black flex items-center gap-1.5"
+              >
+                <UserCog className="w-3.5 h-3.5" />
+                <span>Avatar</span>
+              </button>
+            </div>
+
+            {/* Core Menu Body */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+              {coreMenuTab === 'players' ? (
+                <>
+                  {/* Self Player Row */}
+                  <div className="p-2.5 rounded-xl bg-teal-500/15 border border-teal-400/35 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span
+                        className="w-7 h-7 rounded-lg border border-white/20 shrink-0"
+                        style={{ backgroundColor: `#${avatarConfig.shirtHex.toString(16).padStart(6, '0')}` }}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-white truncate">{selfName} (You)</p>
+                        <p className="text-[10px] text-teal-300">
+                          {voiceActive ? 'Mic Active · Speaking Enabled' : 'In Server #' + serverHud.serverNumber}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-black text-amber-300 tabular-nums">{hud.score}</span>
+                  </div>
+
+                  {/* Remote Players inside this 25-Player Server */}
+                  {serverHud.players
+                    .filter((pl) => pl.userId !== selfUserIdRef.current)
+                    .map((pl) => (
+                      <div
+                        key={pl.userId}
+                        className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span
+                            className="w-7 h-7 rounded-lg border border-white/15 shrink-0"
+                            style={{
+                              backgroundColor: `#${(pl.avatarConfig?.shirtHex ?? 0x2563eb)
+                                .toString(16)
+                                .padStart(6, '0')}`,
+                            }}
+                          />
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-slate-100 truncate flex items-center gap-1.5">
+                              <span>{pl.displayName}</span>
+                              {pl.speaking && <Mic className="w-3 h-3 text-emerald-400 animate-pulse" />}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-xs font-bold text-amber-300 tabular-nums">{pl.score || 0}</span>
+                      </div>
+                    ))}
+                </>
+              ) : (
+                <div className="space-y-3 text-xs">
+                  <div className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between">
+                    <div>
+                      <p className="font-black text-white">Camera Mode (1P / 3P)</p>
+                      <p className="text-[11px] text-slate-400">Pinch with 2 fingers or tap to toggle</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleToggleCamera}
+                      className="px-3.5 py-1.5 rounded-xl bg-teal-500 text-slate-950 font-black"
+                    >
+                      {isFirstPerson ? '1st Person' : '3rd Person'}
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between">
+                    <div>
+                      <p className="font-black text-white">Game Sound Effects</p>
+                      <p className="text-[11px] text-slate-400">Footsteps, jumps, coins &amp; alerts</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleToggleMute}
+                      className="px-3.5 py-1.5 rounded-xl bg-white/10 text-white font-black flex items-center gap-1.5"
+                    >
+                      {muted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
+                      <span>{muted ? 'Muted' : 'On'}</span>
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between">
+                    <div>
+                      <p className="font-black text-white">Voice Chat (কথা বলা)</p>
+                      <p className="text-[11px] text-slate-400">Live WebRTC audio inside this 25-player room</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={toggleVoiceChat}
+                      className={`px-3.5 py-1.5 rounded-xl font-black ${
+                        voiceActive ? 'bg-emerald-500 text-slate-950' : 'bg-white/10 text-white'
+                      }`}
+                    >
+                      {voiceActive ? 'Mic ON' : 'Mic OFF'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Roblox Core Actions */}
+            <div className="p-3.5 border-t border-white/10 bg-[#0b1019] grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={handleRestart}
+                className="h-10 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-xs font-black flex items-center justify-center gap-1.5"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCoreMenuOpen(false)}
+                className="h-10 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-black"
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                data-testid="roblox-exit-btn"
+                onClick={() => {
+                  stopVoiceChat();
+                  onExit();
+                }}
+                className="h-10 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black flex items-center justify-center gap-1.5"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Leave</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Interactive Dalgona Carving Modal (Season 1 Episode 2) */}
       {hud.dalgona?.active && hud.phase === 'playing' && (
@@ -1088,7 +1733,10 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
 
               <button
                 type="button"
-                onClick={onExit}
+                onClick={() => {
+                  stopVoiceChat();
+                  onExit();
+                }}
                 className="w-full h-10 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold"
               >
                 Exit
@@ -1098,7 +1746,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
         </div>
       )}
 
-      {/* Clean Bottom Controls (Zero Clutter Text) */}
+      {/* Clean Bottom Touch Controls */}
       {hud.phase === 'playing' && !hud.dalgona?.active && (
         <div className="pointer-events-none fixed bottom-0 inset-x-0 z-20 p-3 sm:p-5 flex items-end justify-between">
           <div
@@ -1164,4 +1812,16 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
       )}
     </div>
   );
+};
+
+const RemoteAudioPlayer: React.FC<{ stream: MediaStream }> = ({ stream }) => {
+  const ref = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el) {
+      el.srcObject = stream;
+      el.play().catch(() => {});
+    }
+  }, [stream]);
+  return <audio ref={ref} autoPlay playsInline className="hidden" />;
 };

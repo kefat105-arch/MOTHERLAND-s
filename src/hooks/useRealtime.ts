@@ -26,6 +26,8 @@ export interface RealtimeEvent {
     | 'world:player_left'
     | 'world:chat'
     | 'world:action'
+    | 'world:voice_state'
+    | 'world:voice_signal'
     | 'world:error';
   [key: string]: any;
 }
