@@ -19,6 +19,19 @@ import {
   createWoodPlankTexture,
   updateSunShadowTarget,
 } from '../robloxRenderer';
+import {
+  buildCompositePlatform,
+  buildCrystalCluster,
+  buildNeonLampPost,
+  buildSculptedArchway,
+  buildSculptedTree,
+  createBrushedTitaniumPbrMaterial,
+  createCarvedStonePbrMaterial,
+  createHardwoodDeckMaterial,
+  createMarblePbrMaterial,
+  createVolcanicBasaltMaterial,
+  createWetCyberAsphaltMaterial,
+} from '../proceduralAssets';
 import { robloxAudio } from '../robloxAudio';
 import type {
   PlayerInputState,
@@ -34,7 +47,7 @@ interface PlatformDef {
   minZ: number;
   maxZ: number;
   y: number;
-  mesh?: THREE.Mesh;
+  mesh?: THREE.Object3D;
   movingOffset?: { baseX: number; ampX: number; speed: number };
   bounce?: boolean;
 }
@@ -100,8 +113,9 @@ function createTowerObbyWorld(
 
   const platforms: PlatformDef[] = [];
   const laserBars: Array<{ mesh: THREE.Mesh; cx: number; cy: number; cz: number; speed: number }> = [];
-  const checkpoints: Array<{ x: number; y: number; z: number; stage: number; reached: boolean; pad: THREE.Mesh }> = [];
+  const checkpoints: Array<{ x: number; y: number; z: number; stage: number; reached: boolean; pad: THREE.Object3D }> = [];
   let summitCrown: THREE.Mesh | null = null;
+  const obbyTrimMat = createBrushedTitaniumPbrMaterial(maxAnisotropy, '#cbd5e1', 1, 1);
 
   const addPlat = (
     x: number,
@@ -112,11 +126,9 @@ function createTowerObbyWorld(
     d: number,
     mat: THREE.Material,
     extra?: Partial<PlatformDef>
-  ): THREE.Mesh => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y - h / 2, z);
-    m.receiveShadow = true;
-    m.castShadow = true;
+  ): THREE.Object3D => {
+    const m = buildCompositePlatform(w, h, d, mat, obbyTrimMat, extra?.bounce ? 0xf59e0b : undefined);
+    m.position.set(x, y, z);
     worldGroup.add(m);
     platforms.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, y, mesh: m, ...extra });
     return m;
@@ -138,19 +150,22 @@ function createTowerObbyWorld(
       worldGroup.add(c);
     }
 
-    const baseMat = new THREE.MeshStandardMaterial({ map: createStudTexture('#1e293b', maxAnisotropy, 4, 4), roughness: 0.45 });
+    const baseMat = createMarblePbrMaterial(maxAnisotropy, '#e2e8f0', '#64748b', 2, 2);
     const glassMats = [
       new THREE.MeshPhysicalMaterial({ color: 0x38bdf8, emissive: 0x0369a1, emissiveIntensity: 0.25, roughness: 0.12, transmission: 0.4, transparent: true, opacity: 0.86 }),
       new THREE.MeshPhysicalMaterial({ color: 0x10b981, emissive: 0x047857, emissiveIntensity: 0.25, roughness: 0.12, transmission: 0.4, transparent: true, opacity: 0.86 }),
-      new THREE.MeshPhysicalMaterial({ color: 0xf43f5e, emissive: 0x9f1239, emissiveIntensity: 0.25, roughness: 0.12, transmission: 0.4, transparent: true, opacity: 0.86 }),
-      new THREE.MeshPhysicalMaterial({ color: 0xa855f7, emissive: 0x6b21a8, emissiveIntensity: 0.25, roughness: 0.12, transmission: 0.4, transparent: true, opacity: 0.86 }),
+      createCarvedStonePbrMaterial(maxAnisotropy, '#cbd5e1', '#475569', 2, 2),
+      createHardwoodDeckMaterial(maxAnisotropy, '#a16207', 2, 2),
     ];
     const checkMat = new THREE.MeshStandardMaterial({ map: createCheckerTexture('#facc15', '#111827', maxAnisotropy, 3, 3), roughness: 0.35 });
     const laserMat = new THREE.MeshStandardMaterial({ color: 0xf43f5e, emissive: 0xe11d48, emissiveIntensity: 2.0 });
-    const bounceMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0xd97706, emissiveIntensity: 0.8 });
+    const bounceMat = createBrushedTitaniumPbrMaterial(maxAnisotropy, '#f59e0b', 1, 1);
 
-    // Generate massive 40-Stage Spiral Ascent!
+    // Generate massive 40-Stage Spiral Ascent with architectural spires & arches!
     addPlat(0, 0, 0, 12, 1.4, 12, baseMat);
+    const startArch = buildSculptedArchway(7.2, 5.8, baseMat, obbyTrimMat, 0x38bdf8);
+    startArch.position.set(0, 0, -5);
+    worldGroup.add(startArch);
     const radius = 32;
     let prevX = 0;
     let prevY = 0;
@@ -427,16 +442,16 @@ function createBrookhavenWorld(
   let playerRig = createRobloxCharacter(buildAvatarStyle(avatarCfg));
   scene.add(playerRig.root);
 
-  // Massive 240x240 City Base + Beach Ocean
+  // Massive 240x240 City Base with Rich Grass + Rain-Slick Boulevards + Architectural Landmarks
   const grass = new THREE.Mesh(
     new THREE.BoxGeometry(240, 1, 240),
-    new THREE.MeshStandardMaterial({ map: createStudTexture('#4d7c0f', maxAnisotropy, 32, 32), roughness: 0.88 })
+    new THREE.MeshStandardMaterial({ map: createGrassTexture(maxAnisotropy, 28), roughness: 0.88 })
   );
   grass.position.y = -0.5;
   grass.receiveShadow = true;
   worldGroup.add(grass);
 
-  const roadMat = new THREE.MeshStandardMaterial({ map: createAsphaltRoadTexture(maxAnisotropy, 1, 24), roughness: 0.72 });
+  const roadMat = createWetCyberAsphaltMaterial(maxAnisotropy, '#f59e0b', 6, 20);
   for (const offset of [-50, 0, 50]) {
     const rNS = new THREE.Mesh(new THREE.BoxGeometry(11, 0.08, 232), roadMat);
     rNS.position.set(offset, 0.04, 0);
@@ -446,32 +461,52 @@ function createBrookhavenWorld(
     rEW.position.set(0, 0.03, offset);
     rEW.receiveShadow = true;
     worldGroup.add(rNS, rEW);
+
+    const lamp = buildNeonLampPost(0xfacc15);
+    lamp.position.set(offset + 6.5, 0, offset + 12);
+    worldGroup.add(lamp);
   }
 
-  // City Landmarks: Skyscrapers, Bank Vault, Police HQ, Hospital, Luxury Villas, Airport Runway, Beach
-  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0xbae6fd, roughness: 0.08, transmission: 0.55, transparent: true, opacity: 0.8 });
-  const buildings: Array<[number, number, number, number, number, number]> = [
-    [-25, 16, -25, 18, 32, 18], // Downtown Tower
-    [25, 12, -25, 16, 24, 16],  // Bank HQ
-    [-25, 9, 25, 18, 18, 16],   // Hospital
-    [25, 7, 25, 16, 14, 15],    // Police HQ
-    [-75, 5, -25, 18, 10, 14],  // Luxury Villa 1
-    [-75, 5, 25, 18, 10, 14],   // Luxury Villa 2
-    [75, 4, -25, 16, 8, 14],    // Sunset Cafe
-    [75, 14, 25, 20, 28, 18],   // Grand Hotel
+  // Diverse Multi-Material Buildings (Marble Towers, Carved Stone Hospital, Brushed Titanium Bank, Hardwood Villas)
+  const glassMat = new THREE.MeshPhysicalMaterial({ color: 0xbae6fd, roughness: 0.08, transmission: 0.55, transparent: true, opacity: 0.82 });
+  const facadeMats = [
+    createBrushedTitaniumPbrMaterial(maxAnisotropy, '#334155', 2, 3),
+    createMarblePbrMaterial(maxAnisotropy, '#fef3c7', '#b45309', 2, 2),
+    createCarvedStonePbrMaterial(maxAnisotropy, '#e2e8f0', '#64748b', 2, 2),
+    createBrushedTitaniumPbrMaterial(maxAnisotropy, '#1d4ed8', 2, 2),
+    createHardwoodDeckMaterial(maxAnisotropy, '#fef2f2', 2, 2),
+    createMarblePbrMaterial(maxAnisotropy, '#e0f2fe', '#0284c7', 2, 2),
+    createCarvedStonePbrMaterial(maxAnisotropy, '#fdba74', '#9a3412', 2, 2),
+    createBrushedTitaniumPbrMaterial(maxAnisotropy, '#475569', 2, 3),
   ];
-  const buildingColors = [0x334155, 0xfbbf24, 0xf8fafc, 0x1d4ed8, 0xfef2f2, 0xe0f2fe, 0xf97316, 0x475569];
+  const buildings: Array<[number, number, number, number, number, number]> = [
+    [-25, 16, -25, 18, 32, 18],
+    [25, 12, -25, 16, 24, 16],
+    [-25, 9, 25, 18, 18, 16],
+    [25, 7, 25, 16, 14, 15],
+    [-75, 5, -25, 18, 10, 14],
+    [-75, 5, 25, 18, 10, 14],
+    [75, 4, -25, 16, 8, 14],
+    [75, 14, 25, 20, 28, 18],
+  ];
   buildings.forEach(([bx, by, bz, bw, bh, bd], idx) => {
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(bw, bh, bd),
-      new THREE.MeshStandardMaterial({ color: buildingColors[idx % buildingColors.length], roughness: 0.45 })
-    );
+    const fMat = facadeMats[idx % facadeMats.length];
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), fMat);
     mesh.position.set(bx, by, bz);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    const win = new THREE.Mesh(new THREE.BoxGeometry(bw * 0.72, bh * 0.72, bd + 0.2), glassMat);
+    const crown = new THREE.Mesh(
+      new THREE.BoxGeometry(bw + 1.2, 1.4, bd + 1.2),
+      facadeMats[(idx + 3) % facadeMats.length]
+    );
+    crown.position.set(bx, bh + 0.5, bz);
+    const win = new THREE.Mesh(new THREE.BoxGeometry(bw * 0.72, bh * 0.72, bd + 0.22), glassMat);
     win.position.set(bx, by + 0.5, bz);
-    worldGroup.add(mesh, win);
+    worldGroup.add(mesh, crown, win);
+
+    const tree = buildSculptedTree(idx % 2 === 0 ? 'palm' : 'pine', 1.15);
+    tree.position.set(bx + bw * 0.68, 0, bz);
+    worldGroup.add(tree);
   });
 
   // Collectibles across city (Bank Cash Bags)
@@ -671,20 +706,37 @@ function createBloxArenaWorld(
     { name: 'Sky Temple Boss', x: 0, z: -145, r: 28, color: '#facc15' },
   ];
   const platforms: PlatformDef[] = [];
-  const woodMat = new THREE.MeshStandardMaterial({ map: createWoodPlankTexture('#6b4423', maxAnisotropy), roughness: 0.8 });
+  const woodMat = createHardwoodDeckMaterial(maxAnisotropy, '#78350f', 2, 8);
+  const islandMats = [
+    new THREE.MeshStandardMaterial({ map: createGrassTexture(maxAnisotropy, 10), roughness: 0.86 }),
+    createCarvedStonePbrMaterial(maxAnisotropy, '#15803d', '#064e3b', 4, 4),
+    createVolcanicBasaltMaterial(maxAnisotropy, true, 4, 4),
+    createMarblePbrMaterial(maxAnisotropy, '#e0f2fe', '#38bdf8', 4, 4),
+    createMarblePbrMaterial(maxAnisotropy, '#fef3c7', '#eab308', 4, 4),
+  ];
 
-  for (const isl of islands) {
+  islands.forEach((isl, idx) => {
     const m = new THREE.Mesh(
       new THREE.CylinderGeometry(isl.r, isl.r + 3, 2.2, 24),
-      new THREE.MeshStandardMaterial({ map: createStudTexture(isl.color, maxAnisotropy, 10, 10), roughness: 0.82 })
+      islandMats[idx % islandMats.length]
     );
     m.position.set(isl.x, -1.0, isl.z);
     m.receiveShadow = true;
     worldGroup.add(m);
     platforms.push({ minX: isl.x - isl.r, maxX: isl.x + isl.r, minZ: isl.z - isl.r, maxZ: isl.z + isl.r, y: 0 });
-  }
 
-  // Connecting Wooden Sea Bridges
+    const tree = buildSculptedTree(idx === 3 ? 'crystal' : idx === 0 ? 'palm' : 'pine', 1.25);
+    tree.position.set(isl.x - isl.r * 0.55, 0, isl.z - isl.r * 0.45);
+    worldGroup.add(tree);
+
+    if (idx === 4) {
+      const bossArch = buildSculptedArchway(10, 8, islandMats[4], woodMat, 0xfacc15);
+      bossArch.position.set(isl.x, 0, isl.z - 12);
+      worldGroup.add(bossArch);
+    }
+  });
+
+  // Connecting Composite Hardwood Sea Bridges
   const bridgeDefs: Array<[number, number, number, number]> = [
     [0, -36, 5.5, 42],
     [37, -72, 42, 5.5],
@@ -692,8 +744,8 @@ function createBloxArenaWorld(
     [0, -108, 5.5, 42],
   ];
   for (const [bx, bz, bw, bd] of bridgeDefs) {
-    const bm = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.7, bd), woodMat);
-    bm.position.set(bx, -0.15, bz);
+    const bm = buildCompositePlatform(bw, 0.7, bd, woodMat, islandMats[1]);
+    bm.position.set(bx, 0, bz);
     worldGroup.add(bm);
     platforms.push({ minX: bx - bw / 2, maxX: bx + bw / 2, minZ: bz - bd / 2, maxZ: bz + bd / 2, y: 0 });
   }
@@ -936,7 +988,9 @@ function createBedwarsSkyWorld(
   scene.add(playerRig.root);
 
   const platforms: PlatformDef[] = [];
-  const woodMat = new THREE.MeshStandardMaterial({ map: createWoodPlankTexture('#854d0e', maxAnisotropy), roughness: 0.78 });
+  const woodMat = createHardwoodDeckMaterial(maxAnisotropy, '#854d0e', 2, 4);
+  const citadelMarbleMat = createMarblePbrMaterial(maxAnisotropy, '#f8fafc', '#64748b', 4, 4);
+  const stoneTrimMat = createCarvedStonePbrMaterial(maxAnisotropy, '#475569', '#1e293b', 3, 3);
 
   const teams: Array<{ id: string; x: number; z: number; hex: number; bedMesh: THREE.Mesh; broken: boolean }> = [];
   const teamDefs: Array<{ id: string; x: number; z: number; hex: number; css: string }> = [
@@ -946,37 +1000,40 @@ function createBedwarsSkyWorld(
     { id: 'yellow', x: 46, z: 0, hex: 0xeab308, css: '#eab308' },
   ];
 
-  // Central Emerald Citadel
-  const midCastle = new THREE.Mesh(
-    new THREE.BoxGeometry(22, 2, 22),
-    new THREE.MeshStandardMaterial({ map: createStudTexture('#475569', maxAnisotropy, 6, 6), roughness: 0.65 })
-  );
-  midCastle.position.y = -1;
+  // Central Emerald Marble Citadel + Crystal Shrine
+  const midCastle = buildCompositePlatform(22, 2.2, 22, citadelMarbleMat, stoneTrimMat, 0x10b981);
+  midCastle.position.y = 0;
   worldGroup.add(midCastle);
+  const midShrine = buildCrystalCluster(0x10b981, 0x059669, 1.4);
+  midShrine.position.set(0, 0, 0);
+  worldGroup.add(midShrine);
   platforms.push({ minX: -11, maxX: 11, minZ: -11, maxZ: 11, y: 0 });
 
-  // Bridges + 4 Kingdom Islands + Beds
+  // Bridges + 4 Sculpted Kingdom Islands + Carved Arches + Team Beds
   for (const t of teamDefs) {
-    const isl = new THREE.Mesh(
-      new THREE.BoxGeometry(20, 2, 20),
-      new THREE.MeshStandardMaterial({ map: createStudTexture(t.css, maxAnisotropy, 6, 6), roughness: 0.7 })
-    );
-    isl.position.set(t.x, -1, t.z);
+    const teamDeckMat = createCarvedStonePbrMaterial(maxAnisotropy, t.css, '#1e293b', 4, 4);
+    const isl = buildCompositePlatform(20, 2.2, 20, teamDeckMat, stoneTrimMat, t.hex);
+    isl.position.set(t.x, 0, t.z);
     worldGroup.add(isl);
     platforms.push({ minX: t.x - 10, maxX: t.x + 10, minZ: t.z - 10, maxZ: t.z + 10, y: 0 });
+
+    const arch = buildSculptedArchway(6.5, 5.2, stoneTrimMat, teamDeckMat, t.hex);
+    arch.position.set(t.x, 0, t.z + (t.z > 0 ? 7 : t.z < 0 ? -7 : 0));
+    if (t.z === 0) arch.rotation.y = Math.PI / 2;
+    worldGroup.add(arch);
 
     const bx = t.x * 0.52;
     const bz = t.z * 0.52;
     const bw = t.x === 0 ? 4.4 : 26;
     const bd = t.z === 0 ? 4.4 : 26;
-    const bridge = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.6, bd), woodMat);
-    bridge.position.set(bx, -0.3, bz);
+    const bridge = buildCompositePlatform(bw, 0.75, bd, woodMat, stoneTrimMat);
+    bridge.position.set(bx, 0, bz);
     worldGroup.add(bridge);
     platforms.push({ minX: bx - bw / 2, maxX: bx + bw / 2, minZ: bz - bd / 2, maxZ: bz + bd / 2, y: 0 });
 
     const bed = new THREE.Mesh(
       new THREE.BoxGeometry(2.6, 1.1, 4.2),
-      new THREE.MeshStandardMaterial({ color: t.hex, emissive: t.hex, emissiveIntensity: 0.35 })
+      new THREE.MeshStandardMaterial({ color: t.hex, emissive: t.hex, emissiveIntensity: 0.45, roughness: 0.35 })
     );
     bed.position.set(t.x, 0.55, t.z);
     worldGroup.add(bed);
@@ -1144,15 +1201,17 @@ function createTycoonEmpireWorld(
   let playerRig = createRobloxCharacter(buildAvatarStyle(avatarCfg));
   scene.add(playerRig.root);
 
-  const floor = new THREE.Mesh(
-    new THREE.BoxGeometry(160, 1, 160),
-    new THREE.MeshStandardMaterial({ map: createStudTexture('#1e293b', maxAnisotropy, 24, 24), roughness: 0.7 })
-  );
+  const floorMat = createWetCyberAsphaltMaterial(maxAnisotropy, '#38bdf8', 12, 12);
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(160, 1, 160), floorMat);
   floor.position.y = -0.5;
   floor.receiveShadow = true;
   worldGroup.add(floor);
 
-  // Cash Collector Pad + Conveyor + 30 Sequential Upgrade Structures!
+  const tycoonTitanium = createBrushedTitaniumPbrMaterial(maxAnisotropy, '#e2e8f0', 2, 2);
+  const tycoonBlue = createBrushedTitaniumPbrMaterial(maxAnisotropy, '#38bdf8', 2, 2);
+  const tycoonGold = createBrushedTitaniumPbrMaterial(maxAnisotropy, '#facc15', 2, 2);
+
+  // Cash Collector Pad + Conveyor + 30 Sequential Multi-Material Structures!
   const collectorPad = new THREE.Mesh(
     new THREE.BoxGeometry(4.2, 0.3, 4.2),
     new THREE.MeshStandardMaterial({ color: 0x22c55e, emissive: 0x16a34a, emissiveIntensity: 1.2 })
@@ -1160,7 +1219,7 @@ function createTycoonEmpireWorld(
   collectorPad.position.set(-10, 0.15, 8);
   worldGroup.add(collectorPad);
 
-  const upgrades: Array<{ x: number; z: number; cost: number; bought: boolean; pad: THREE.Mesh; building: THREE.Mesh; rate: number }> = [];
+  const upgrades: Array<{ x: number; z: number; cost: number; bought: boolean; pad: THREE.Mesh; building: THREE.Object3D; rate: number }> = [];
   for (let i = 0; i < 30; i++) {
     const row = Math.floor(i / 5);
     const col = i % 5;
@@ -1172,16 +1231,10 @@ function createTycoonEmpireWorld(
       new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 1.0 })
     );
     pad.position.set(ux, 0.12, uz);
-    const bHeight = 2 + (i % 6) * 1.4;
-    const building = new THREE.Mesh(
-      new THREE.BoxGeometry(4.5, bHeight, 4.5),
-      new THREE.MeshStandardMaterial({
-        color: i > 24 ? 0xfacc15 : i > 14 ? 0x38bdf8 : 0xe2e8f0,
-        metalness: i > 20 ? 0.8 : 0.25,
-        roughness: 0.3,
-      })
-    );
-    building.position.set(ux, bHeight / 2, uz - 3);
+    const bHeight = 2.4 + (i % 6) * 1.4;
+    const bMat = i > 24 ? tycoonGold : i > 14 ? tycoonBlue : tycoonTitanium;
+    const building = buildCompositePlatform(4.5, bHeight, 4.5, bMat, floorMat, i > 20 ? 0xfacc15 : 0x38bdf8);
+    building.position.set(ux, bHeight, uz - 3);
     building.visible = false;
     worldGroup.add(pad, building);
     upgrades.push({ x: ux, z: uz, cost, bought: false, pad, building, rate: 15 + i * 18 });
@@ -2053,30 +2106,37 @@ function createAdoptIslandWorld(
 
   const grassMat = new THREE.MeshStandardMaterial({ map: createGrassTexture(maxAnisotropy, 24), roughness: 0.85 });
   const sandMat = new THREE.MeshStandardMaterial({ map: createSandTexture(maxAnisotropy, 20), roughness: 0.9 });
-  const tileMat = new THREE.MeshStandardMaterial({
-    map: createCheckerTexture('#f8fafc', '#fde68a', maxAnisotropy, 12, 12),
-    roughness: 0.6,
-  });
+  const tileMat = createMarblePbrMaterial(maxAnisotropy, '#f8fafc', '#f59e0b', 6, 6);
+  const stoneTrim = createCarvedStonePbrMaterial(maxAnisotropy, '#e2e8f0', '#94a3b8', 2, 2);
 
   addPlat(0, 0, 0, 175, 1.5, 175, sandMat);
   addPlat(0, 0.35, 0, 152, 1.0, 152, grassMat);
-  addPlat(0, 0.45, 0, 32, 0.3, 32, tileMat); // Central Town Square
+  addPlat(0, 0.45, 0, 32, 0.3, 32, tileMat); // Central Marble Town Square
 
-  // Nursery Building (Pastel Mint & Pink Roof + Glowing Giant Pet Egg)
-  const nurseryMat = new THREE.MeshStandardMaterial({ color: 0x99f6e4, roughness: 0.55 });
-  const pinkRoofMat = new THREE.MeshStandardMaterial({ color: 0xf472b6, roughness: 0.45 });
+  for (let i = 0; i < 6; i++) {
+    const ang = (i / 6) * Math.PI * 2;
+    const tree = buildSculptedTree(i % 2 === 0 ? 'palm' : 'pine', 1.2);
+    tree.position.set(Math.cos(ang) * 28, 0.35, Math.sin(ang) * 28);
+    worldGroup.add(tree);
+  }
+
+  // Nursery Building (Marble Pillars + Sculpted Arch + Pink Roof + Glowing Giant Pet Egg)
+  const nurseryMat = createCarvedStonePbrMaterial(maxAnisotropy, '#99f6e4', '#0f766e', 2, 2);
+  const pinkRoofMat = createBrushedTitaniumPbrMaterial(maxAnisotropy, '#f472b6', 2, 2);
   const nurseryBase = new THREE.Mesh(new THREE.BoxGeometry(20, 9, 14), nurseryMat);
   nurseryBase.position.set(-28, 4.85, -18);
   nurseryBase.castShadow = true;
   const nurseryRoof = new THREE.Mesh(new THREE.BoxGeometry(22, 2.2, 16), pinkRoofMat);
   nurseryRoof.position.set(-28, 10.4, -18);
+  const nurseryArch = buildSculptedArchway(7.5, 6.2, stoneTrim, pinkRoofMat, 0xf472b6);
+  nurseryArch.position.set(-28, 0.35, -10.5);
   const giantEgg = new THREE.Mesh(
     new THREE.SphereGeometry(2.8, 18, 14),
     new THREE.MeshStandardMaterial({ color: 0xf472b6, emissive: 0xa855f7, emissiveIntensity: 0.7, roughness: 0.2 })
   );
   giantEgg.scale.set(1, 1.35, 1);
   giantEgg.position.set(-28, 14.5, -18);
-  worldGroup.add(nurseryBase, nurseryRoof, giantEgg);
+  worldGroup.add(nurseryBase, nurseryRoof, nurseryArch, giantEgg);
 
   // Rainbow Bridge leading up to Floating Sky Castle
   const rainbowColors = [0xef4444, 0xf97316, 0xfacc15, 0x22c55e, 0x3b82f6, 0xa855f7];
@@ -2087,11 +2147,14 @@ function createAdoptIslandWorld(
       color: rainbowColors[i % rainbowColors.length],
       emissive: rainbowColors[i % rainbowColors.length],
       emissiveIntensity: 0.22,
-      roughness: 0.4,
+      roughness: 0.32,
     });
-    addPlat(0, stepY, stepZ, 8.5, 0.5, 3.2, stepMat);
+    const compStep = buildCompositePlatform(8.5, 0.65, 3.2, stepMat, stoneTrim);
+    compStep.position.set(0, stepY, stepZ);
+    worldGroup.add(compStep);
+    platforms.push({ minX: -4.25, maxX: 4.25, minZ: stepZ - 1.6, maxZ: stepZ + 1.6, y: stepY });
   }
-  const skyCastleFloorMat = new THREE.MeshStandardMaterial({ color: 0xfef3c7, roughness: 0.4 });
+  const skyCastleFloorMat = createMarblePbrMaterial(maxAnisotropy, '#fef3c7', '#d97706', 4, 4);
   addPlat(0, 14.2, -92, 34, 1.5, 28, skyCastleFloorMat);
   for (const tx of [-13, 13]) {
     const tower = new THREE.Mesh(
@@ -2375,27 +2438,30 @@ function createPetSwarmWorld(
   });
 
   const platforms: PlatformDef[] = [];
+  const meadowTrim = createCarvedStonePbrMaterial(maxAnisotropy, '#fbbf24', '#92400e', 3, 3);
   const addPlat = (x: number, y: number, z: number, w: number, h: number, d: number, mat: THREE.Material) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y - h / 2, z);
-    m.receiveShadow = true;
-    m.castShadow = true;
+    const m = buildCompositePlatform(w, h, d, mat, meadowTrim);
+    m.position.set(x, y, z);
     worldGroup.add(m);
     platforms.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2, y });
   };
 
-  // Clover Meadow Base + 3-Tier Honeycomb Mountain Steps
+  // Clover Meadow Base + 3-Tier Honeycomb Mountain Steps + Sculpted Crystal & Pine Groves
   addPlat(0, 0, 0, 170, 1.5, 170, grassMat);
   addPlat(0, 2.2, -48, 56, 2.5, 38, honeyMat);
   addPlat(0, 4.6, -54, 38, 2.5, 26, honeyMat);
   addPlat(0, 7.2, -58, 22, 3.0, 16, honeyMat);
 
+  for (let i = 0; i < 6; i++) {
+    const ang = (i / 6) * Math.PI * 2;
+    const tr = buildSculptedTree(i % 2 === 0 ? 'pine' : 'crystal', 1.15);
+    tr.position.set(Math.cos(ang) * 34, 0, Math.sin(ang) * 34);
+    worldGroup.add(tr);
+  }
+
   // Your Honeycomb Hive Stand + Convert Pad
-  const hiveWall = new THREE.Mesh(
-    new THREE.BoxGeometry(10, 9, 2),
-    new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.35 })
-  );
-  hiveWall.position.set(0, 4.5, 28);
+  const hiveWall = buildCompositePlatform(10, 9, 2.2, honeyMat, meadowTrim, 0xfacc15);
+  hiveWall.position.set(0, 9, 28);
   const convertPad = new THREE.Mesh(
     new THREE.CylinderGeometry(3.4, 3.4, 0.3, 20),
     new THREE.MeshStandardMaterial({ color: 0x22c55e, emissive: 0x16a34a, emissiveIntensity: 1.0 })
@@ -2602,7 +2668,17 @@ function createPetSwarmWorld(
 }
 
 export function createViralWorldById(
-  worldId: Exclude<RobloxWorldId, 'squid_game'>,
+  worldId:
+    | 'adopt_island'
+    | 'pet_swarm'
+    | 'tower_obby'
+    | 'brookhaven_rp'
+    | 'blox_arena'
+    | 'bedwars_sky'
+    | 'tycoon_empire'
+    | 'natural_disaster'
+    | 'doors_hotel'
+    | 'mm2_manor',
   scene: THREE.Scene,
   isSoftwareGl: boolean,
   maxAnisotropy: number,

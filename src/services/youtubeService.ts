@@ -1253,26 +1253,6 @@ export async function searchYouTube(
           errorMessage,
           testedAt: new Date().toISOString(),
         };
-
-        // Fallback to internal search proxy when quota or restriction is reached
-        try {
-          const proxyUrl = `/api/youtube/search?q=${encodeURIComponent(qParam)}${token ? `&pageToken=${encodeURIComponent(token)}` : ''}`;
-          const proxyRes = await fetch(proxyUrl);
-          if (proxyRes.ok) {
-            const proxyData = await proxyRes.json();
-            if (proxyData.videos && proxyData.videos.length > 0) {
-              return {
-                videos: proxyData.videos,
-                fromApi: true,
-                diagnostic: cachedDiagnostic,
-                nextPageToken: proxyData.nextPageToken,
-                totalResults: proxyData.videos.length * 10,
-              };
-            }
-          }
-        } catch {
-          // ignore and proceed to local pool
-        }
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1284,27 +1264,6 @@ export async function searchYouTube(
         errorMessage: message,
         testedAt: new Date().toISOString(),
       };
-
-      // Fallback to internal search proxy on network failure
-      try {
-        const qParam = q.trim() || 'Bangladesh trending music news';
-        const proxyUrl = `/api/youtube/search?q=${encodeURIComponent(qParam)}${token ? `&pageToken=${encodeURIComponent(token)}` : ''}`;
-        const proxyRes = await fetch(proxyUrl);
-        if (proxyRes.ok) {
-          const proxyData = await proxyRes.json();
-          if (proxyData.videos && proxyData.videos.length > 0) {
-            return {
-              videos: proxyData.videos,
-              fromApi: true,
-              diagnostic: cachedDiagnostic,
-              nextPageToken: proxyData.nextPageToken,
-              totalResults: proxyData.videos.length * 10,
-            };
-          }
-        }
-      } catch {
-        // ignore and proceed to local pool
-      }
     }
 
     // 2. Continuous Non-Repeating Multi-Query Discovery Layer (Fallback for offline/quota)
@@ -1605,14 +1564,8 @@ export async function fetchMyYouTubeChannelVideos(accessToken?: string): Promise
   channel?: any;
   videos: YouTubeManagedVideo[];
 }> {
-  const headers: Record<string, string> = {};
-  if (accessToken) headers['x-google-access-token'] = accessToken;
-  const res = await fetch('/api/youtube/my-videos', { headers });
-  const data = await res.json().catch(() => ({ videos: [] }));
-  if (!res.ok) {
-    throw new Error(data?.message || data?.error || 'Failed to load channel videos');
-  }
-  return data;
+  const { directYouTubeService } = await import('./directYouTubeService');
+  return directYouTubeService.getMyChannelVideos(accessToken);
 }
 
 export async function updateMyYouTubeVideo(
@@ -1620,29 +1573,11 @@ export async function updateMyYouTubeVideo(
   payload: { title?: string; description?: string; privacyStatus?: 'public' | 'unlisted' | 'private'; tags?: string[] },
   accessToken?: string
 ): Promise<any> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (accessToken) headers['x-google-access-token'] = accessToken;
-  const res = await fetch(`/api/youtube/my-videos/${encodeURIComponent(videoId)}`, {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data?.message || data?.error || 'Failed to update YouTube video');
-  }
-  return data;
+  const { directYouTubeService } = await import('./directYouTubeService');
+  return directYouTubeService.updateMyVideo(videoId, payload, accessToken);
 }
 
 export async function deleteMyYouTubeVideo(videoId: string, accessToken?: string): Promise<void> {
-  const headers: Record<string, string> = {};
-  if (accessToken) headers['x-google-access-token'] = accessToken;
-  const res = await fetch(`/api/youtube/my-videos/${encodeURIComponent(videoId)}`, {
-    method: 'DELETE',
-    headers,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data?.message || data?.error || 'Failed to delete YouTube video');
-  }
+  const { directYouTubeService } = await import('./directYouTubeService');
+  await directYouTubeService.deleteMyVideo(videoId, accessToken);
 }

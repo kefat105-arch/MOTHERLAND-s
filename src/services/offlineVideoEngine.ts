@@ -76,6 +76,7 @@ let inMemorySyncing = false;
 let inMemoryProgress: { done: number; total: number } | null = null;
 let inMemoryStatus = '';
 let inferredNetworkDown = false;
+let motherlandServerDown = false;
 const objectUrlCache = new Map<string, string>();
 const inFlightObjectUrlLookups = new Map<string, Promise<string>>();
 
@@ -104,7 +105,31 @@ export function isAppOnline(): boolean {
   return !inferredNetworkDown;
 }
 
+export function isMotherlandServerAvailable(): boolean {
+  return isAppOnline() && !motherlandServerDown;
+}
+
+export function markMotherlandServerOffline() {
+  motherlandServerDown = true;
+}
+
+export function markMotherlandServerOnline() {
+  motherlandServerDown = false;
+  if (inferredNetworkDown) {
+    inferredNetworkDown = false;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(CONNECTIVITY_EVENT));
+    }
+  }
+}
+
 export function markConnectivityOffline() {
+  // Only mark global internet offline when browser itself reports offline.
+  // MOTHERLAND backend failures alone must never disable direct YouTube feeds/players.
+  if (typeof navigator !== 'undefined' && navigator.onLine !== false) {
+    motherlandServerDown = true;
+    return;
+  }
   if (!inferredNetworkDown) {
     inferredNetworkDown = true;
     if (typeof window !== 'undefined') {
@@ -114,11 +139,40 @@ export function markConnectivityOffline() {
 }
 
 export function markConnectivityOnline() {
+  motherlandServerDown = false;
   if (inferredNetworkDown) {
     inferredNetworkDown = false;
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent(CONNECTIVITY_EVENT));
     }
+  }
+}
+
+export async function probeInternetOnline(): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    markConnectivityOffline();
+    return false;
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    await fetch('https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=json', {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (inferredNetworkDown) {
+      inferredNetworkDown = false;
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(CONNECTIVITY_EVENT));
+      }
+    }
+    return true;
+  } catch {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      markConnectivityOffline();
+      return false;
+    }
+    return true;
   }
 }
 

@@ -10,10 +10,26 @@ import mm2ManorImg from '../../../assets/images/mm2_manor_hero_1795100846190.jpg
 import bloxElementalImg from '../../../assets/images/blox_elemental_hero_1795100847730.jpg';
 import bedwarsImg from '../../../assets/images/bedwars_islands_hero_1795103204588.jpg';
 import tycoonImg from '../../../assets/images/tycoon_empire_hero_1795103204897.jpg';
+import skyCitadelImg from '../../../assets/images/sky_citadel_hero_1795264747421.jpg';
+import cyberVelocityImg from '../../../assets/images/cyber_velocity_hero_1795264748473.jpg';
+import volcanoTempleImg from '../../../assets/images/volcano_temple_hero_1795264747342.jpg';
+import oceanOdysseyImg from '../../../assets/images/ocean_odyssey_hero_1795264747566.jpg';
+import portalPlayGamesImg from '../../../assets/images/portal_play_games_1795264747806.jpg';
+import portalCreateGameImg from '../../../assets/images/portal_create_game_1795264747306.jpg';
 import type { GameCatalogEntry, RobloxAvatarConfig } from '../../../types';
-import type { RobloxWorldId, SquidStageId, WorldController } from './types';
+import type { CustomGameDefinition, RobloxWorldId, SquidStageId, WorldController } from './types';
+import { createCustomUserGameWorld } from './worlds/customGameWorld';
 import { createSquidGameWorld } from './worlds/squidGameWorld';
+import {
+  createCyberVelocityWorld,
+  createOceanOdysseyWorld,
+  createSkyCitadelWorld,
+  createVolcanoTempleWorld,
+} from './worlds/ultraWorlds';
 import { createViralWorldById } from './worlds/viralWorlds';
+
+export const PORTAL_PLAY_THUMBNAIL = portalPlayGamesImg;
+export const CUSTOM_GAME_THUMBNAIL = portalCreateGameImg;
 
 export interface RobloxRegisteredWorld {
   id: RobloxWorldId;
@@ -22,6 +38,86 @@ export interface RobloxRegisteredWorld {
 }
 
 export const ROBLOX_WORLD_REGISTRY: RobloxRegisteredWorld[] = [
+  {
+    id: 'sky_citadel',
+    thumbnail: skyCitadelImg,
+    entry: {
+      id: 'sky_citadel',
+      name: 'AETHER SKY CITADEL: ULTRA 3D',
+      subtitle: 'শ্বেতপাথর ও সোনালি ভাসমান প্রাসাদ, ক্রিস্টাল ও ২৫ প্লেয়ার',
+      tagline: 'Marble Sky Sanctums · Sculpted Stone Arches · Bounce Pads · 25/Server',
+      description:
+        'ভেইনড শ্বেতপাথর ও খোদাই করা প্রাচীন আর্চওয়ে দিয়ে তৈরি আকাশচুম্বী ভাসমান প্রাসাদ! ক্রিস্টাল শার্ড ও রিলিক সংগ্রহ করে মুভিং স্কায়-ব্রিজ পার হয়ে সোনালি এলিভেটেড বিজয় পোর্টালে পৌঁছান।',
+      category: 'obby',
+      badge: 'ULTRA PRO MAX · 3D',
+      status: 'playable',
+      maxPlayersPerRoom: 25,
+      playersLabel: '25 Players / Server',
+      difficulty: 'Sky Parkour',
+      estimatedSession: '30–60 Mins',
+      features: ['PBR Veined Marble', 'Crystal Sanctums', '25 Players / Server'],
+    },
+  },
+  {
+    id: 'cyber_velocity',
+    thumbnail: cyberVelocityImg,
+    entry: {
+      id: 'cyber_velocity',
+      name: 'CYBER VELOCITY 2099: NEON CIRCUIT',
+      subtitle: 'ফিউচারিস্টিক হোভার সুপারকার, নিয়ন হাইওয়ে ও ২৫ প্লেয়ার রেস',
+      tagline: 'Hover Supercar · Rain-Slick Asphalt · Rooftop Checkpoints · 25/Server',
+      description:
+        'বৃষ্টির পর ঝকঝকে সাইবার অ্যাসফল্ট হাইওয়েতে নিজের নিয়ন হোভার সুপারকার চালান বা স্প্রিন্ট করুন! স্কাইট্রি ও আলোকিত টাওয়ার পেরিয়ে সার্কিট চেকপয়েন্ট জয় করুন।',
+      category: 'action',
+      badge: 'ULTRA PRO MAX · CAR 3D',
+      status: 'playable',
+      maxPlayersPerRoom: 25,
+      playersLabel: '25 Players / Server',
+      difficulty: 'High-Speed Circuit',
+      estimatedSession: '30–60 Mins',
+      features: ['Driveable Hovercar', 'Wet Asphalt Reflections', '25 Players / Server'],
+    },
+  },
+  {
+    id: 'volcano_temple',
+    thumbnail: volcanoTempleImg,
+    entry: {
+      id: 'volcano_temple',
+      name: 'OBSIDIAN VOLCANO: TEMPLE TRIALS',
+      subtitle: 'লাভা গিরিখাত, ব্যাসল্ট মন্দির ও ক্রিস্টাল সংগ্রহ (২৫ প্লেয়ার)',
+      tagline: 'Obsidian Basalt · Rising Magma Surges · Relic Hunting · 25/Server',
+      description:
+        'উত্তপ্ত ম্যাগমা গিরিখাতের ওপর খোদাই করা পাথরের মন্দির ও মুভিং ব্যাসল্ট ব্রিজ! নির্দিষ্ট সময়ে উঠে আসা লাভার ঢেউ এড়িয়ে প্রাচীন রত্ন সংগ্রহ করুন।',
+      category: 'survival',
+      badge: 'ULTRA PRO MAX · SURVIVAL',
+      status: 'playable',
+      maxPlayersPerRoom: 25,
+      playersLabel: '25 Players / Server',
+      difficulty: 'Volcanic Trial',
+      estimatedSession: '30–60 Mins',
+      features: ['Volcanic Basalt PBR', 'Dynamic Lava Surges', '25 Players / Server'],
+    },
+  },
+  {
+    id: 'ocean_odyssey',
+    thumbnail: oceanOdysseyImg,
+    entry: {
+      id: 'ocean_odyssey',
+      name: 'EMERALD ARCHIPELAGO: OCEAN ODYSSEY',
+      subtitle: 'কাঠের স্পিডবোট, ক্রান্তীয় দ্বীপ ও মুক্তো শিকার (২৫ প্লেয়ার)',
+      tagline: 'Sail Wooden Speedboat · Tropical Palm Islands · Harbor Lamps · 25/Server',
+      description:
+        'স্বচ্ছ নীল সাগরের ঢেউয়ে কাঠের স্পিডবোট ভাসিয়ে ৭টি সবুজ ক্রান্তীয় দ্বীপ ঘুরে বেড়ান! পাম গাছ, হারবার ল্যাম্প ও সোনার রিলিক সংগ্রহ করে সমুদ্র অভিযাত্রী হয়ে উঠুন।',
+      category: 'roleplay',
+      badge: 'ULTRA PRO MAX · OCEAN 3D',
+      status: 'playable',
+      maxPlayersPerRoom: 25,
+      playersLabel: '25 Players / Server',
+      difficulty: 'Open Sea Exploration',
+      estimatedSession: '40–90 Mins',
+      features: ['Sailboat Steering', '7 Sculpted Islands', '25 Players / Server'],
+    },
+  },
   {
     id: 'adopt_island',
     thumbnail: adoptIslandImg,
@@ -261,19 +357,41 @@ export function getRobloxWorldMeta(id: string): RobloxRegisteredWorld | undefine
 
 /**
  * Plug-and-Play World Instantiator:
- * Every world registered here automatically inherits 25-player auto-overflow servers
- * + Unified Roblox Core UI (Voice Chat, Messages, Pause Menu, 25-Player List, Emotes, 1P/3P).
+ * Every world registered here (plus user-created Studio worlds!) automatically inherits
+ * 25-player auto-overflow servers + Unified Roblox Core UI (Voice Chat, Messages, Pause Menu, Emotes, 1P/3P).
  */
 export function createUnifiedRobloxWorld(
-  worldId: RobloxWorldId,
+  worldId: RobloxWorldId | string,
   scene: THREE.Scene,
   isSoftwareGl: boolean,
   maxAnisotropy: number,
   initialAvatar: RobloxAvatarConfig,
-  initialSquidStage: SquidStageId = 's1_red_light'
+  initialSquidStage: SquidStageId = 's1_red_light',
+  customGameDef?: CustomGameDefinition
 ): WorldController {
+  if (worldId.startsWith('custom_') && customGameDef) {
+    return createCustomUserGameWorld(customGameDef, scene, isSoftwareGl, maxAnisotropy, initialAvatar);
+  }
   if (worldId === 'squid_game') {
     return createSquidGameWorld(scene, isSoftwareGl, maxAnisotropy, initialSquidStage);
   }
-  return createViralWorldById(worldId, scene, isSoftwareGl, maxAnisotropy, initialAvatar);
+  if (worldId === 'sky_citadel') {
+    return createSkyCitadelWorld(scene, isSoftwareGl, maxAnisotropy, initialAvatar);
+  }
+  if (worldId === 'cyber_velocity') {
+    return createCyberVelocityWorld(scene, isSoftwareGl, maxAnisotropy, initialAvatar);
+  }
+  if (worldId === 'volcano_temple') {
+    return createVolcanoTempleWorld(scene, isSoftwareGl, maxAnisotropy, initialAvatar);
+  }
+  if (worldId === 'ocean_odyssey') {
+    return createOceanOdysseyWorld(scene, isSoftwareGl, maxAnisotropy, initialAvatar);
+  }
+  return createViralWorldById(
+    worldId as Parameters<typeof createViralWorldById>[0],
+    scene,
+    isSoftwareGl,
+    maxAnisotropy,
+    initialAvatar
+  );
 }

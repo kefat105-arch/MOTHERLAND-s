@@ -12,7 +12,58 @@ export type RobloxWorldId =
   | 'tycoon_empire'
   | 'natural_disaster'
   | 'doors_hotel'
-  | 'mm2_manor';
+  | 'mm2_manor'
+  | 'sky_citadel'
+  | 'cyber_velocity'
+  | 'volcano_temple'
+  | 'ocean_odyssey';
+
+export type CustomGameBiome = 'sky_day' | 'golden_sunset' | 'cyber_night' | 'volcano_ash';
+export type CustomGroundMaterial = 'grass' | 'marble' | 'asphalt' | 'basalt' | 'sand';
+
+export type CustomObjectKind =
+  | 'spawn_pad'
+  | 'platform_stone'
+  | 'platform_marble'
+  | 'platform_wood'
+  | 'platform_neon'
+  | 'moving_platform'
+  | 'bounce_pad'
+  | 'stone_arch'
+  | 'tree_palm'
+  | 'tree_pine'
+  | 'crystal_pillar'
+  | 'coin_gem'
+  | 'checkpoint'
+  | 'laser_spinner'
+  | 'hazard_lava'
+  | 'finish_portal';
+
+export interface CustomGameObject {
+  uid: string;
+  kind: CustomObjectKind;
+  x: number;
+  y: number;
+  z: number;
+  rotY?: number;
+  scale?: number;
+  colorHex?: string;
+}
+
+export interface CustomGameDefinition {
+  id: string;
+  title: string;
+  description: string;
+  biome: CustomGameBiome;
+  groundMaterial: CustomGroundMaterial;
+  moveSpeed: number;
+  jumpPower: number;
+  creatorId?: string;
+  creatorName?: string;
+  objects: CustomGameObject[];
+  createdAt?: string;
+  updatedAt?: string;
+}
 
 export type SquidSeason = 1;
 

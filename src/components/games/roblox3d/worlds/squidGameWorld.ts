@@ -14,6 +14,10 @@ import {
   createThreePointLights,
   createWoodPlankTexture,
 } from '../robloxRenderer';
+import {
+  buildCompositePlatform,
+  createBrushedTitaniumPbrMaterial,
+} from '../proceduralAssets';
 import { robloxAudio } from '../robloxAudio';
 import {
   SQUID_STAGES,
@@ -234,6 +238,8 @@ export function createSquidGameWorld(
     rival218 = null;
   };
 
+  const squidTrimMat = createBrushedTitaniumPbrMaterial(maxAnisotropy, '#334155', 2, 2);
+
   const addPlatform = (
     x: number,
     y: number,
@@ -242,11 +248,9 @@ export function createSquidGameWorld(
     h: number,
     d: number,
     mat: THREE.Material
-  ): THREE.Mesh => {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    mesh.position.set(x, y - h / 2, z);
-    mesh.receiveShadow = true;
-    mesh.castShadow = y > 0.2;
+  ): THREE.Object3D => {
+    const mesh = buildCompositePlatform(w, h, d, mat, squidTrimMat);
+    mesh.position.set(x, y, z);
     stageGroup.add(mesh);
     platforms.push({
       minX: x - w / 2,

@@ -47,6 +47,8 @@ import {
   isAppOnline,
   markConnectivityOffline,
   markConnectivityOnline,
+  markMotherlandServerOffline,
+  markMotherlandServerOnline,
   getOfflinePosts,
   getOfflineStories,
   getOfflineShorts,
@@ -56,6 +58,7 @@ import {
   mirrorOnlineShorts,
   mirrorOnlineLongVideos,
 } from './services/offlineVideoEngine';
+import { directYouTubeService } from './services/directYouTubeService';
 
 function isNetworkFailure(err: any): boolean {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
@@ -389,19 +392,20 @@ export const api = {
     return res.json();
   },
 
-  // YouTube API Integration
+  // Direct Client <-> YouTube Data API v3 Integration (100% Independent from MOTHERLAND Backend)
   async getYouTubeStatus() {
-    const res = await authFetch(`${API_BASE}/youtube/status`);
-    return res.json();
+    return directYouTubeService.getStatus();
   },
 
   async setYouTubeKey(apiKey: string) {
-    const res = await authFetch(`${API_BASE}/youtube/set-key`, {
+    const result = await directYouTubeService.setApiKey(apiKey);
+    // Optional non-blocking sync with MOTHERLAND backend if online & signed in
+    void authFetch(`${API_BASE}/youtube/set-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey }),
-    });
-    return parseJsonOrThrow(res);
+    }).catch(() => {});
+    return result;
   },
 
   async searchYouTube(
@@ -411,23 +415,11 @@ export const api = {
     videoDuration = '',
     options?: { continuous?: boolean; signal?: AbortSignal }
   ) {
-    const params = new URLSearchParams({
-      q: query,
-      maxResults: String(maxResults),
-    });
-    if (pageToken) params.set('pageToken', pageToken);
-    if (videoDuration) params.set('videoDuration', videoDuration);
-    if (options?.continuous) params.set('continuous', '1');
-
-    const res = await authFetch(`${API_BASE}/youtube/search?${params.toString()}`, {
-      signal: options?.signal,
-    });
-    return res.json();
+    return directYouTubeService.searchVideos(query, pageToken, maxResults, videoDuration, options);
   },
 
   async getYouTubeVideos(ids: string) {
-    const res = await authFetch(`${API_BASE}/youtube/videos?ids=${encodeURIComponent(ids)}`);
-    return res.json();
+    return directYouTubeService.getVideosByIds(ids);
   },
 
   async getYouTubeFeed(options: {
@@ -460,19 +452,14 @@ export const api = {
       };
     }
 
-    const params = new URLSearchParams();
-    if (options.type) params.set('type', options.type);
-    if (options.category) params.set('category', options.category);
-    if (options.pageToken) params.set('pageToken', options.pageToken);
-    if (options.page) params.set('page', String(options.page));
-    if (options.pageSize) params.set('pageSize', String(options.pageSize));
-
     try {
-      const res = await authFetch(`${API_BASE}/youtube/feed?${params.toString()}`, {
-        signal: options.signal,
+      const excludeIds = new Set<string>(
+        getRecentlyShownIds(options.type === 'shorts' ? 'shorts' : 'video')
+      );
+      const data = await directYouTubeService.getFeed({
+        ...options,
+        excludeIds,
       });
-      const data = await res.json();
-      markConnectivityOnline();
       if (options.type === 'shorts' && Array.isArray(data?.items)) {
         void mirrorOnlineShorts(data.items);
       } else if (Array.isArray(data?.items)) {
@@ -483,10 +470,8 @@ export const api = {
       if ((err as any)?.name === 'AbortError') {
         throw err;
       }
-      if (isNetworkFailure(err)) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         markConnectivityOffline();
-      } else if (isAppOnline()) {
-        throw err;
       }
       const items =
         options.type === 'shorts' ? await getOfflineShorts() : await getOfflineLongVideos();
@@ -507,10 +492,7 @@ export const api = {
     items: YouTubeCommentThread[];
     nextPageToken?: string | null;
   }> {
-    const params = new URLSearchParams({ videoId, order });
-    if (pageToken) params.set('pageToken', pageToken);
-    const res = await authFetch(`${API_BASE}/youtube/comments?${params.toString()}`);
-    return res.json();
+    return directYouTubeService.getComments(videoId, pageToken, order);
   },
 
   async getYouTubeLive(pageToken = '', q = ''): Promise<{
@@ -520,12 +502,7 @@ export const api = {
     error?: string;
     message?: string;
   }> {
-    const params = new URLSearchParams();
-    if (pageToken) params.set('pageToken', pageToken);
-    if (q) params.set('q', q);
-    const qs = params.toString();
-    const res = await authFetch(`${API_BASE}/youtube/live${qs ? `?${qs}` : ''}`);
-    return res.json();
+    return directYouTubeService.getLiveStreams(pageToken, q);
   },
 
   async getYouTubeChannel(channelId: string, pageToken = ''): Promise<{
@@ -549,11 +526,7 @@ export const api = {
     smallVideos: (LongVideo & { isShort?: boolean })[];
     nextPageToken?: string | null;
   }> {
-    const params = new URLSearchParams();
-    if (pageToken) params.set('pageToken', pageToken);
-    const qs = params.toString();
-    const res = await authFetch(`${API_BASE}/youtube/channel/${encodeURIComponent(channelId)}${qs ? `?${qs}` : ''}`);
-    return parseJsonOrThrow(res);
+    return directYouTubeService.getChannelProfile(channelId, pageToken);
   },
 
   async getYouTubeSubscriptionStatus(channelId: string): Promise<{
@@ -564,9 +537,7 @@ export const api = {
     requiresScope?: string;
     message?: string;
   }> {
-    const res = await authFetch(`${API_BASE}/youtube/channel/${encodeURIComponent(channelId)}/subscription-status`);
-    if (!res.ok) return { connected: false, hasScope: false, subscribed: false, subscriptionId: null };
-    return res.json();
+    return directYouTubeService.getSubscriptionStatus(channelId);
   },
 
   async subscribeYouTubeChannel(channelId: string, action: 'subscribe' | 'unsubscribe' = 'subscribe'): Promise<{
@@ -577,24 +548,7 @@ export const api = {
     error?: string;
     message?: string;
   }> {
-    const res = await authFetch(`${API_BASE}/youtube/channel/${encodeURIComponent(channelId)}/subscribe`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data?.message || data?.error || 'YouTube action failed') as Error & {
-        status?: number;
-        code?: string;
-        requiresScope?: string;
-      };
-      err.status = res.status;
-      err.code = data?.error;
-      err.requiresScope = data?.requiresScope;
-      throw err;
-    }
-    return data;
+    return directYouTubeService.subscribeChannel(channelId, action);
   },
 
   async rateYouTubeVideo(videoId: string, rating: 'like' | 'dislike' | 'none' = 'like'): Promise<{
@@ -602,54 +556,39 @@ export const api = {
     videoId: string;
     rating: string;
   }> {
-    const res = await authFetch(`${API_BASE}/youtube/videos/${encodeURIComponent(videoId)}/rate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rating }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data?.message || data?.error || 'YouTube rating failed') as Error & {
-        status?: number;
-        code?: string;
-        requiresScope?: string;
-      };
-      err.status = res.status;
-      err.code = data?.error;
-      err.requiresScope = data?.requiresScope;
-      throw err;
-    }
-    return data;
+    return directYouTubeService.rateVideo(videoId, rating);
   },
 
   async postYouTubeComment(videoId: string, text: string): Promise<{
     success: boolean;
     comment: YouTubeCommentThread;
   }> {
-    const res = await authFetch(`${API_BASE}/youtube/videos/${encodeURIComponent(videoId)}/comments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data?.message || data?.error || 'YouTube comment failed') as Error & {
-        status?: number;
-        code?: string;
-        requiresScope?: string;
-      };
-      err.status = res.status;
-      err.code = data?.error;
-      err.requiresScope = data?.requiresScope;
-      throw err;
-    }
-    return data;
+    return directYouTubeService.postComment(videoId, text);
   },
 
   // Official YouTube OAuth 2.0 + Direct Upload
   async getYouTubeOAuthStatus(): Promise<YouTubeOAuthStatus> {
-    const res = await authFetch(`${API_BASE}/youtube/oauth/status`);
-    return res.json();
+    const token = getStoredGoogleAccessToken();
+    if (token) {
+      return {
+        oauthConfigured: true,
+        clientOAuthReady: true,
+        callbackUrl: '',
+        connected: true,
+        status: 'connected',
+      };
+    }
+    try {
+      const res = await authFetch(`${API_BASE}/youtube/oauth/status`);
+      return res.json();
+    } catch {
+      return {
+        oauthConfigured: false,
+        callbackUrl: '',
+        connected: false,
+        status: 'not_configured',
+      };
+    }
   },
 
   async getYouTubeOAuthUrl(): Promise<{
@@ -664,10 +603,15 @@ export const api = {
   },
 
   async disconnectYouTubeOAuth(): Promise<{ success: boolean; connected: boolean }> {
-    const res = await authFetch(`${API_BASE}/youtube/oauth/disconnect`, {
-      method: 'POST',
-    });
-    return parseJsonOrThrow(res);
+    localStorage.removeItem(GOOGLE_AUTH_STORAGE_KEY);
+    try {
+      const res = await authFetch(`${API_BASE}/youtube/oauth/disconnect`, {
+        method: 'POST',
+      });
+      return parseJsonOrThrow(res);
+    } catch {
+      return { success: true, connected: false };
+    }
   },
 
   async getMyYouTubeVideos(): Promise<{
@@ -677,27 +621,18 @@ export const api = {
     error?: string;
     message?: string;
   }> {
-    const res = await authFetch(`${API_BASE}/youtube/my-videos`);
-    return parseJsonOrThrow(res);
+    return directYouTubeService.getMyChannelVideos();
   },
 
   async updateMyYouTubeVideo(
     videoId: string,
     payload: { title?: string; description?: string; privacyStatus?: 'public' | 'unlisted' | 'private'; tags?: string[] }
   ): Promise<{ success: boolean; video: any }> {
-    const res = await authFetch(`${API_BASE}/youtube/my-videos/${encodeURIComponent(videoId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    return parseJsonOrThrow(res);
+    return directYouTubeService.updateMyVideo(videoId, payload);
   },
 
   async deleteMyYouTubeVideo(videoId: string): Promise<{ success: boolean; videoId: string }> {
-    const res = await authFetch(`${API_BASE}/youtube/my-videos/${encodeURIComponent(videoId)}`, {
-      method: 'DELETE',
-    });
-    return parseJsonOrThrow(res);
+    return directYouTubeService.deleteMyVideo(videoId);
   },
 
   async uploadVideoToYouTube(params: {
@@ -1127,7 +1062,7 @@ export const api = {
     return parseJsonOrThrow(res);
   },
 
-  // Posts & Feed (Unified Feed: Motherland + For You + YouTube)
+  // Posts & Feed (MOTHERLAND Backend Native + Direct Browser YouTube Decoupled Parallel Merge)
   async getPosts(
     feedType: string = 'all',
     source = 'all',
@@ -1158,46 +1093,129 @@ export const api = {
         nextYtCursor: null,
       };
     }
-    const params = new URLSearchParams({
-      feedType,
-      source,
-      page: String(page),
-      pageSize: String(pageSize),
-    });
-    if (ytCursor) params.set('ytCursor', ytCursor);
-    try {
+
+    const fetchMotherlandOnly = async () => {
+      const params = new URLSearchParams({
+        feedType: feedType === 'saved' ? 'saved' : 'motherland',
+        source: 'motherland',
+        page: String(page),
+        pageSize: String(
+          feedType === 'motherland' || feedType === 'saved' || source === 'motherland'
+            ? pageSize
+            : Math.max(2, Math.floor(pageSize / 2))
+        ),
+      });
       const res = await authFetch(`${API_BASE}/posts?${params.toString()}`, { signal });
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData?.error || errData?.message || `Failed to load feed (${res.status})`);
+        throw new Error(`MOTHERLAND server returned ${res.status}`);
       }
       const data = await res.json();
-      markConnectivityOnline();
-      if (Array.isArray(data?.posts) && data.posts.length > 0) {
-        void mirrorOnlinePosts(data.posts);
-      }
-      return data;
-    } catch (err) {
-      if ((err as any)?.name === 'AbortError') throw err;
-      if (isNetworkFailure(err)) {
-        markConnectivityOffline();
-      }
-      if (!isAppOnline() || isNetworkFailure(err)) {
-        const cached = await getOfflinePosts();
-        const filtered =
-          feedType === 'motherland'
-            ? cached.filter((p) => p.source === 'motherland')
-            : cached;
+      markMotherlandServerOnline();
+      return data as { posts: Post[]; total: number; hasMore?: boolean };
+    };
+
+    // Pure MOTHERLAND / Saved feeds only hit MOTHERLAND server (with offline fallback)
+    if (feedType === 'motherland' || feedType === 'saved' || source === 'motherland') {
+      try {
+        const data = await fetchMotherlandOnly();
+        if (Array.isArray(data?.posts) && data.posts.length > 0) {
+          void mirrorOnlinePosts(data.posts);
+        }
+        return { ...data, page, nextYtCursor: null };
+      } catch (err) {
+        if ((err as any)?.name === 'AbortError') throw err;
+        markMotherlandServerOffline();
+        if (isNetworkFailure(err)) markConnectivityOffline();
+        const cached = (await getOfflinePosts()).filter((p) => p.source === 'motherland');
         return {
-          posts: filtered,
-          total: filtered.length,
+          posts: cached,
+          total: cached.length,
           page: 1,
           hasMore: false,
           nextYtCursor: null,
         };
       }
-      throw err;
     }
+
+    // Mixed feeds ('all' | 'for_you'): Run MOTHERLAND backend & Direct YouTube API independently in parallel!
+    // If MOTHERLAND server is down or returns 5xx, YouTube posts STILL load & play smoothly.
+    const ytTarget = Math.max(4, Math.ceil(pageSize * 0.65));
+    const excludeSet = new Set<string>(getRecentlyShownIds('home'));
+    const [mlSettled, ytSettled] = await Promise.allSettled([
+      fetchMotherlandOnly(),
+      directYouTubeService.getDirectHomePosts({
+        page,
+        pageSize: ytTarget,
+        ytCursor,
+        signal,
+        excludeIds: excludeSet,
+      }),
+    ]);
+
+    if (
+      (mlSettled.status === 'rejected' && mlSettled.reason?.name === 'AbortError') ||
+      (ytSettled.status === 'rejected' && ytSettled.reason?.name === 'AbortError')
+    ) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    let mlPosts: Post[] = [];
+    let mlTotal = 0;
+    let mlHasMore = false;
+    if (mlSettled.status === 'fulfilled') {
+      mlPosts = Array.isArray(mlSettled.value?.posts) ? mlSettled.value.posts : [];
+      mlTotal = Number(mlSettled.value?.total || mlPosts.length);
+      mlHasMore = Boolean(mlSettled.value?.hasMore);
+    } else {
+      markMotherlandServerOffline();
+      // Gracefully pull cached offline native MOTHERLAND posts only when server is down
+      const offlineNative = (await getOfflinePosts()).filter((p) => p.source === 'motherland');
+      if (page === 1) mlPosts = offlineNative.slice(0, 3);
+    }
+
+    let ytPosts: Post[] = [];
+    let nextYtCursor: string | null = null;
+    let quotaExceeded = false;
+    if (ytSettled.status === 'fulfilled') {
+      ytPosts = ytSettled.value.posts || [];
+      nextYtCursor = ytSettled.value.nextYtCursor;
+      quotaExceeded = Boolean(ytSettled.value.quotaExceeded);
+    }
+
+    // Balanced interleave: 1 Motherland post + 2 YouTube posts
+    const merged: Post[] = [];
+    const seen = new Set<string>();
+    let mi = 0;
+    let yi = 0;
+    while (merged.length < pageSize && (mi < mlPosts.length || yi < ytPosts.length)) {
+      if (mi < mlPosts.length) {
+        const p = mlPosts[mi++];
+        if (p && !seen.has(p.id)) {
+          seen.add(p.id);
+          merged.push(p);
+        }
+      }
+      for (let k = 0; k < 2 && yi < ytPosts.length && merged.length < pageSize; k++) {
+        const y = ytPosts[yi++];
+        if (y && !seen.has(y.id)) {
+          seen.add(y.id);
+          merged.push(y);
+        }
+      }
+    }
+
+    if (merged.length > 0) {
+      void mirrorOnlinePosts(merged);
+    }
+
+    return {
+      posts: merged,
+      total: mlTotal + ytPosts.length,
+      page,
+      hasMore: mlHasMore || Boolean(nextYtCursor),
+      nextYtCursor,
+      quotaExceeded,
+    };
   },
 
   async createPost(data: {
@@ -1322,21 +1340,16 @@ export const api = {
     try {
       const res = await authFetch(`${API_BASE}/stories`, { signal });
       const data = await parseJsonOrThrow<{ stories: Story[] }>(res);
-      markConnectivityOnline();
+      markMotherlandServerOnline();
       if (Array.isArray(data?.stories) && data.stories.length > 0) {
         void mirrorOnlineStories(data.stories);
       }
       return data;
     } catch (err) {
-      if ((err as any)?.name !== 'AbortError') {
-        if (isNetworkFailure(err)) {
-          markConnectivityOffline();
-        }
-        if (!isAppOnline() || isNetworkFailure(err)) {
-          return { stories: await getOfflineStories() };
-        }
-      }
-      throw err;
+      if ((err as any)?.name === 'AbortError') throw err;
+      markMotherlandServerOffline();
+      if (isNetworkFailure(err)) markConnectivityOffline();
+      return { stories: await getOfflineStories() };
     }
   },
 
@@ -1381,38 +1394,91 @@ export const api = {
     if (!isAppOnline()) {
       return { shorts: await getOfflineShorts(), page: 1, nextPageToken: null, hasMore: false };
     }
-    const params = new URLSearchParams({
-      page: String(page),
-      pageSize: String(pageSize),
-    });
-    if (includeWatched) params.set('includeWatched', '1');
-    if (pageToken) params.set('pageToken', pageToken);
-    try {
+
+    const fetchNativeShorts = async () => {
+      const params = new URLSearchParams({
+        nativeOnly: '1',
+        page: String(page),
+        pageSize: String(Math.max(4, Math.floor(pageSize / 2))),
+      });
+      if (includeWatched) params.set('includeWatched', '1');
       const res = await authFetch(`${API_BASE}/videos/shorts?${params.toString()}`, { signal });
-      const data = await parseJsonOrThrow<{
-        shorts: ShortVideo[];
-        page?: number;
-        nextPageToken?: string | null;
-        hasMore?: boolean;
-        quotaExceeded?: boolean;
-        exhaustedReason?: string;
-      }>(res);
-      markConnectivityOnline();
-      if (Array.isArray(data?.shorts) && data.shorts.length > 0) {
-        void mirrorOnlineShorts(data.shorts);
-      }
-      return data;
-    } catch (err) {
-      if ((err as any)?.name !== 'AbortError') {
-        if (isNetworkFailure(err)) {
-          markConnectivityOffline();
-        }
-        if (!isAppOnline() || isNetworkFailure(err)) {
-          return { shorts: await getOfflineShorts(), page: 1, nextPageToken: null, hasMore: false };
-        }
-      }
-      throw err;
+      if (!res.ok) throw new Error(`Shorts backend ${res.status}`);
+      markMotherlandServerOnline();
+      return (await res.json()) as { shorts: ShortVideo[]; hasMore?: boolean };
+    };
+
+    const excludeIds = includeWatched ? new Set<string>() : new Set<string>(getRecentlyShownIds('shorts'));
+    const [mlSettled, ytSettled] = await Promise.allSettled([
+      fetchNativeShorts(),
+      directYouTubeService.getDirectShortsFeed({
+        page,
+        pageSize: Math.max(6, Math.ceil(pageSize * 0.7)),
+        pageToken,
+        signal,
+        excludeIds,
+      }),
+    ]);
+
+    if (
+      (mlSettled.status === 'rejected' && mlSettled.reason?.name === 'AbortError') ||
+      (ytSettled.status === 'rejected' && ytSettled.reason?.name === 'AbortError')
+    ) {
+      throw new DOMException('Aborted', 'AbortError');
     }
+
+    let nativeShorts: ShortVideo[] = [];
+    if (mlSettled.status === 'fulfilled') {
+      nativeShorts = Array.isArray(mlSettled.value?.shorts) ? mlSettled.value.shorts : [];
+    } else {
+      markMotherlandServerOffline();
+      if (page === 1) {
+        nativeShorts = (await getOfflineShorts()).filter((s) => s.source !== 'youtube').slice(0, 4);
+      }
+    }
+
+    let ytShorts: ShortVideo[] = [];
+    let nextPageToken: string | null = null;
+    let ytHasMore = false;
+    let quotaExceeded = false;
+    if (ytSettled.status === 'fulfilled') {
+      ytShorts = ytSettled.value.shorts || [];
+      nextPageToken = ytSettled.value.nextPageToken;
+      ytHasMore = Boolean(ytSettled.value.hasMore);
+      quotaExceeded = Boolean(ytSettled.value.quotaExceeded);
+    }
+
+    const combined: ShortVideo[] = [];
+    const seen = new Set<string>();
+    let ni = 0;
+    let yi = 0;
+    while (ni < nativeShorts.length || yi < ytShorts.length) {
+      if (ni < nativeShorts.length) {
+        const s = nativeShorts[ni++];
+        if (s && !seen.has(s.id)) {
+          seen.add(s.id);
+          combined.push(s);
+        }
+      }
+      for (let k = 0; k < 2 && yi < ytShorts.length; k++) {
+        const y = ytShorts[yi++];
+        if (y && !seen.has(y.id)) {
+          seen.add(y.id);
+          combined.push(y);
+        }
+      }
+    }
+
+    if (combined.length > 0) {
+      void mirrorOnlineShorts(combined);
+    }
+    return {
+      shorts: combined,
+      page,
+      nextPageToken,
+      hasMore: ytHasMore || Boolean(nextPageToken),
+      quotaExceeded,
+    };
   },
 
   async createShort(data: {
@@ -1440,21 +1506,16 @@ export const api = {
     try {
       const res = await authFetch(`${API_BASE}/videos/long${qs}`, { signal });
       const data = await parseJsonOrThrow<{ videos: LongVideo[] }>(res);
-      markConnectivityOnline();
+      markMotherlandServerOnline();
       if (Array.isArray(data?.videos) && data.videos.length > 0) {
         void mirrorOnlineLongVideos(data.videos);
       }
       return data;
     } catch (err) {
-      if ((err as any)?.name !== 'AbortError') {
-        if (isNetworkFailure(err)) {
-          markConnectivityOffline();
-        }
-        if (!isAppOnline() || isNetworkFailure(err)) {
-          return { videos: await getOfflineLongVideos() };
-        }
-      }
-      throw err;
+      if ((err as any)?.name === 'AbortError') throw err;
+      markMotherlandServerOffline();
+      if (isNetworkFailure(err)) markConnectivityOffline();
+      return { videos: await getOfflineLongVideos() };
     }
   },
 
@@ -2012,8 +2073,20 @@ export const api = {
     title: string;
     channelAvatar?: string;
   }> {
-    const res = await authFetch(`${API_BASE}/motherland-live/youtube-live/${encodeURIComponent(channelId)}`);
-    return parseJsonOrThrow(res);
+    try {
+      const res = await authFetch(`${API_BASE}/motherland-live/youtube-live/${encodeURIComponent(channelId)}`);
+      if (res.ok) return res.json();
+    } catch {
+      // Fallback to direct YouTube API if MOTHERLAND backend is unavailable
+    }
+    const profile = await directYouTubeService.getChannelProfile(channelId);
+    const first = profile.videos?.[0];
+    if (!first) throw new Error('No YouTube video available for channel');
+    return {
+      videoId: first.youtubeId || first.id,
+      title: first.title,
+      channelAvatar: profile.channel.avatar,
+    };
   },
 
   async getMotherlandLiveChannelSocial(channelId: string): Promise<{
@@ -2090,20 +2163,58 @@ export const api = {
     video?: LongVideo;
     post?: Post;
   }> {
-    const typeQ = preferredType ? `?type=${encodeURIComponent(preferredType)}` : '';
-    const res = await authFetch(
-      `${API_BASE}/videos/resolve/${encodeURIComponent(videoId)}${typeQ}`
-    );
-    if (!res.ok) {
-      return { found: false, kind: preferredType === 'short' ? 'short' : 'long' };
+    try {
+      const typeQ = preferredType ? `?type=${encodeURIComponent(preferredType)}` : '';
+      const res = await authFetch(
+        `${API_BASE}/videos/resolve/${encodeURIComponent(videoId)}${typeQ}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.found) return data;
+      }
+    } catch {
+      // Fall back to direct YouTube lookup when MOTHERLAND backend is unavailable
     }
-    return res.json();
+    const ytResolved = await directYouTubeService.resolveDeepLinkYouTube(videoId, preferredType);
+    if (ytResolved) return ytResolved;
+    return { found: false, kind: preferredType === 'short' ? 'short' : 'long' };
   },
 
-  // Games Hub & LIVE SPY Multiplayer
+  // Games Hub, Custom User-Built 3D Games & LIVE SPY Multiplayer
   async getGamesCatalog(): Promise<{ games: GameCatalogEntry[] }> {
-    const res = await authFetch(`${API_BASE}/games/catalog`);
-    if (!res.ok) return { games: [] };
+    try {
+      const res = await authFetch(`${API_BASE}/games/catalog`);
+      if (!res.ok) return { games: [] };
+      return res.json();
+    } catch {
+      return { games: [] };
+    }
+  },
+
+  async getCustomGames(): Promise<{ customGames: any[] }> {
+    try {
+      const res = await authFetch(`${API_BASE}/games/custom`);
+      if (!res.ok) return { customGames: [] };
+      return res.json();
+    } catch {
+      return { customGames: [] };
+    }
+  },
+
+  async saveCustomGame(definition: any): Promise<{ game: any }> {
+    const res = await authFetch(`${API_BASE}/games/custom`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(definition),
+    });
+    return parseJsonOrThrow(res);
+  },
+
+  async deleteCustomGame(id: string): Promise<{ ok: boolean }> {
+    const res = await authFetch(`${API_BASE}/games/custom/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) return { ok: false };
     return res.json();
   },
 
@@ -2118,9 +2229,13 @@ export const api = {
       }
     >;
   }> {
-    const res = await authFetch(`${API_BASE}/games/worlds/servers`);
-    if (!res.ok) return { servers: {} };
-    return res.json();
+    try {
+      const res = await authFetch(`${API_BASE}/games/worlds/servers`);
+      if (!res.ok) return { servers: {} };
+      return res.json();
+    } catch {
+      return { servers: {} };
+    }
   },
 
   async getLiveSpyState(): Promise<{ state: LiveSpyPublicState | null }> {

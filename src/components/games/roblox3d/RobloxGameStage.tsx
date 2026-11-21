@@ -44,16 +44,17 @@ import {
 import { createRobloxRendererBundle } from './robloxRenderer';
 import {
   SQUID_STAGES,
+  type CustomGameDefinition,
   type PlayerInputState,
   type RobloxHudState,
-  type RobloxWorldId,
   type ServerWorldContext,
   type SquidStageId,
   type WorldController,
 } from './types';
 
 interface RobloxGameStageProps {
-  worldId: RobloxWorldId;
+  worldId: string;
+  customGameDef?: CustomGameDefinition;
   initialSquidStage?: SquidStageId;
   currentUser: UserProfile | null;
   sendWsEvent: (event: string, payload: Record<string, any>) => boolean;
@@ -117,6 +118,7 @@ function disposeThreeObject(obj: THREE.Object3D): void {
 
 export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
   worldId,
+  customGameDef,
   initialSquidStage = 's1_red_light',
   currentUser,
   sendWsEvent,
@@ -175,7 +177,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
   });
 
   const [hud, setHud] = useState<RobloxHudState>({
-    worldTitle: worldMeta?.entry.name || 'LOADING 3D WORLD',
+    worldTitle: customGameDef?.title || worldMeta?.entry.name || 'LOADING 3D WORLD',
     stageLabel: '',
     timerSec: null,
     score: 0,
@@ -730,7 +732,8 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
       bundle.isSoftwareGl,
       bundle.maxAnisotropy,
       avatarConfigRef.current,
-      initialSquidStage
+      initialSquidStage,
+      customGameDef
     );
     controllerRef.current = world;
     world.setAvatarConfig?.(avatarConfigRef.current);
@@ -1029,7 +1032,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
       controllerRef.current = null;
       cameraCtrlRef.current = null;
     };
-  }, [worldId, initialSquidStage, clearAllMovementInputs]);
+  }, [worldId, customGameDef, initialSquidStage, clearAllMovementInputs]);
 
   // Joystick Pointer Handlers with strict 0.16 radial deadband
   const updateJoyFromPointer = (clientX: number, clientY: number) => {
@@ -1404,7 +1407,7 @@ export const RobloxGameStage: React.FC<RobloxGameStageProps> = ({
             <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2 bg-[#0b1019]">
               <div className="min-w-0">
                 <h2 className="text-sm font-black text-white truncate">
-                  {worldMeta?.entry.name || hud.worldTitle}
+                  {customGameDef?.title || worldMeta?.entry.name || hud.worldTitle}
                 </h2>
                 <p className="text-[11px] font-bold text-teal-300">
                   Server #{serverHud.serverNumber} · {serverHud.playerCount}/{serverHud.maxPlayers} Players Connected

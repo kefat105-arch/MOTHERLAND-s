@@ -6040,6 +6040,15 @@ app.get('/api/videos/shorts', ah(async (req: Request, res: Response) => {
   const localStart = (page - 1) * pageSize;
   const localSlice = filteredLocal.slice(localStart, localStart + pageSize);
 
+  if (req.query.nativeOnly === '1') {
+    return res.json({
+      shorts: localSlice,
+      page,
+      nextPageToken: null,
+      hasMore: localStart + localSlice.length < filteredLocal.length,
+    });
+  }
+
   const shortsQueryPool = await buildPersonalizedDiscoveryQueries(
     SHORTS_DISCOVERY_QUERIES,
     currentUserId,
@@ -9203,10 +9212,82 @@ app.post('/api/system/backup', ah(async (req: Request, res: Response) => {
 }));
 
 // ==========================================
-// MOTHERLAND GAMES HUB & LIVE SPY MATCHMAKING
+// MOTHERLAND GAMES HUB, CUSTOM 3D STUDIO GAMES & LIVE SPY MATCHMAKING
 // ==========================================
+const CUSTOM_GAMES_FILE = path.join(resolvePersistencePaths().dataDir, 'custom_games.json');
+
+function loadCustomGamesStore(): any[] {
+  try {
+    if (!fs.existsSync(CUSTOM_GAMES_FILE)) return [];
+    const parsed = JSON.parse(fs.readFileSync(CUSTOM_GAMES_FILE, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomGamesStore(list: any[]): void {
+  try {
+    fs.mkdirSync(path.dirname(CUSTOM_GAMES_FILE), { recursive: true });
+    fs.writeFileSync(CUSTOM_GAMES_FILE, JSON.stringify(list.slice(0, 120), null, 2));
+  } catch (err) {
+    console.warn('Failed saving custom games:', err);
+  }
+}
+
 app.get('/api/games/catalog', (_req: Request, res: Response) => {
   res.json({ games: GAME_CATALOG });
+});
+
+app.get('/api/games/custom', (_req: Request, res: Response) => {
+  res.json({ customGames: loadCustomGamesStore() });
+});
+
+app.post('/api/games/custom', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const body = req.body || {};
+  const title = String(body.title || '').trim().slice(0, 64);
+  if (!title) {
+    return res.status(400).json({ error: 'TITLE_REQUIRED', message: 'Game title is required' });
+  }
+  const existing = loadCustomGamesStore();
+  const id =
+    typeof body.id === 'string' && body.id.startsWith('custom_')
+      ? body.id
+      : `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const now = new Date().toISOString();
+  const cleanObjects = Array.isArray(body.objects) ? body.objects.slice(0, 180) : [];
+  const record = {
+    id,
+    title,
+    description: String(body.description || 'User Created 3D World').slice(0, 240),
+    biome: String(body.biome || 'sky_day'),
+    groundMaterial: String(body.groundMaterial || 'grass'),
+    moveSpeed: Math.min(24, Math.max(5, Number(body.moveSpeed) || 10.5)),
+    jumpPower: Math.min(22, Math.max(7, Number(body.jumpPower) || 12)),
+    creatorId: user.id,
+    creatorName: user.displayName || user.username,
+    objects: cleanObjects,
+    updatedAt: now,
+    createdAt: body.createdAt || now,
+  };
+  const next = [record, ...existing.filter((g) => g.id !== id)];
+  saveCustomGamesStore(next);
+  res.json({ game: record });
+});
+
+app.delete('/api/games/custom/:id', (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
+  const id = String(req.params.id || '');
+  const existing = loadCustomGamesStore();
+  const target = existing.find((g) => g.id === id);
+  if (target && target.creatorId !== user.id && user.role !== 'admin') {
+    return res.status(403).json({ error: 'FORBIDDEN' });
+  }
+  saveCustomGamesStore(existing.filter((g) => g.id !== id));
+  res.json({ ok: true });
 });
 
 app.get('/api/games/worlds/servers', (_req: Request, res: Response) => {
